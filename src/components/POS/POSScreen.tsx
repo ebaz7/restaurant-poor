@@ -830,173 +830,290 @@ export default function POSScreen() {
             showCartOnMobile ? 'hidden lg:flex' : 'flex'
           }`}
         >
-          {/* Self-Service Quick Banner when in Mode 2 */}
-          {activeTab.invoiceMode === 'self_service' && (
-            <div className="m-4 mb-0 p-5 bg-white border-2 border-teal-600 rounded-2xl shadow-xs shrink-0">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Users className="text-teal-700" size={22} />
-                    <h2 className="text-lg font-extrabold text-slate-900">
-                      صدور فیش سلف سرویس و دریافت نوشابه (حداکثر ۴ نفر)
-                    </h2>
+          {/* Self-Service Quick Banner & Direct Checkout when in Mode 2 */}
+          {activeTab.invoiceMode === 'self_service' ? (
+            <div className="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 max-w-4xl mx-auto w-full">
+              <div className="bg-white border-2 border-teal-600 rounded-2xl p-5 shadow-sm space-y-4">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Users className="text-teal-700" size={24} />
+                      <h2 className="text-base md:text-lg font-extrabold text-slate-900">
+                        صدور فیش سلف سرویس و دریافت نوشابه (حداکثر ۴ نفر)
+                      </h2>
+                    </div>
+                    <p className="text-xs text-slate-600 mt-1">
+                      تعداد نفرات را انتخاب کنید (سقف هر فیش ۴ نفر است). به ازای هر نفر ۱ عدد نوشابه و مجوز استفاده از بار سلف در فیش درج می‌شود.
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-600 mt-1">
-                    تعداد نفرات را انتخاب کنید (سقف هر فیش ۴ نفر است). به ازای هر نفر ۱ عدد نوشابه و مجوز استفاده از سلف در فیش درج می‌شود.
-                  </p>
+
+                  {/* 1 to 4 Person Buttons */}
+                  <div className="flex items-center gap-2 w-full md:w-auto">
+                    {[1, 2, 3, 4].map((num) => (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => updateActiveTab({ selfServiceGuests: num })}
+                        className={`flex-1 md:w-20 py-3 px-3 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center ${
+                          activeTab.selfServiceGuests === num
+                            ? 'bg-teal-600 text-white border-teal-700 shadow-sm scale-[1.02]'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-teal-50 hover:border-teal-300'
+                        }`}
+                      >
+                        <span className="text-base font-black font-mono">{num} نفر</span>
+                        <span className="text-[10px] opacity-85">{num} نوشابه</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                {/* 1 to 4 Person Buttons */}
-                <div className="flex items-center gap-2 w-full md:w-auto">
-                  {[1, 2, 3, 4].map((num) => (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-100">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      قیمت سلف و نوشابه به ازای هر نفر (تومان)
+                    </label>
+                    <input
+                      type="number"
+                      value={activeTab.selfServiceUnitPrice || ''}
+                      onChange={(e) =>
+                        updateActiveTab({ selfServiceUnitPrice: Math.max(0, Number(e.target.value)) })
+                      }
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-left outline-none focus:ring-2 focus:ring-teal-600"
+                      dir="ltr"
+                    />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      شرح نوشیدنی و خدمات فیش سلف
+                    </label>
+                    <input
+                      type="text"
+                      value={activeTab.selfServiceDrinkNote || ''}
+                      onChange={(e) => updateActiveTab({ selfServiceDrinkNote: e.target.value })}
+                      placeholder="مثال: نوشابه قوطی + استفاده از بار سلف سرویس"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-teal-600"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Method & Bank Selector for Self Service */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
+                <h3 className="text-xs font-extrabold text-slate-800">نحوه تسویه حساب فیش سلف:</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: 'card', label: 'کارتخوان' },
+                    { id: 'cash', label: 'نقدی' },
+                    { id: 'split', label: 'ترکیبی' },
+                    { id: 'credit', label: 'نسیه' },
+                  ].map((pm) => (
                     <button
-                      key={num}
+                      key={pm.id}
                       type="button"
-                      onClick={() => updateActiveTab({ selfServiceGuests: num })}
-                      className={`flex-1 md:w-20 py-3 px-3 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center ${
-                        activeTab.selfServiceGuests === num
-                          ? 'bg-teal-600 text-white border-teal-700 shadow-sm scale-[1.02]'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-teal-50 hover:border-teal-300'
+                      onClick={() => updateActiveTab({ paymentMethod: pm.id as any })}
+                      className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all ${
+                        activeTab.paymentMethod === pm.id
+                          ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                       }`}
                     >
-                      <span className="text-base font-black font-mono">{num} نفر</span>
-                      <span className="text-[10px] opacity-85">{num} نوشابه</span>
+                      {pm.label}
                     </button>
                   ))}
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4 pt-3 border-t border-slate-100">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    قیمت سلف و نوشابه به ازای هر نفر (تومان)
-                  </label>
-                  <input
-                    type="number"
-                    value={activeTab.selfServiceUnitPrice || ''}
-                    onChange={(e) =>
-                      updateActiveTab({ selfServiceUnitPrice: Math.max(0, Number(e.target.value)) })
-                    }
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-left outline-none focus:ring-2 focus:ring-teal-600"
-                    dir="ltr"
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    شرح نوشیدنی و خدمات فیش سلف
-                  </label>
-                  <input
-                    type="text"
-                    value={activeTab.selfServiceDrinkNote || ''}
-                    onChange={(e) => updateActiveTab({ selfServiceDrinkNote: e.target.value })}
-                    placeholder="مثال: نوشابه قوطی + استفاده از بار سلف سرویس"
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-teal-600"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Search & Categories */}
-          <div className="p-4 bg-white border-b border-slate-200 shrink-0 mt-2">
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-3">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                <input
-                  type="text"
-                  placeholder={
-                    activeTab.invoiceMode === 'self_service'
-                      ? 'افزودن آیتم جانبی از منو به فیش سلف (اختیاری)...'
-                      : 'جستجوی سریع نام غذا یا نوشیدنی...'
-                  }
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pr-9 pl-4 py-2.5 bg-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
-                />
-              </div>
-
-              {!searchQuery && (
-                <div className="flex gap-1.5 overflow-x-auto pb-1">
-                  {categories?.map((cat) => (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => setActiveCategoryId(cat.id!)}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-                        activeCategoryId === cat.id
-                          ? 'bg-slate-900 text-white shadow-xs'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                {/* Bank Account Selector when Card or Split */}
+                {(activeTab.paymentMethod === 'card' || activeTab.paymentMethod === 'split') && (
+                  <div className="flex items-center gap-2 pt-2">
+                    <Building2 size={16} className="text-blue-600 shrink-0" />
+                    <select
+                      aria-label="انتخاب بانک کارتخوان"
+                      value={activeTab.bankId || defaultBank?.id || ''}
+                      onChange={(e) => updateActiveTab({ bankId: Number(e.target.value) })}
+                      className="flex-1 px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-teal-500"
                     >
-                      {cat.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+                      {activeBanks.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.bankName} ({b.cardNumber})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
-          {/* Menu Items Grid */}
-          <div className="flex-1 p-4 overflow-y-auto">
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
-              {displayedMenuItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleAddItem(item)}
-                  className="bg-white rounded-2xl border border-slate-200 hover:border-blue-500 hover:shadow-md transition-all text-right flex flex-col h-44 overflow-hidden group"
-                >
-                  <div className="h-24 w-full bg-slate-100 shrink-0">
-                    {item.image ? (
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                {/* Split Cash Input when Split payment is active */}
+                {activeTab.paymentMethod === 'split' && (
+                  <div className="flex items-center gap-2 text-xs pt-2">
+                    <span className="text-slate-700 font-bold whitespace-nowrap">سهم نقد (تومان):</span>
+                    <input
+                      type="number"
+                      value={activeTab.cashAmount || ''}
+                      onChange={(e) => updateActiveTab({ cashAmount: Number(e.target.value) })}
+                      placeholder="مبلغ نقد..."
+                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-left font-bold"
+                      dir="ltr"
+                    />
+                    <span className="text-xs text-blue-700 font-mono font-bold whitespace-nowrap">
+                      سهم کارت: {formatCurrency(Math.max(0, activeTabTotal - (activeTab.cashAmount || 0)))}
+                    </span>
+                  </div>
+                )}
+
+                {/* Discount Option Right Next to Checkout Stage */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-slate-700 whitespace-nowrap">تخفیف فیش:</span>
+                    <select
+                      aria-label="نوع تخفیف فیش سلف"
+                      value={activeTab.discountType}
+                      onChange={(e) => updateActiveTab({ discountType: e.target.value as any, discountValue: 0 })}
+                      className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none font-medium text-slate-700"
+                    >
+                      <option value="none">بدون تخفیف</option>
+                      <option value="percent">درصدی (%)</option>
+                      <option value="amount">مبلغی (تومان)</option>
+                    </select>
+
+                    {activeTab.discountType !== 'none' && (
+                      <input
+                        type="number"
+                        value={activeTab.discountValue || ''}
+                        onChange={(e) => updateActiveTab({ discountValue: Number(e.target.value) })}
+                        className="w-28 px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none text-left font-mono font-bold"
+                        dir="ltr"
+                        placeholder={activeTab.discountType === 'percent' ? 'درصد...' : 'مبلغ...'}
                       />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-slate-300">
-                        <Utensils size={28} />
-                      </div>
                     )}
                   </div>
-                  <div className="p-3 flex flex-col flex-1 w-full">
-                    <span className="font-bold text-xs text-slate-800 line-clamp-2 leading-snug">
-                      {item.name}
+
+                  {discountAmount > 0 && (
+                    <span className="text-xs font-bold text-emerald-600 font-mono whitespace-nowrap">
+                      کسر تخفیف: -{formatCurrency(discountAmount)}
                     </span>
-                    <span className="mt-auto text-blue-600 font-bold text-xs font-mono tabular-nums">
-                      {formatCurrency(item.price)}
+                  )}
+                </div>
+
+                {/* Summary & Checkout Button */}
+                <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex flex-col text-right w-full sm:w-auto">
+                    <span className="text-xs text-slate-500">مبلغ قابل پرداخت نهایی ({activeTab.selfServiceGuests} نفر):</span>
+                    <span className="text-xl font-black text-teal-700 font-mono tabular-nums">
+                      {formatCurrency(activeTabTotal)}
                     </span>
                   </div>
-                </button>
-              ))}
-              {displayedMenuItems.length === 0 && (
-                <div className="col-span-full py-12 text-center text-slate-400">
-                  <ReceiptIcon size={44} className="mx-auto mb-3 opacity-20" />
-                  <p className="text-sm">آیتمی در این دسته‌بندی یافت نشد.</p>
+
+                  <button
+                    type="button"
+                    onClick={handleCheckout}
+                    disabled={!canCheckout}
+                    className="w-full sm:w-auto px-8 py-3.5 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+                  >
+                    <CreditCard size={18} />
+                    <span>ثبت و صدور فیش سلف سرویس ({activeTab.selfServiceGuests} نفر)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Search & Categories */}
+              <div className="p-4 bg-white border-b border-slate-200 shrink-0 mt-2">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-3">
+                  <div className="relative flex-1 max-w-md">
+                    <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                    <input
+                      type="text"
+                      placeholder="جستجوی سریع نام غذا یا نوشیدنی..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pr-9 pl-4 py-2.5 bg-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                    />
+                  </div>
+
+                  {!searchQuery && (
+                    <div className="flex gap-1.5 overflow-x-auto pb-1">
+                      {categories?.map((cat) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => setActiveCategoryId(cat.id!)}
+                          className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                            activeCategoryId === cat.id
+                              ? 'bg-slate-900 text-white shadow-xs'
+                              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                          }`}
+                        >
+                          {cat.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Menu Items Grid */}
+              <div className="flex-1 p-4 overflow-y-auto">
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
+                  {displayedMenuItems.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleAddItem(item)}
+                      className="bg-white rounded-2xl border border-slate-200 hover:border-blue-500 hover:shadow-md transition-all text-right flex flex-col h-44 overflow-hidden group"
+                    >
+                      <div className="h-24 w-full bg-slate-100 shrink-0">
+                        {item.image ? (
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-300">
+                            <Utensils size={28} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3 flex flex-col flex-1 w-full">
+                        <span className="font-bold text-xs text-slate-800 line-clamp-2 leading-snug">
+                          {item.name}
+                        </span>
+                        <span className="mt-auto text-blue-600 font-bold text-xs font-mono tabular-nums">
+                          {formatCurrency(item.price)}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                  {displayedMenuItems.length === 0 && (
+                    <div className="col-span-full py-12 text-center text-slate-400">
+                      <ReceiptIcon size={44} className="mx-auto mb-3 opacity-20" />
+                      <p className="text-sm">آیتمی در این دسته‌بندی یافت نشد.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Floating Mobile Cart summary bar */}
+              {!showCartOnMobile && canCheckout && (
+                <div className="lg:hidden p-3.5 bg-white border-t border-slate-200 flex justify-between items-center z-30 shrink-0">
+                  <div className="flex flex-col text-right">
+                    <span className="text-[10px] text-slate-500">مبلغ قابل پرداخت:</span>
+                    <span className="font-bold text-blue-600 text-base font-mono">
+                      {formatCurrency(activeTabTotal)}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCartOnMobile(true)}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2"
+                  >
+                    <span>مشاهده فاکتور و تسویه</span>
+                    <ArrowLeft size={15} />
+                  </button>
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Floating Mobile Cart summary bar */}
-          {!showCartOnMobile && canCheckout && (
-            <div className="lg:hidden p-3.5 bg-white border-t border-slate-200 flex justify-between items-center z-30 shrink-0">
-              <div className="flex flex-col text-right">
-                <span className="text-[10px] text-slate-500">مبلغ قابل پرداخت:</span>
-                <span className="font-bold text-blue-600 text-base font-mono">
-                  {formatCurrency(activeTabTotal)}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCartOnMobile(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2"
-              >
-                <span>مشاهده فاکتور و تسویه</span>
-                <ArrowLeft size={15} />
-              </button>
-            </div>
+            </>
           )}
         </div>
 

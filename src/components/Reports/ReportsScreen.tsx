@@ -100,6 +100,28 @@ export default function ReportsScreen() {
       .sort((a, b) => b.qty - a.qty);
   }, [filteredOrders]);
 
+  const totalGuestsCount = useMemo(() => {
+    let guests = 0;
+    filteredOrders.forEach((order) => {
+      if (order.invoiceMode === 'self_service') {
+        guests += order.selfServiceGuests || 1;
+      } else {
+        guests += 1;
+      }
+    });
+    return guests;
+  }, [filteredOrders]);
+
+  const totalSelfServiceGuests = useMemo(() => {
+    let guests = 0;
+    filteredOrders.forEach((order) => {
+      if (order.invoiceMode === 'self_service') {
+        guests += order.selfServiceGuests || 0;
+      }
+    });
+    return guests;
+  }, [filteredOrders]);
+
   return (
     <div className="flex-1 overflow-y-auto p-2.5 sm:p-6 bg-slate-50">
       <div className="max-w-6xl mx-auto space-y-3 sm:space-y-6">
@@ -143,7 +165,7 @@ export default function ReportsScreen() {
         </div>
 
         {/* Key Metrics */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="bg-white p-5 rounded-2xl border border-slate-200 flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
               <TrendingUp size={24} />
@@ -167,6 +189,21 @@ export default function ReportsScreen() {
               </h3>
               <p className="text-[10px] text-slate-500">
                 عادی: {settlementSummary.standardOrderCount} · سلف: {settlementSummary.selfServiceOrderCount}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
+              <Users size={24} />
+            </div>
+            <div>
+              <p className="text-xs font-medium text-slate-500">تعداد کل نفرات (مشتریان)</p>
+              <h3 className="text-lg font-black text-slate-900 font-mono mt-0.5">
+                {totalGuestsCount} نفر
+              </h3>
+              <p className="text-[10px] text-slate-500">
+                سلف: {totalSelfServiceGuests} نفر · عادی: {settlementSummary.standardOrderCount} فاکتور
               </p>
             </div>
           </div>
