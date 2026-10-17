@@ -1,0 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Vazirmatn", "Segoe UI", Tahoma, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Vazirmatn", "Segoe UI", Tahoma, ui-monospace, monospace;
+}
+
+body {
+  direction: rtl;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+  font-variant-numeric: tabular-nums;
+  @apply bg-slate-100 text-slate-800;
+}
+
+.font-mono, .tabular-nums {
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 20px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
