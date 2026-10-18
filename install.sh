@@ -103,6 +103,23 @@ install_app() {
         apt-get install -y docker-compose-plugin || apt-get install -y docker-compose
     fi
 
+    echo "[i] Creating production server script..."
+    cat <<EOF > server.cjs
+const express = require('express');
+const path = require('path');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static(path.join(__dirname, 'dist')));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(\`Arka Restaurant production server running on port \${PORT}\`);
+});
+EOF
+
     echo "[i] Building and starting containers on port $PORT..."
 
     cat <<EOF > docker-compose.yml
@@ -115,11 +132,12 @@ services:
     restart: always
     ports:
       - "${PORT}:3000"
-    command: sh -c "npm install -g pnpm && pnpm install --frozen-lockfile || npm install && npm run build && node server.ts"
+    command: sh -c "npm install && npm run build && node server.cjs"
     volumes:
       - .:/app
 EOF
 
+    docker compose down 2>/dev/null || true
     docker compose up -d --build || docker-compose up -d --build
 
     echo "[v] Arka Restaurant software successfully installed and running on port $PORT!"
