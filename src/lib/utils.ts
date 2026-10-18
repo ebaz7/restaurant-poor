@@ -181,6 +181,33 @@ export async function sendBackupToMessengers(
     chatId: string
   ) => {
     try {
+      // Primary Route: Server-side Proxy (Bypasses Browser CORS)
+      const proxyRes = await fetch('/api/send-bot-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: platformName.includes('بله') ? 'bale' : 'telegram',
+          token: token.trim(),
+          chatId: chatId.trim(),
+          caption,
+          fileName,
+          backupJson: json,
+        }),
+      });
+
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (proxyData.ok) {
+          anySuccess = true;
+          results.push(`✅ بکاپ با موفقیت به ربات ${platformName} ارسال شد.`);
+          return;
+        } else if (proxyData.error) {
+          results.push(`⚠️ ${platformName}: ${proxyData.error}`);
+          return;
+        }
+      }
+
+      // Fallback Route: Direct Browser Fetch
       const blob = new Blob([json], { type: 'application/json' });
       const formData = new FormData();
       formData.append('chat_id', chatId.trim());
@@ -196,24 +223,11 @@ export async function sendBackupToMessengers(
         anySuccess = true;
         results.push(`✅ بکاپ با موفقیت به ربات ${platformName} ارسال شد.`);
       } else {
-        const msgRes = await fetch(`${baseUrl}/bot${token.trim()}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId.trim(),
-            text: `${caption}\n\n(حجم داده بکاپ: ${Math.round(json.length / 1024)} کیلوبایت)`,
-          }),
-        });
-        if (msgRes.ok) {
-          anySuccess = true;
-          results.push(`✅ گزارش پشتیبان با موفقیت به ${platformName} ارسال شد.`);
-        } else {
-          results.push(`⚠️ خطا در پاسخ سرور ${platformName} (کد ${response.status}) - توکن یا چت‌آیدی را بررسی کنید.`);
-        }
+        results.push(`⚠️ خطا در پاسخ سرور ${platformName} (کد ${response.status}) - توکن یا چت‌آیدی را بررسی کنید.`);
       }
     } catch (err) {
       results.push(
-        `⚠️ عدم ارتباط مستقیم با سرور ${platformName} (توکن ذخیره شد و در زمان اتصال ارسال می‌گردد).`
+        `⚠️ عدم امکان ارسال مستقیم مرورگر به ${platformName}. توکن روی سرور ذخیره شد و در ارسال بعدی خروجی گرفته می‌شود.`
       );
     }
   };

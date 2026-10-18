@@ -53,8 +53,67 @@ create_server_script() {
     mkdir -p "$INSTALL_DIR/data"
     cat <<'EOF' > "$INSTALL_DIR/server.cjs"
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
+
+function sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain) {
+  return new Promise((resolve) => {
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+    const host = hostDomain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+    let bodyHead = '';
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/json\r\n\r\n`;
+
+    const bodyTail = `\r\n--${boundary}--\r\n`;
+    const fileBuf = Buffer.from(backupJson, 'utf8');
+    const contentLength = Buffer.byteLength(bodyHead) + fileBuf.length + Buffer.byteLength(bodyTail);
+
+    const req = https.request(
+      {
+        hostname: host,
+        port: 443,
+        path: `/bot${token}/sendDocument`,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': contentLength,
+        },
+      },
+      (res) => {
+        let resData = '';
+        res.on('data', (chunk) => { resData += chunk; });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(resData || '{}');
+            if (parsed.ok) {
+              resolve({ ok: true });
+            } else {
+              let errText = parsed.description || `کد ${res.statusCode}`;
+              if (errText.includes('chat not found') || errText.includes('blocked') || errText.includes('deactivated')) {
+                errText = `کاربر/ادمین با شناسه چت (${chatId}) هنوز ربات را استارت نکرده است. لطفاً در بله به ربات پیام دهید و دکمه /start را بزنید.`;
+              }
+              resolve({ ok: false, error: errText });
+            }
+          } catch {
+            resolve({ ok: false, error: `پاسخ نامعتبر از سرور (کد ${res.statusCode})` });
+          }
+        });
+      }
+    );
+
+    req.on('error', (e) => {
+      resolve({ ok: false, error: `خطای شبکه‌ای: ${e.message}` });
+    });
+
+    req.write(bodyHead);
+    req.write(fileBuf);
+    req.write(bodyTail);
+    req.end();
+  });
+}
 
 const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
@@ -66,6 +125,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 let currentRev = 1;
+let lastRawResetRev = 0;
 try {
   if (fs.existsSync(DB_FILE)) {
     const stat = fs.statSync(DB_FILE);
@@ -104,6 +164,7 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({
         ok: true,
         rev: currentRev,
+        lastRawResetRev,
         lastModified: new Date().toISOString(),
       }));
       return;
@@ -131,6 +192,20 @@ const server = http.createServer((req, res) => {
       req.on('end', () => {
         try {
           const payload = JSON.parse(body || '{}');
+          const clientRev = Number(payload.clientRevision) || 0;
+
+          // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
+          if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
+            res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              ok: false,
+              isOutdated: true,
+              rev: currentRev,
+              error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
+            }));
+            return;
+          }
+
           if (payload.data) {
             const tmpFile = DB_FILE + '.tmp';
             fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
@@ -154,13 +229,42 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           if (payload.data) {
-            fs.writeFileSync(DB_FILE, JSON.stringify(payload.data, null, 2), 'utf8');
-          } else if (fs.existsSync(DB_FILE)) {
-            fs.unlinkSync(DB_FILE);
+            const jsonContent = JSON.stringify(payload.data, null, 2);
+            fs.writeFileSync(DB_FILE, jsonContent, 'utf8');
+            try {
+              fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), jsonContent, 'utf8');
+            } catch (e) {}
           }
-          currentRev += 10;
+          currentRev += 1000;
+          lastRawResetRev = currentRev;
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, rev: currentRev }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/send-bot-backup') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const { token, chatId, caption, fileName, backupJson, platform } = payload;
+          const hostDomain = platform === 'bale' ? 'https://tapi.bale.ai' : 'https://api.telegram.org';
+
+          if (!token || !chatId || !backupJson) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: 'توکن، چت‌آیدی یا دیتای بکاپ ارسال نشده است.' }));
+            return;
+          }
+
+          const result = await sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(result));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));

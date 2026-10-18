@@ -909,6 +909,23 @@ async function runInitializeDefaultDatabase(): Promise<void> {
 
   // If 100% Raw Mode is active, do NOT seed any sample banks, menus, inventory, persons, cheques, or orders!
   if (isRawMode) {
+    const bankCount = await db.bankAccounts.count();
+    const orderCount = await db.orders.count();
+    if (bankCount > 0 || orderCount > 0) {
+      await db.bankAccounts.clear();
+      await db.orders.clear();
+      await db.categories.clear();
+      await db.menuItems.clear();
+      await db.customers.clear();
+      await db.persons.clear();
+      await db.journalVouchers.clear();
+      await db.cheques.clear();
+      await db.rawMaterials.clear();
+      await db.inventoryTransactions.clear();
+      await db.productionRecipes.clear();
+      await db.kitchenProductions.clear();
+      await db.cashClosures.clear();
+    }
     return;
   }
 

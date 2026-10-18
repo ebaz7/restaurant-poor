@@ -74,7 +74,7 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
       const existingSetting = await db.settings.toCollection().first();
       const updates: Partial<AppSettings> = {
         currencyUnit,
-        isRawInitialized: false, // successfully initialized by first admin
+        isRawInitialized: true, // system is 100% raw without sample data
         selfServicePricePerPerson: 0,
         selfServiceTitle: '',
         defaultInvoiceMode: 'self_service',
@@ -109,7 +109,7 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
           telegramChatId: '',
           baleBotToken: '',
           baleChatId: '',
-          isRawInitialized: false,
+          isRawInitialized: true,
           requireLoginOnStart: false,
           autoBackupBeforeUpdate: true,
           hideCostPriceFromKitchen: false,

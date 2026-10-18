@@ -95,11 +95,11 @@ export async function initNetworkSync(customServerUrl?: string) {
   // Initial pull from server
   await pullFromCentralServer(true);
 
-  // Periodic polling every 3.5 seconds
+  // Periodic polling every 2 seconds
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     checkServerRevision();
-  }, 3500);
+  }, 2000);
 
   // Hook online/offline events
   if (typeof window !== 'undefined') {
@@ -189,10 +189,6 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
         isApplyingRemoteChange = false;
       }
       return true;
-    } else if (isStartup) {
-      // Server is empty, push local data to initialize central server!
-      await pushToCentralServer(true);
-      return true;
     }
     return false;
   } catch (err: any) {
@@ -226,15 +222,31 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
       body: JSON.stringify({
         data,
         isInitialSeed,
+        clientRevision: currentSyncState.localRevision,
         timestamp: new Date().toISOString(),
       }),
     });
+
+    if (res.status === 409) {
+      // Server rejected our push because a Raw Reset or newer update happened on another terminal!
+      // Immediately pull the central server's clean state into local Dexie!
+      const result = await res.json().catch(() => ({}));
+      console.warn('Sync Conflict (Outdated Client):', result.error || 'Server reset or updated');
+      currentSyncState.lastError = 'داده‌های این دستگاه قدیمی بود و با سرور خام/بروزرسانی شده جایگزین شد.';
+      await pullFromCentralServer(false);
+      return false;
+    }
 
     if (!res.ok) {
       throw new Error(`خطای سرور: ${res.status}`);
     }
 
     const result = await res.json();
+    if (result.isOutdated) {
+      await pullFromCentralServer(false);
+      return false;
+    }
+
     if (result.ok) {
       currentSyncState.localRevision = Number(result.rev) || currentSyncState.localRevision + 1;
       currentSyncState.serverRevision = currentSyncState.localRevision;

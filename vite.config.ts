@@ -2,13 +2,73 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import fs from 'fs';
+import https from 'https';
 import { defineConfig, Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+
+function sendBotMessageNode(token: string, chatId: string, caption: string, fileName: string, backupJson: string, hostDomain: string): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+    const host = hostDomain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+    let bodyHead = '';
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/json\r\n\r\n`;
+
+    const bodyTail = `\r\n--${boundary}--\r\n`;
+    const fileBuf = Buffer.from(backupJson, 'utf8');
+    const contentLength = Buffer.byteLength(bodyHead) + fileBuf.length + Buffer.byteLength(bodyTail);
+
+    const req = https.request(
+      {
+        hostname: host,
+        port: 443,
+        path: `/bot${token}/sendDocument`,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': contentLength,
+        },
+      },
+      (res) => {
+        let resData = '';
+        res.on('data', (chunk) => { resData += chunk; });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(resData || '{}');
+            if (parsed.ok) {
+              resolve({ ok: true });
+            } else {
+              let errText = parsed.description || `کد ${res.statusCode}`;
+              if (errText.includes('chat not found') || errText.includes('blocked') || errText.includes('deactivated')) {
+                errText = `کاربر/ادمین با شناسه چت (${chatId}) هنوز ربات را استارت نکرده است. لطفاً در بله به ربات پیام دهید و دکمه /start را بزنید.`;
+              }
+              resolve({ ok: false, error: errText });
+            }
+          } catch {
+            resolve({ ok: false, error: `پاسخ نامعتبر از سرور (کد ${res.statusCode})` });
+          }
+        });
+      }
+    );
+
+    req.on('error', (e) => {
+      resolve({ ok: false, error: `خطای شبکه‌ای: ${e.message}` });
+    });
+
+    req.write(bodyHead);
+    req.write(fileBuf);
+    req.write(bodyTail);
+    req.end();
+  });
+}
 
 function centralServerDbPlugin(): Plugin {
   const dataDir = path.resolve(__dirname, 'data');
   const dbFile = path.join(dataDir, 'central_db.json');
   let currentRev = 1;
+  let lastRawResetRev = 0;
 
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -23,7 +83,7 @@ function centralServerDbPlugin(): Plugin {
         if (url.pathname === '/api/db/version' && req.method === 'GET') {
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.setHeader('Cache-Control', 'no-cache, no-store');
-          res.end(JSON.stringify({ ok: true, rev: currentRev, lastModified: new Date().toISOString() }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev, lastRawResetRev, lastModified: new Date().toISOString() }));
           return;
         }
 
@@ -49,6 +109,21 @@ function centralServerDbPlugin(): Plugin {
           req.on('end', () => {
             try {
               const payload = JSON.parse(body || '{}');
+              const clientRev = Number(payload.clientRevision) || 0;
+
+              // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
+              if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
+                res.statusCode = 409;
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.end(JSON.stringify({
+                  ok: false,
+                  isOutdated: true,
+                  rev: currentRev,
+                  error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
+                }));
+                return;
+              }
+
               if (payload.data) {
                 fs.writeFileSync(dbFile, JSON.stringify(payload.data, null, 2), 'utf8');
                 currentRev += 1;
@@ -70,16 +145,47 @@ function centralServerDbPlugin(): Plugin {
             try {
               const payload = JSON.parse(body || '{}');
               if (payload.data) {
-                fs.writeFileSync(dbFile, JSON.stringify(payload.data, null, 2), 'utf8');
-              } else if (fs.existsSync(dbFile)) {
-                fs.unlinkSync(dbFile);
+                const jsonContent = JSON.stringify(payload.data, null, 2);
+                fs.writeFileSync(dbFile, jsonContent, 'utf8');
+                try {
+                  fs.writeFileSync(path.join(dataDir, 'latest_db_backup.json'), jsonContent, 'utf8');
+                } catch {
+                  // ignore
+                }
               }
-              currentRev += 10;
+              currentRev += 1000;
+              lastRawResetRev = currentRev;
               res.setHeader('Content-Type', 'application/json; charset=utf-8');
               res.end(JSON.stringify({ ok: true, rev: currentRev }));
             } catch (err: any) {
               res.statusCode = 400;
               res.end(JSON.stringify({ ok: false, error: err?.message }));
+            }
+          });
+          return;
+        }
+
+        if (url.pathname === '/api/send-bot-backup' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => (body += c.toString()));
+          req.on('end', async () => {
+            try {
+              const payload = JSON.parse(body || '{}');
+              const { token, chatId, caption, fileName, backupJson, platform } = payload;
+              const hostDomain = platform === 'bale' ? 'https://tapi.bale.ai' : 'https://api.telegram.org';
+
+              if (!token || !chatId || !backupJson) {
+                res.statusCode = 400;
+                res.end(JSON.stringify({ ok: false, error: 'توکن، چت‌آیدی یا دیتای بکاپ ارسال نشده است.' }));
+                return;
+              }
+
+              const result = await sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain);
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify(result));
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ ok: false, error: err?.message || 'خطا در ارسال بکاپ' }));
             }
           });
           return;
