@@ -49,6 +49,7 @@ EOF
 }
 
 create_server_script() {
+    mkdir -p "$INSTALL_DIR/data"
     cat <<'EOF' > "$INSTALL_DIR/server.cjs"
 const http = require('http');
 const fs = require('fs');
@@ -56,6 +57,11 @@ const path = require('path');
 
 const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
+const DATA_DIR = path.join(__dirname, 'data');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -78,6 +84,39 @@ const MIME_TYPES = {
 const server = http.createServer((req, res) => {
   try {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/sync-backup') {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          if (payload.backupJson) {
+            fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), payload.backupJson, 'utf8');
+          }
+          if (payload.settings) {
+            const s = payload.settings;
+            const envLines = [
+              `RESTAURANT_NAME="${String(s.restaurantName || 'Arka').replace(/"/g, '')}"`,
+              `BALE_BOT_TOKEN="${String(s.baleBotToken || '').trim()}"`,
+              `BALE_CHAT_ID="${String(s.baleChatId || '').trim()}"`,
+              `TELEGRAM_BOT_TOKEN="${String(s.telegramBotToken || '').trim()}"`,
+              `TELEGRAM_CHAT_ID="${String(s.telegramChatId || '').trim()}"`,
+            ];
+            fs.writeFileSync(path.join(DATA_DIR, 'bot_config.env'), envLines.join('\n') + '\n', 'utf8');
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false }));
+        }
+      });
+      return;
+    }
+
     let safePath = path.normalize(decodeURIComponent(parsedUrl.pathname)).replace(/^(\.\.[/\\])+/, '');
     if (safePath === '/' || safePath === '\\') {
       safePath = '/index.html';
@@ -374,17 +413,125 @@ EOF
     echo "[i] Note: If using a VPN/Proxy in your browser, disable VPN for ${SERVER_IP} or ${DOMAIN}."
 }
 
-backup_app() {
+send_backup_to_bots() {
+    local ARCHIVE_FILE="$1"
+    local TRIGGER_REASON="${2:-Manual Backup}"
+    local BOT_ENV_FILE="$INSTALL_DIR/data/bot_config.env"
+    local FALLBACK_ENV_FILE="/opt/arka-backup/bot_config.env"
+
+    BALE_BOT_TOKEN=""
+    BALE_CHAT_ID=""
+    TELEGRAM_BOT_TOKEN=""
+    TELEGRAM_CHAT_ID=""
+    RESTAURANT_NAME="Arka Restaurant"
+
+    if [ -f "$BOT_ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$BOT_ENV_FILE" 2>/dev/null || true
+        mkdir -p /opt/arka-backup
+        cp -f "$BOT_ENV_FILE" "$FALLBACK_ENV_FILE" 2>/dev/null || true
+    elif [ -f "$FALLBACK_ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$FALLBACK_ENV_FILE" 2>/dev/null || true
+    fi
+
+    local CAPTION="Arka Restaurant Backup | Store: ${RESTAURANT_NAME} | Trigger: ${TRIGGER_REASON} | Date: $(date '+%Y-%m-%d %H:%M:%S')"
+    local DB_JSON_FILE="$INSTALL_DIR/data/latest_db_backup.json"
+    local SENT_ANY=0
+
+    if [ -n "$BALE_BOT_TOKEN" ] && [ -n "$BALE_CHAT_ID" ]; then
+        echo "[i] Sending backup to Bale Bot (Chat ID: $BALE_CHAT_ID)..."
+        if [ -f "$DB_JSON_FILE" ]; then
+            curl -s -X POST "https://tapi.bale.ai/bot${BALE_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${BALE_CHAT_ID}" \
+                -F "caption=${CAPTION} (Database JSON)" \
+                -F "document=@${DB_JSON_FILE}" >/dev/null 2>&1 || true
+        fi
+        if [ -f "$ARCHIVE_FILE" ]; then
+            if curl -s -f -X POST "https://tapi.bale.ai/bot${BALE_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${BALE_CHAT_ID}" \
+                -F "caption=${CAPTION} (Full Archive)" \
+                -F "document=@${ARCHIVE_FILE}" >/dev/null 2>&1; then
+                echo "[v] Backup successfully delivered to Bale Bot!"
+                SENT_ANY=1
+            else
+                echo "[!] Could not upload archive to Bale Bot (check token/chat_id or file size)."
+            fi
+        fi
+    fi
+
+    if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+        echo "[i] Sending backup to Telegram Bot (Chat ID: $TELEGRAM_CHAT_ID)..."
+        if [ -f "$DB_JSON_FILE" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                -F "caption=${CAPTION} (Database JSON)" \
+                -F "document=@${DB_JSON_FILE}" >/dev/null 2>&1 || true
+        fi
+        if [ -f "$ARCHIVE_FILE" ]; then
+            if curl -s -f -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${TELEGRAM_CHAT_ID}" \
+                -F "caption=${CAPTION} (Full Archive)" \
+                -F "document=@${ARCHIVE_FILE}" >/dev/null 2>&1; then
+                echo "[v] Backup successfully delivered to Telegram Bot!"
+                SENT_ANY=1
+            else
+                echo "[!] Could not upload archive to Telegram Bot (check token/chat_id or outbound access)."
+            fi
+        fi
+    fi
+
+    if [ "$SENT_ANY" -eq 0 ] && [ -z "$BALE_BOT_TOKEN" ] && [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+        echo "[i] No Bale or Telegram Bot configured yet. Skipping bot delivery (local backup saved)."
+    fi
+}
+
+configure_bots_cli() {
     print_banner
-    echo "[+] Creating backup of application data and configuration..."
+    echo "[+] Configure Bale & Telegram Auto-Backup Bots (Pre-Update & Scheduled)"
+    mkdir -p "$INSTALL_DIR/data" /opt/arka-backup
+    local BOT_ENV_FILE="$INSTALL_DIR/data/bot_config.env"
+    if [ -f "$BOT_ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$BOT_ENV_FILE" 2>/dev/null || true
+    fi
+
+    read -p "[-] Enter Bale Bot Token (current: ${BALE_BOT_TOKEN:-none}): " NEW_BALE_TOKEN
+    BALE_BOT_TOKEN=${NEW_BALE_TOKEN:-$BALE_BOT_TOKEN}
+    read -p "[-] Enter Bale Chat ID (current: ${BALE_CHAT_ID:-none}): " NEW_BALE_CHAT
+    BALE_CHAT_ID=${NEW_BALE_CHAT:-$BALE_CHAT_ID}
+
+    read -p "[-] Enter Telegram Bot Token (current: ${TELEGRAM_BOT_TOKEN:-none}): " NEW_TG_TOKEN
+    TELEGRAM_BOT_TOKEN=${NEW_TG_TOKEN:-$TELEGRAM_BOT_TOKEN}
+    read -p "[-] Enter Telegram Chat ID (current: ${TELEGRAM_CHAT_ID:-none}): " NEW_TG_CHAT
+    TELEGRAM_CHAT_ID=${NEW_TG_CHAT:-$TELEGRAM_CHAT_ID}
+
+    cat <<EOF > "$BOT_ENV_FILE"
+RESTAURANT_NAME="${RESTAURANT_NAME:-Arka Restaurant}"
+BALE_BOT_TOKEN="${BALE_BOT_TOKEN}"
+BALE_CHAT_ID="${BALE_CHAT_ID}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID}"
+EOF
+    cp -f "$BOT_ENV_FILE" /opt/arka-backup/bot_config.env 2>/dev/null || true
+    echo "[v] Bot configuration saved! Backups will automatically be sent to configured bots before every update."
+}
+
+backup_app() {
+    local TRIGGER_REASON="${1:-Manual Backup}"
+    echo "[+] Creating backup of application data and configuration ($TRIGGER_REASON)..."
     BACKUP_DIR="/opt/arka-backup"
     mkdir -p "$BACKUP_DIR"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    local ARCHIVE_FILE="$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz"
     
     if [ -d "$INSTALL_DIR" ]; then
-        tar --exclude="node_modules" --exclude=".git" -czf "$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz" -C "$INSTALL_DIR" .
-        echo "[v] Backup successfully created at:"
-        echo "$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz"
+        tar --exclude="node_modules" --exclude=".git" -czf "$ARCHIVE_FILE" -C "$INSTALL_DIR" .
+        if [ -f "$INSTALL_DIR/data/latest_db_backup.json" ]; then
+            cp -f "$INSTALL_DIR/data/latest_db_backup.json" "$BACKUP_DIR/arka_db_$TIMESTAMP.json" 2>/dev/null || true
+        fi
+        echo "[v] Local backup created at: $ARCHIVE_FILE"
+        send_backup_to_bots "$ARCHIVE_FILE" "$TRIGGER_REASON"
     else
         echo "[!] Installation directory not found."
     fi
@@ -392,15 +539,38 @@ backup_app() {
 
 update_app() {
     print_banner
-    echo "[+] Updating Arka software..."
+    echo "[+] Starting Safe Update Process for Arka Restaurant..."
     if [ -d "$INSTALL_DIR" ]; then
+        echo "[+] Step 1/3: Creating automatic pre-update backup & sending to Bale/Telegram bots..."
+        backup_app "Automatic Pre-Update Backup"
+
+        # Preserve data folder before git reset
+        mkdir -p /tmp/arka_data_preserve
+        if [ -d "$INSTALL_DIR/data" ]; then
+            cp -rf "$INSTALL_DIR/data/"* /tmp/arka_data_preserve/ 2>/dev/null || true
+        fi
+
+        echo "[+] Step 2/3: Fetching latest software version from repository..."
         cd "$INSTALL_DIR" || exit 1
         if command -v git &> /dev/null && [ -d ".git" ]; then
             git fetch --all && git reset --hard origin/main
         fi
+
+        mkdir -p "$INSTALL_DIR/data"
+        cp -rf /tmp/arka_data_preserve/* "$INSTALL_DIR/data/" 2>/dev/null || true
+        rm -rf /tmp/arka_data_preserve
+
         create_server_script
+
+        echo "[+] Step 3/3: Rebuilding frontend bundle and restarting services..."
+        if command -v docker &> /dev/null; then
+            docker run --rm -v "$INSTALL_DIR:/app" -w /app \
+                -e ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+                node:20-alpine \
+                sh -c "npm config set registry https://registry.npmmirror.com && npm install --no-audit --no-fund && npm run build" || true
+        fi
         docker compose restart 2>/dev/null || docker-compose restart 2>/dev/null || systemctl restart arka-restaurant 2>/dev/null || true
-        echo "[v] Update completed successfully."
+        echo "[v] Update completed successfully (Pre-update backup saved & sent to configured bots)."
     else
         echo "[!] Software is not installed."
     fi
@@ -432,12 +602,13 @@ main_menu() {
     while true; do
         print_banner
         echo "1) Install & Setup (Port, Domain, SSL & Iran Mirrors)"
-        echo "2) Create Backup"
-        echo "3) Update System"
+        echo "2) Create Backup & Send to Bale/Telegram Bots"
+        echo "3) Update System (Auto-Backup to Bots + Update)"
         echo "4) Uninstall / Remove"
+        echo "5) Configure Bale & Telegram Bot Tokens (CLI)"
         echo "0) Exit"
         echo "================================================================"
-        read -p "[-] Select an option (0-4): " CHOICE
+        read -p "[-] Select an option (0-5): " CHOICE
 
         case "$CHOICE" in
             1)
@@ -445,7 +616,8 @@ main_menu() {
                 read -p "[-] Press Enter to return to menu..."
                 ;;
             2)
-                backup_app
+                print_banner
+                backup_app "Manual CLI Backup"
                 read -p "[-] Press Enter to return to menu..."
                 ;;
             3)
@@ -456,12 +628,16 @@ main_menu() {
                 remove_app
                 read -p "[-] Press Enter to return to menu..."
                 ;;
+            5)
+                configure_bots_cli
+                read -p "[-] Press Enter to return to menu..."
+                ;;
             0)
                 echo "Exiting. Goodbye!"
                 exit 0
                 ;;
             *)
-                echo "Invalid option. Please enter a number between 0 and 4."
+                echo "Invalid option. Please enter a number between 0 and 5."
                 sleep 2
                 ;;
         esac

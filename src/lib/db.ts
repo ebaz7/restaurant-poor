@@ -97,6 +97,107 @@ export interface AppSettings {
   baleChatId?: string;
   lastAutoBackupAt?: string;
   lastAutoBackupStatus?: string;
+  // Raw mode & RBAC login settings
+  isRawInitialized?: boolean;
+  requireLoginOnStart?: boolean;
+  autoBackupBeforeUpdate?: boolean;
+}
+
+export type PermissionKey =
+  | 'pos'
+  | 'pos_discount'
+  | 'pos_cancel'
+  | 'kitchen'
+  | 'accounting'
+  | 'menu'
+  | 'reports'
+  | 'customers'
+  | 'settings';
+
+export const ALL_PERMISSIONS: PermissionKey[] = [
+  'pos',
+  'pos_discount',
+  'pos_cancel',
+  'kitchen',
+  'accounting',
+  'menu',
+  'reports',
+  'customers',
+  'settings',
+];
+
+export const PERMISSION_DEFINITIONS: Array<{
+  key: PermissionKey;
+  title: string;
+  description: string;
+  category: 'module' | 'action';
+}> = [
+  {
+    key: 'pos',
+    title: 'صندوق فروش و صدور فیش',
+    description: 'دسترسی به صفحه صندوق، ثبت سفارش سلف و منوی عادی',
+    category: 'module',
+  },
+  {
+    key: 'pos_discount',
+    title: 'اعمال تخفیف و تغییر قیمت در صندوق',
+    description: 'مجوز ثبت تخفیف درصدی/مبلغی و تغییر دستی فی سلف سرویس',
+    category: 'action',
+  },
+  {
+    key: 'pos_cancel',
+    title: 'ابطال فاکتور و بستن صندوق روزانه',
+    description: 'مجوز بستن شیفت صندوق (Z-Report) و ابطال فاکتورها',
+    category: 'action',
+  },
+  {
+    key: 'kitchen',
+    title: 'منو آشپزخانه و ثبت تولید',
+    description: 'دسترسی به بخش تولید روزانه آشپزخانه و فرمولاسیون پخت',
+    category: 'module',
+  },
+  {
+    key: 'accounting',
+    title: 'حسابداری، بانک، چک، انبار و اشخاص',
+    description: 'دسترسی به اسناد حسابداری، حساب‌های بانکی، چک‌ها، انبار مواد اولیه و طرف‌حساب‌ها',
+    category: 'module',
+  },
+  {
+    key: 'menu',
+    title: 'مدیریت منو و دسته‌بندی‌ها',
+    description: 'افزودن، ویرایش و قیمت‌گذاری غذاها و دسته‌بندی‌های منو',
+    category: 'module',
+  },
+  {
+    key: 'reports',
+    title: 'گزارشات فروش و آمار',
+    description: 'مشاهده گزارشات مالی فروش، تعداد نفرات، نمودارها و تاریخچه فاکتورها',
+    category: 'module',
+  },
+  {
+    key: 'customers',
+    title: 'باشگاه مشتریان',
+    description: 'مشاهده و مدیریت اطلاعات و اشتراک مشتریان',
+    category: 'module',
+  },
+  {
+    key: 'settings',
+    title: 'تنظیمات سیستم، کاربران و بکاپ',
+    description: 'دسترسی به تنظیمات کل سیستم، تعریف کاربران، بات بکاپ و خام‌سازی',
+    category: 'module',
+  },
+];
+
+export interface AppUser {
+  id?: number;
+  username: string;
+  fullName: string;
+  pin: string;
+  roleLabel: string;
+  isAdmin: boolean;
+  permissions: PermissionKey[];
+  isActive: boolean;
+  createdAt: Date;
 }
 
 // --- ACCOUNTING & INVENTORY INTERFACES ---
@@ -286,6 +387,7 @@ export class POSDatabase extends Dexie {
   productionRecipes!: Table<ProductionRecipe>;
   kitchenProductions!: Table<KitchenProductionLog>;
   cashClosures!: Table<CashClosure>;
+  appUsers!: Table<AppUser>;
 
   constructor() {
     super('RestaurantPOSDB');
@@ -334,6 +436,24 @@ export class POSDatabase extends Dexie {
       productionRecipes: '++id, &menuItemId',
       kitchenProductions: '++id, batchNumber, createdAt, shiftLabel',
       cashClosures: '++id, closedAt, dateLabel',
+    });
+    this.version(8).stores({
+      categories: '++id, name',
+      menuItems: '++id, categoryId, name',
+      orders: '++id, invoiceNumber, createdAt, status, invoiceMode, paymentMethod, bankId',
+      settings: '++id',
+      customers: '++id, phone, name, subscriptionCode',
+      accounts: '++id, &code, name, type',
+      bankAccounts: '++id, bankName, isDefaultPos, isActive',
+      persons: '++id, name, role, phone',
+      journalVouchers: '++id, voucherNumber, date, type',
+      cheques: '++id, chequeNumber, type, dueDate, status, personId, bankId',
+      rawMaterials: '++id, name, unit',
+      inventoryTransactions: '++id, materialId, date, type',
+      productionRecipes: '++id, &menuItemId',
+      kitchenProductions: '++id, batchNumber, createdAt, shiftLabel',
+      cashClosures: '++id, closedAt, dateLabel',
+      appUsers: '++id, &username, roleLabel, isActive',
     });
   }
 }
@@ -649,8 +769,32 @@ export function initializeDefaultDatabase(): Promise<void> {
 }
 
 async function runInitializeDefaultDatabase(): Promise<void> {
+  // 0. Ensure at least one Admin User exists
+  const usersCount = await db.appUsers.count();
+  if (usersCount === 0) {
+    await db.appUsers.add({
+      username: 'admin',
+      fullName: 'مدیر کل سیستم',
+      pin: '1234',
+      roleLabel: 'مدیر کل',
+      isAdmin: true,
+      permissions: [...ALL_PERMISSIONS],
+      isActive: true,
+      createdAt: new Date(),
+    });
+  }
+
   // 1. Settings
   const settingsCount = await db.settings.count();
+  let isRawMode = false;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage.getItem('arka_raw_mode') === '1') {
+      isRawMode = true;
+    }
+  } catch {
+    // ignore storage errors
+  }
+
   if (settingsCount === 0) {
     await db.settings.add({
       restaurantName: 'رستوران و سلف سرویس آرکا',
@@ -674,10 +818,16 @@ async function runInitializeDefaultDatabase(): Promise<void> {
       telegramChatId: '',
       baleBotToken: '',
       baleChatId: '',
+      isRawInitialized: isRawMode,
+      requireLoginOnStart: false,
+      autoBackupBeforeUpdate: true,
     });
   } else {
     const firstSetting = await db.settings.toCollection().first();
     if (firstSetting) {
+      if (firstSetting.isRawInitialized) {
+        isRawMode = true;
+      }
       const updates: Partial<AppSettings> = {};
       if (firstSetting.selfServicePricePerPerson === undefined) {
         updates.selfServicePricePerPerson = 220000;
@@ -692,13 +842,16 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         updates.defaultInvoiceMode = 'self_service';
         updates.lockSelfServiceMode = true;
       }
+      if (firstSetting.autoBackupBeforeUpdate === undefined) {
+        updates.autoBackupBeforeUpdate = true;
+      }
       if (Object.keys(updates).length > 0) {
         await db.settings.update(firstSetting.id!, updates);
       }
     }
   }
 
-  // 2. Chart of Accounts
+  // 2. Chart of Accounts (always required for double-entry accounting engine)
   const accountsCount = await db.accounts.count();
   if (accountsCount === 0) {
     await db.accounts.bulkAdd(
@@ -710,6 +863,11 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         description: a.description,
       }))
     );
+  }
+
+  // If 100% Raw Mode is active, do NOT seed any sample banks, menus, inventory, persons, cheques, or orders!
+  if (isRawMode) {
+    return;
   }
 
   // 3. Default Bank Accounts (with deduplication safeguard)
@@ -1428,3 +1586,73 @@ async function runInitializeDefaultDatabase(): Promise<void> {
     }
   }
 }
+
+/**
+ * Resets the entire database to 100% Raw / Factory Blank mode:
+ * - Clears all orders, menu items, categories, banks, persons, cheques, vouchers, raw materials, kardex, recipes, kitchen logs, and cash closures.
+ * - Preserves only the standard Chart of Accounts (with 0 balances), user accounts, and system settings (marking isRawInitialized = true so sample data never re-seeds).
+ */
+export async function resetDatabaseToRaw(): Promise<void> {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('arka_raw_mode', '1');
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  await db.transaction(
+    'rw',
+    [
+      db.categories,
+      db.menuItems,
+      db.orders,
+      db.customers,
+      db.accounts,
+      db.bankAccounts,
+      db.persons,
+      db.journalVouchers,
+      db.cheques,
+      db.rawMaterials,
+      db.inventoryTransactions,
+      db.productionRecipes,
+      db.kitchenProductions,
+      db.cashClosures,
+      db.settings,
+    ],
+    async () => {
+      await db.categories.clear();
+      await db.menuItems.clear();
+      await db.orders.clear();
+      await db.customers.clear();
+      await db.bankAccounts.clear();
+      await db.persons.clear();
+      await db.journalVouchers.clear();
+      await db.cheques.clear();
+      await db.rawMaterials.clear();
+      await db.inventoryTransactions.clear();
+      await db.productionRecipes.clear();
+      await db.kitchenProductions.clear();
+      await db.cashClosures.clear();
+      await db.accounts.clear();
+
+      await db.accounts.bulkAdd(
+        DEFAULT_CHART_OF_ACCOUNTS.map((a) => ({
+          code: a.code,
+          name: a.name,
+          type: a.type,
+          isSystem: true,
+          description: a.description,
+        }))
+      );
+
+      const firstSetting = await db.settings.toCollection().first();
+      if (firstSetting?.id) {
+        await db.settings.update(firstSetting.id, {
+          isRawInitialized: true,
+        });
+      }
+    }
+  );
+}
+

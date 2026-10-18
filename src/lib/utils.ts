@@ -29,7 +29,7 @@ export { formatNumberThreeDigits, parseThreeDigitNumber };
 
 export const exportDB = async (): Promise<string> => {
   const data = {
-    version: 7,
+    version: 8,
     exportedAt: new Date().toISOString(),
     categories: await db.categories.toArray(),
     menuItems: await db.menuItems.toArray(),
@@ -46,6 +46,7 @@ export const exportDB = async (): Promise<string> => {
     productionRecipes: await db.productionRecipes.toArray(),
     kitchenProductions: await db.kitchenProductions.toArray(),
     cashClosures: await db.cashClosures.toArray(),
+    appUsers: await db.appUsers.toArray(),
   };
   return JSON.stringify(data, null, 2);
 };
@@ -71,6 +72,7 @@ export const importDB = async (jsonString: string): Promise<void> => {
         db.productionRecipes,
         db.kitchenProductions,
         db.cashClosures,
+        db.appUsers,
       ],
       async () => {
         await db.categories.clear();
@@ -104,6 +106,10 @@ export const importDB = async (jsonString: string): Promise<void> => {
         if (data.productionRecipes) await db.productionRecipes.bulkAdd(data.productionRecipes);
         if (data.kitchenProductions) await db.kitchenProductions.bulkAdd(data.kitchenProductions);
         if (data.cashClosures) await db.cashClosures.bulkAdd(data.cashClosures);
+        if (data.appUsers && Array.isArray(data.appUsers) && data.appUsers.length > 0) {
+          await db.appUsers.clear();
+          await db.appUsers.bulkAdd(data.appUsers);
+        }
       }
     );
   } catch (err) {
@@ -111,6 +117,34 @@ export const importDB = async (jsonString: string): Promise<void> => {
     throw new Error('فرمت فایل بکاپ نامعتبر است.');
   }
 };
+
+/**
+ * Syncs the current DB backup JSON + Bot settings to the Linux server's /api/sync-backup endpoint
+ * so that when `install.sh` runs an update, it can automatically send the latest backup to Bale & Telegram.
+ */
+export async function syncBackupToServer(overrideSettings?: Partial<AppSettings>): Promise<void> {
+  try {
+    const json = await exportDB();
+    const currentSettings = overrideSettings || (await db.settings.toCollection().first()) || {};
+    await fetch('/api/sync-backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        backupJson: json,
+        settings: {
+          restaurantName: currentSettings.restaurantName || 'Arka Restaurant',
+          baleBotToken: currentSettings.baleBotToken || '',
+          baleChatId: currentSettings.baleChatId || '',
+          telegramBotToken: currentSettings.telegramBotToken || '',
+          telegramChatId: currentSettings.telegramChatId || '',
+          autoBackupBeforeUpdate: currentSettings.autoBackupBeforeUpdate ?? true,
+        },
+      }),
+    });
+  } catch {
+    // Silent fallback when running in client-only preview mode
+  }
+}
 
 /**
  * Sends a backup JSON file + summary caption to Telegram and/or Bale Bot APIs.
@@ -122,6 +156,7 @@ export async function sendBackupToMessengers(
   success: boolean;
   messages: string[];
 }> {
+  await syncBackupToServer(settings);
   const json = await exportDB();
   const ordersCount = await db.orders.count();
   const vouchersCount = await db.journalVouchers.count();
