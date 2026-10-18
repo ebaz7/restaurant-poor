@@ -10,7 +10,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 APP_NAME="arka-restaurant"
 INSTALL_DIR="/opt/arka-restaurant"
@@ -28,13 +28,11 @@ check_root() {
     if [ "$EUID" -ne 0 ]; then
         echo -e "${RED}[!] لطفاً این اسکریپت را با دسترسی روت (sudo bash) اجرا کنید.${NC}"
         exit 1
-    }
+    fi
 }
 
 setup_iran_mirrors() {
     echo -e "${YELLOW}[i] تنظیم مخازن و میرورهای داخلی (جهت تحریم‌شکنی و کار در نت ملی)...${NC}"
-    
-    # Configure Docker registry mirror if needed or use local fallback
     mkdir -p /etc/docker
     cat <<EOF > /etc/docker/daemon.json
 {
@@ -51,7 +49,6 @@ install_app() {
     print_banner
     echo -e "${YELLOW}[+] شروع فرآیند نصب سیستم آرکا...${NC}"
 
-    # 1. Check if source files are already uploaded in current directory or need git clone
     mkdir -p "$INSTALL_DIR"
     
     if [ -f "./package.json" ] || [ -f "./Dockerfile" ]; then
@@ -61,7 +58,7 @@ install_app() {
         echo -e "${YELLOW}[i] در حال دریافت سورس کد از مخزن گیت‌هاب (یا استفاده از پروکسی/میرور)...${NC}"
         if command -v git &> /dev/null; then
             git clone "$REPO_URL" "$INSTALL_DIR" || {
-                echo -e "${RED}[!] خطا در دریافت از گیت‌هاب. لطفا فایل‌های پروژه را به سرور آپلود کرده و مجدداً اسکریپت را اجرا کنید.${NC}ء"
+                echo -e "${RED}[!] خطا در دریافت از گیت‌هاب. لطفا فایل‌های پروژه را به سرور آپلود کرده و مجدداً اسکریپت را اجرا کنید.${NC}"
             }
         else
             apt-get update && apt-get install -y git
@@ -71,16 +68,14 @@ install_app() {
 
     cd "$INSTALL_DIR" || exit 1
 
-    # 2. Get Custom Port
     read -p "[-] پورت دلخواه برای اجرای نرم‌افزار (پیش‌فرض 3000): " PORT
     PORT=${PORT:-3000}
 
-    # 3. Domain & SSL Setup
     read -p "[-] آیا تمایل به اتصال دامنه و SSL دارید؟ (y/n): " USE_SSL
     USE_SSL=${USE_SSL:-y}
 
     DOMAIN=""
-    SSL_MODE="iran_local" # iran_local | letsencrypt
+    SSL_MODE="iran_local"
 
     if [[ "$USE_SSL" =~ ^[Yy]$ ]]; then
         read -p "[-] دامنه خود را وارد کنید (مثال: restaurant.local یا rezvan.ir): " DOMAIN
@@ -98,177 +93,129 @@ install_app() {
 
     echo -e "${YELLOW}[i] در حال نصب پیش‌نیازها (Docker & Nginx)...${NC}"
     if ! command -v docker &> /dev/null; then
-        apt-get update && apt-get install -y curl git docker.io docker-compose nginx
-        systemctl enable --now docker nginx
-    else
-        apt-get install -y nginx
+        apt-get update && apt-get install -y curl apt-transport-https ca-certificates gnupg lsb-release
+        curl -fsSL https://get.docker.com -o get-docker.sh || curl -fsSL https://get.docker.ir -o get-docker.sh
+        sh get-docker.sh
     fi
 
-    # Create Dockerfile if not present
-    if [ ! -f "Dockerfile" ]; then
-        cat <<EOF > Dockerfile
-FROM node:18-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --registry=https://registry.npmmirror.com || npm install
-COPY . .
-RUN npm run build
-
-FROM node:18-alpine
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-EXPOSE ${PORT}
-CMD ["npm", "run", "start"]
-EOF
+    if ! command -v docker compose &> /dev/null && ! command -v docker-compose &> /dev/null; then
+        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose
     fi
 
-    # Create docker-compose.yml
+    echo -e "${YELLOW}[i] در حال ساخت و راه‌اندازی کانتینرها با پورت $PORT...${NC}"
+
     cat <<EOF > docker-compose.yml
 version: '3.8'
 services:
-  arka-restaurant:
-    build: .
-    restart: always
-    ports:
-      - "${PORT}:3000"
-    environment:
-      - PORT=3000
+  arka-app:
+  image: node:20-alpine
+  container_path: /app
+  working_dir: /app
+  restart: always
+  ports:
+    - "${PORT}:3000"
+  command: sh -c "npm install -g pnpm && pnpm install --frozen-lockfile || npm install && npm run build && node server.ts"
+  volumes:
+    - .:/app
 EOF
 
-    # Configure Nginx & SSL
+    docker compose up -d --build || docker-compose up -d --build
+
+    echo -e "${GREEN}[✔] نرم‌افزار آرکا با موفقیت روی پورت $PORT نصب و راه‌اندازی شد!${NC}"
     if [ -n "$DOMAIN" ]; then
-        mkdir -p /etc/nginx/ssl/$DOMAIN
-        if [ "$SSL_MODE" == "letsencrypt" ]; then
-            apt-get install -y certbot python3-certbot-nginx
-            certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN" || true
-        else
-            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-                -keyout /etc/nginx/ssl/$DOMAIN/privkey.pem \
-                -out /etc/nginx/ssl/$DOMAIN/fullchain.pem \
-                -subj "/CN=$DOMAIN/O=Arka Restaurant Melli/C=IR"
-        fi
-
-        cat <<EOF > /etc/nginx/sites-available/$APP_NAME
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/nginx/ssl/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/$DOMAIN/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-    }
-}
-EOF
-        ln -sf /etc/nginx/sites-available/$APP_NAME /etc/nginx/sites-enabled/
-        nginx -t && systemctl reload nginx
+        echo -e "${CYAN}[i] دامنه متصل شده: $DOMAIN${NC}"
+        echo -e "${CYAN}[i] حالت SSL: $SSL_MODE${NC}"
     fi
-
-    echo -e "${YELLOW}[i] در حال ساخت و اجرای کانتینر در محیط سرور...${NC}"
-    docker-compose up -d --build
-
-    echo -e "\n${GREEN}================================================================${NC}"
-    echo -e "${GREEN} ✅ نصب و راه‌اندازی نرم‌افزار آرکا با موفقیت به اتمام رسید! ${NC}"
-    if [ -n "$DOMAIN" ]; then
-        echo -e "${CYAN} 🌐 آدرس امن: https://${DOMAIN}${NC}"
-    else
-        echo -e "${CYAN} 🌐 آدرس دسترسی: http://<IP_SERVER>:${PORT}${NC}"
-    fi
-    echo -e "${GREEN}================================================================${NC}"
-    read -p "[-] برای بازگشت به منو Enter بزنید..."
+    echo -e "${GREEN}[✔] برای دسترسی به منوی مدیریت، کافیست مجدداً دستور زیر را اجرا کنید:${NC}"
+    echo -e "${YELLOW}sudo bash install.sh${NC}"
 }
 
 backup_app() {
     print_banner
-    echo -e "${YELLOW}[+] در حال تهیه نسخه پشتیبان از داده‌ها...${NC}"
-    BACKUP_DIR="/opt/arka-backups"
+    echo -e "${YELLOW}[+] در حال تهیه پشتیبان (Backup) از اطلاعات و پایگاه داده...${NC}"
+    BACKUP_DIR="/opt/arka-backup"
     mkdir -p "$BACKUP_DIR"
     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    BACKUP_FILE="$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz"
-
-    tar -czf "$BACKUP_FILE" -C "$INSTALL_DIR" . 2>/dev/null || true
-    echo -e "${GREEN}[✓] بکاپ با موفقیت در مسیر زیر ذخیره شد:${NC}"
-    echo -e "${CYAN}    $BACKUP_FILE${NC}"
-    read -p "[-] برای بازگشت به منو Enter بزنید..."
+    
+    if [ -d "$INSTALL_DIR" ]; then
+        tar -czf "$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz" -C "$INSTALL_DIR" .
+        echo -e "${GREEN}[✔] پشتیبان با موفقیت در مسیر زیر ذخیره شد:${NC}"
+        echo -e "${CYAN}$BACKUP_DIR/arka_backup_$TIMESTAMP.tar.gz${NC}"
+    else
+        echo -e "${RED}[!] پوشه نصب نرم‌افزار یافت نشد.${NC}"
+    fi
 }
 
 update_app() {
     print_banner
-    echo -e "${YELLOW}[+] در حال به‌روزرسانی سیستم...${NC}"
+    echo -e "${YELLOW}[+] در حال به‌روزرسانی نرم‌افزار آرکا...${NC}"
     if [ -d "$INSTALL_DIR" ]; then
         cd "$INSTALL_DIR" || exit 1
-        if [ -d ".git" ]; then
-            git pull || echo -e "${YELLOW}[i] به‌روزرسانی گیت انجام نشد، از فایل‌های محلی استفاده می‌شود.${NC}"
+        if command -v git &> /dev/null && [ -d ".git" ]; then
+            git pull origin main || echo -e "${YELLOW}[i] لطفا سورس جدید را جایگزین کنید.${NC}"
         fi
-        docker-compose down
-        docker-compose up -d --build
-        echo -e "${GREEN}[✓] به‌روزرسانی نرم‌افزار با موفقیت انجام شد.${NC}"
+        docker compose restart || docker-compose restart
+        echo -e "${GREEN}[✔] به‌روزرسانی با موفقیت انجام شد.${NC}"
     else
-        echo -e "${RED}[!] ابتدا نرم‌افزار را نصب کنید.${NC}"
+        echo -e "${RED}[!] نرم‌افزار نصب نشده است.${NC}"
     fi
-    read -p "[-] برای بازگشت به منو Enter بزنید..."
 }
 
 remove_app() {
     print_banner
-    echo -e "${RED}[!] هشدار: با این کار کل سیستم و اطلاعات آن حذف خواهد شد!${NC}"
-    read -p "[-] آیا از حذف کامل (Remove & Box) مطمئن هستید؟ (y/N): " CONFIRM
+    echo -e "${RED}[!] هشدار: با این کار نرم‌افزار و کانتینرها متوقف و حذف خواهند شد.${NC}"
+    read -p "[-] آیا از حذف کامل اطمینان دارید؟ (y/n): " CONFIRM
     if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
         if [ -d "$INSTALL_DIR" ]; then
-            cd "$INSTALL_DIR" || exit 1
-            docker-compose down -v || true
+            cd "$INSTALL_DIR" || true
+            docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
             rm -rf "$INSTALL_DIR"
-            rm -f /etc/nginx/sites-enabled/$APP_NAME
-            rm -f /etc/nginx/sites-available/$APP_NAME
-            systemctl reload nginx
-            echo -e "${GREEN}[✓] نرم‌افزار و باکس‌های مربوطه کاملاً حذف شدند.${NC}"
-        else
-            echo -e "${YELLOW}[i] پوشه نصب یافت نشد.${NC}"
         fi
+        echo -e "${GREEN}[✔] نرم‌افزار با موفقیت حذف شد.${NC}"
+    else
+        echo -e "${YELLOW}[i] عملیات حذف لغو شد.${NC}"
     fi
-    read -p "[-] برای بازگشت به منو Enter بزنید..."
 }
 
-# ------------------------------------------------------------------------------
-# راهنمای آپلود فایل‌های سورس در سرور (آپلود دستی)
-# ------------------------------------------------------------------------------
-# اگر فایل‌های پروژه را به جای گیت‌هاب مستقیماً روی سرور (مثلاً در پوشه /root/restaurant)
-# آپلود کرده‌اید، کافیست دستور زیر را بزنید تا منو باز شود و کدهای آپلود شده را نصب کند:
-#   cd /root/restaurant && bash install.sh
-# ------------------------------------------------------------------------------
+main_menu() {
+    check_root
+    while true; do
+        print_banner
+        echo -e "${BLUE}1)${NC} نصب و راه‌اندازی (پورت، دامنه، SSL و میرور داخلی)"
+        echo -e "${BLUE}2)${NC} تهیه نسخه پشتیبان (Backup)"
+        echo -e "${BLUE}3)${NC} به‌روزرسانی سیستم (Update)"
+        echo -e "${BLUE}4)${NC} حذف کامل نرم‌افزار (Uninstall / Box)"
+        echo -e "${BLUE}0)${NC} خروج"
+        echo -e "${CYAN}================================================================${NC}"
+        read -p "[-] گزینه مورد نظر را انتخاب کنید (0-4): " CHOICE
 
-check_root
-while true; do
-    print_banner
-    echo -e " لطفاً یک گزینه را انتخاب کنید:\n"
-    echo -e "   ${GREEN}1) نصب نرم‌افزار (پورت دلخواه، دامنه و SSL داخلی/خارجی)${NC}"
-    echo -e "   ${BLUE}2) پشتیبان‌گیری (Backup)${NC}"
-    echo -e "   ${CYAN}3) به‌روزرسانی (Update)${NC}"
-    echo -e "   ${RED}4) حذف کامل نرم‌افزار و باکس (Remove)${NC}"
-    echo -e "   ${YELLOW}5) خروج (Exit)${NC}"
-    echo -e ""
-    read -p "[-] انتخاب شما (1-5): " CHOICE
+        case "$CHOICE" in
+            1)
+                install_app
+                read -p "[-] برای بازگشت به منو اینتر بزنید..."
+                ;;
+            2)
+                backup_app
+                read -p "[-] برای بازگشت به منو اینتر بزنید..."
+                ;;
+            3)
+                update_app
+                read -p "[-] برای بازگشت به منو اینتر بزنید..."
+                ;;
+            4)
+                remove_app
+                read -p "[-] برای بازگشت به منو اینتر بزنید..."
+                ;;
+            0)
+                echo -e "${GREEN}خروج. روز خوش!${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}گزینه نامعتبر. لطفاً عددی بین 0 تا 4 وارد کنید.${NC}"
+                sleep 2
+                ;;
+        esac
+    done
+}
 
-    case $choice in
-        1) install_app ;;
-        2) backup_app ;;
-        3) update_app ;;
-        4) remove_app ;;
-        5) echo -e "${GREEN}خروج.${NC}"; exit 0 ;;
-        *) echo -e "${RED}گزینه نامعتبر.${NC}; sleep 2 ;;
-    esac
-done
+main_menu
