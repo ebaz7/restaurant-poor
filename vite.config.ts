@@ -1,8 +1,92 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import { defineConfig } from 'vite';
+import fs from 'fs';
+import { defineConfig, Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+
+function centralServerDbPlugin(): Plugin {
+  const dataDir = path.resolve(__dirname, 'data');
+  const dbFile = path.join(dataDir, 'central_db.json');
+  let currentRev = 1;
+
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  return {
+    name: 'central-server-db-plugin',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url ? new URL(req.url, 'http://localhost:3000') : new URL('http://localhost:3000');
+
+        if (url.pathname === '/api/db/version' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-store');
+          res.end(JSON.stringify({ ok: true, rev: currentRev, lastModified: new Date().toISOString() }));
+          return;
+        }
+
+        if (url.pathname === '/api/db/state' && req.method === 'GET') {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-store');
+          if (fs.existsSync(dbFile)) {
+            try {
+              const content = fs.readFileSync(dbFile, 'utf8');
+              res.end(JSON.stringify({ ok: true, rev: currentRev, data: JSON.parse(content) }));
+              return;
+            } catch {
+              // ignore
+            }
+          }
+          res.end(JSON.stringify({ ok: false, rev: currentRev, data: null }));
+          return;
+        }
+
+        if (url.pathname === '/api/db/sync' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => (body += c.toString()));
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body || '{}');
+              if (payload.data) {
+                fs.writeFileSync(dbFile, JSON.stringify(payload.data, null, 2), 'utf8');
+                currentRev += 1;
+              }
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ ok: true, rev: currentRev }));
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ ok: false, error: err?.message }));
+            }
+          });
+          return;
+        }
+
+        if (url.pathname === '/api/sync-backup' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => (body += c.toString()));
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body || '{}');
+              if (payload.backupJson) {
+                fs.writeFileSync(path.join(dataDir, 'latest_db_backup.json'), payload.backupJson, 'utf8');
+              }
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ ok: true }));
+            } catch {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ ok: false }));
+            }
+          });
+          return;
+        }
+
+        next();
+      });
+    },
+  };
+}
 
 export default defineConfig(() => {
   return {
@@ -10,6 +94,7 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
+      centralServerDbPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['apple-touch-icon.png', 'icon.svg', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
