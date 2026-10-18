@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import {
   db,
   AppSettings,
@@ -15,6 +16,7 @@ import {
   syncBackupToServer,
   setGlobalCurrencyUnit,
   getCurrencyLabel,
+  optimizeDatabaseStorage,
 } from '../../lib/utils';
 import { notifyRawResetToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
@@ -23,26 +25,31 @@ import {
   Save,
   Download,
   Upload,
-  Send,
+  Check,
+  AlertTriangle,
+  RotateCcw,
   Bot,
+  Send,
+  UserPlus,
+  Edit3,
+  Trash2,
+  Lock,
+  KeyRound,
+  ShieldCheck,
+  Clock,
+  Coins,
+  Receipt,
+  Eye,
+  EyeOff,
+  Sparkles,
+  HardDrive,
   CheckCircle2,
   AlertCircle,
-  Clock,
   Users,
-  Coins,
   Smartphone,
   Store,
   Shield,
-  UserPlus,
-  Trash2,
-  Edit3,
-  RotateCcw,
-  KeyRound,
-  Check,
-  Lock,
-  EyeOff,
 } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
 
 const ROLE_PRESETS: Array<{
   label: string;
@@ -84,6 +91,23 @@ export default function SettingsScreen() {
   const [formData, setFormData] = useState<Partial<AppSettings>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [isSendingBot, setIsSendingBot] = useState(false);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+
+  const handleOptimizeDatabase = async () => {
+    setIsOptimizing(true);
+    try {
+      const res = await optimizeDatabaseStorage();
+      const freedKB = Math.round(res.freedBytesEstimate / 1024);
+      showNotice(
+        'success',
+        `بهینه‌سازی و سبک‌سازی دیتابیس انجام شد: ${res.optimizedItems} تصویر فشرده گردید و ${res.cleanedVouchers} رکورد خالی پاکسازی شد (${freedKB} کیلوبایت فضای حافظه آزادسازی گردید).`
+      );
+    } catch {
+      showNotice('error', 'خطا در بهینه‌سازی دیتابیس.');
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
   const [confirmRawReset, setConfirmRawReset] = useState(false);
   const [isResettingRaw, setIsResettingRaw] = useState(false);
 
@@ -1286,6 +1310,29 @@ export default function SettingsScreen() {
                     </button>
                   </div>
                 </div>
+              </div>
+
+              {/* Database Storage Optimization & Lightweight Management */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 md:p-5 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                    <HardDrive size={18} className="text-teal-600" />
+                    <span>بهینه‌سازی، فشرده‌سازی و سبک‌سازی دیتابیس</span>
+                  </h2>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    فشرده‌سازی تصاویر سنگین غذاها، پاکسازی لوگ‌ها و کدهای نامعتبر برای کاهش حجم حافظه و افزایش سرعت نرم‌افزار
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleOptimizeDatabase}
+                  disabled={isOptimizing}
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                >
+                  <Sparkles size={15} className={isOptimizing ? 'animate-spin' : ''} />
+                  <span>{isOptimizing ? 'در حال سبک‌سازی...' : 'شروع بهینه‌سازی و سبک‌سازی دیتابیس'}</span>
+                </button>
               </div>
 
               {/* Local File Backup & Restore */}

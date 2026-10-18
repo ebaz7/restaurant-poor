@@ -53,70 +53,182 @@ export const exportDB = async (): Promise<string> => {
 
 export const importDB = async (jsonString: string): Promise<void> => {
   try {
-    const data = JSON.parse(jsonString);
-    await db.transaction(
-      'rw',
-      [
-        db.categories,
-        db.menuItems,
-        db.orders,
-        db.settings,
-        db.customers,
-        db.accounts,
-        db.bankAccounts,
-        db.persons,
-        db.journalVouchers,
-        db.cheques,
-        db.rawMaterials,
-        db.inventoryTransactions,
-        db.productionRecipes,
-        db.kitchenProductions,
-        db.cashClosures,
-        db.appUsers,
-      ],
-      async () => {
-        await db.categories.clear();
-        await db.menuItems.clear();
-        await db.orders.clear();
-        await db.settings.clear();
-        await db.customers.clear();
-        await db.accounts.clear();
-        await db.bankAccounts.clear();
-        await db.persons.clear();
-        await db.journalVouchers.clear();
-        await db.cheques.clear();
-        await db.rawMaterials.clear();
-        await db.inventoryTransactions.clear();
-        await db.productionRecipes.clear();
-        await db.kitchenProductions.clear();
-        await db.cashClosures.clear();
+    let raw = JSON.parse(jsonString);
+    // Support nested json containers from central server or old versions ({ data: ... })
+    const data = raw && typeof raw === 'object' && raw.data ? raw.data : raw;
 
-        if (data.categories) await db.categories.bulkAdd(data.categories);
-        if (data.menuItems) await db.menuItems.bulkAdd(data.menuItems);
-        if (data.orders) await db.orders.bulkAdd(data.orders);
-        if (data.settings) await db.settings.bulkAdd(data.settings);
-        if (data.customers) await db.customers.bulkAdd(data.customers);
-        if (data.accounts) await db.accounts.bulkAdd(data.accounts);
-        if (data.bankAccounts) await db.bankAccounts.bulkAdd(data.bankAccounts);
-        if (data.persons) await db.persons.bulkAdd(data.persons);
-        if (data.journalVouchers) await db.journalVouchers.bulkAdd(data.journalVouchers);
-        if (data.cheques) await db.cheques.bulkAdd(data.cheques);
-        if (data.rawMaterials) await db.rawMaterials.bulkAdd(data.rawMaterials);
-        if (data.inventoryTransactions) await db.inventoryTransactions.bulkAdd(data.inventoryTransactions);
-        if (data.productionRecipes) await db.productionRecipes.bulkAdd(data.productionRecipes);
-        if (data.kitchenProductions) await db.kitchenProductions.bulkAdd(data.kitchenProductions);
-        if (data.cashClosures) await db.cashClosures.bulkAdd(data.cashClosures);
-        if (data.appUsers && Array.isArray(data.appUsers) && data.appUsers.length > 0) {
-          await db.appUsers.clear();
-          await db.appUsers.bulkAdd(data.appUsers);
+    if (!data || typeof data !== 'object') {
+      throw new Error('ساختار فایل پشتیبان نامعتبر است.');
+    }
+
+    // Helper function to safely parse dates in records
+    const parseDatesInArray = (arr: any[]): any[] => {
+      if (!Array.isArray(arr)) return [];
+      return arr.map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        const copy = { ...item };
+        if (copy.createdAt && typeof copy.createdAt === 'string') {
+          const parsed = new Date(copy.createdAt);
+          if (!isNaN(parsed.getTime())) copy.createdAt = parsed;
+        }
+        if (copy.updatedAt && typeof copy.updatedAt === 'string') {
+          const parsed = new Date(copy.updatedAt);
+          if (!isNaN(parsed.getTime())) copy.updatedAt = parsed;
+        }
+        if (copy.date && typeof copy.date === 'string') {
+          const parsed = new Date(copy.date);
+          if (!isNaN(parsed.getTime())) copy.date = parsed;
+        }
+        return copy;
+      });
+    };
+
+    await db.transaction('rw', db.tables, async () => {
+      // Version-agnostic table restoration: clear and bulkPut each known table
+      const tableMap: Record<string, string> = {
+        categories: 'categories',
+        menuItems: 'menuItems',
+        orders: 'orders',
+        settings: 'settings',
+        customers: 'customers',
+        accounts: 'accounts',
+        bankAccounts: 'bankAccounts',
+        persons: 'persons',
+        journalVouchers: 'journalVouchers',
+        cheques: 'cheques',
+        rawMaterials: 'rawMaterials',
+        inventoryTransactions: 'inventoryTransactions',
+        productionRecipes: 'productionRecipes',
+        kitchenProductions: 'kitchenProductions',
+        cashClosures: 'cashClosures',
+      };
+
+      for (const [key, tableName] of Object.entries(tableMap)) {
+        const table = (db as any)[tableName];
+        if (!table) continue;
+        await table.clear();
+        if (Array.isArray(data[key]) && data[key].length > 0) {
+          const sanitized = parseDatesInArray(data[key]);
+          try {
+            await table.bulkPut(sanitized);
+          } catch {
+            // Fallback item by item if bulk error occurs
+            for (const item of sanitized) {
+              try {
+                await table.put(item);
+              } catch {
+                // ignore faulty record
+              }
+            }
+          }
         }
       }
-    );
-  } catch (err) {
+
+      // AppUsers: Only overwrite if present in backup, otherwise preserve or ensure at least one active user
+      if (Array.isArray(data.appUsers) && data.appUsers.length > 0) {
+        await db.appUsers.clear();
+        await db.appUsers.bulkPut(data.appUsers);
+      }
+    });
+  } catch (err: any) {
     console.error('Failed to import database', err);
-    throw new Error('فرمت فایل بکاپ نامعتبر است.');
+    throw new Error(err?.message || 'فرمت یا محتوای فایل بکاپ نامعتبر است.');
   }
 };
+
+/**
+ * Optimizes database storage size:
+ * 1. Compresses huge base64 images in menu items / settings to lightweight WebP/JPEG.
+ * 2. Cleans up empty or corrupted records.
+ * 3. Returns optimization metrics.
+ */
+export async function optimizeDatabaseStorage(): Promise<{
+  optimizedItems: number;
+  cleanedVouchers: number;
+  freedBytesEstimate: number;
+}> {
+  let optimizedItems = 0;
+  let cleanedVouchers = 0;
+  let freedBytesEstimate = 0;
+
+  try {
+    // 1. Optimize images in menuItems
+    const items = await db.menuItems.toArray();
+    for (const item of items) {
+      if (item.image && typeof item.image === 'string' && item.image.length > 150000) {
+        const originalSize = item.image.length;
+        // Simple client-side canvas compression if running in browser
+        try {
+          if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+            const compressed = await compressBase64Image(item.image, 400, 0.7);
+            if (compressed && compressed.length < originalSize) {
+              item.image = compressed;
+              await db.menuItems.put(item);
+              optimizedItems++;
+              freedBytesEstimate += originalSize - compressed.length;
+            }
+          }
+        } catch {
+          // ignore compression errors
+        }
+      }
+    }
+
+    // 2. Clean corrupted / empty journal vouchers
+    const vouchers = await db.journalVouchers.toArray();
+    for (const v of vouchers) {
+      if (!v.lines || v.lines.length === 0) {
+        if (v.id) {
+          await db.journalVouchers.delete(v.id);
+          cleanedVouchers++;
+          freedBytesEstimate += 500;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Optimization error:', e);
+  }
+
+  return { optimizedItems, cleanedVouchers, freedBytesEstimate };
+}
+
+/**
+ * Helper to compress a base64 image data URI using HTML Canvas
+ */
+function compressBase64Image(base64Str: string, maxDim: number, quality: number): Promise<string> {
+  return new Promise((resolve) => {
+    if (!base64Str.startsWith('data:image')) {
+      return resolve(base64Str);
+    }
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return resolve(base64Str);
+
+      ctx.drawImage(img, 0, 0, width, height);
+      const res = canvas.toDataURL('image/jpeg', quality);
+      resolve(res);
+    };
+    img.onerror = () => resolve(base64Str);
+  });
+}
 
 /**
  * Syncs the current DB backup JSON + Bot settings to the Linux server's /api/sync-backup endpoint

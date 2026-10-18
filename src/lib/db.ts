@@ -109,6 +109,8 @@ export type PermissionKey =
   | 'pos'
   | 'pos_discount'
   | 'pos_cancel'
+  | 'pos_edit_invoice'
+  | 'pos_delete_invoice'
   | 'kitchen'
   | 'accounting'
   | 'menu'
@@ -120,6 +122,8 @@ export const ALL_PERMISSIONS: PermissionKey[] = [
   'pos',
   'pos_discount',
   'pos_cancel',
+  'pos_edit_invoice',
+  'pos_delete_invoice',
   'kitchen',
   'accounting',
   'menu',
@@ -144,6 +148,18 @@ export const PERMISSION_DEFINITIONS: Array<{
     key: 'pos_discount',
     title: 'اعمال تخفیف و تغییر قیمت در صندوق',
     description: 'مجوز ثبت تخفیف درصدی/مبلغی و تغییر دستی فی سلف سرویس',
+    category: 'action',
+  },
+  {
+    key: 'pos_edit_invoice',
+    title: 'ویرایش فاکتورهای صادر شده',
+    description: 'مجوز اصلاح آیتم‌ها، تخفیف، مشتری و نحوه تسویه فاکتور صادر شده',
+    category: 'action',
+  },
+  {
+    key: 'pos_delete_invoice',
+    title: 'حذف یا ابطال کامل فاکتور',
+    description: 'مجوز حذف یا لغو کامل فاکتور و برگشت اسناد حسابداری مرتبط',
     category: 'action',
   },
   {

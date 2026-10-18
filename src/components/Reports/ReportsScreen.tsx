@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../lib/db';
+import { db, Order } from '../../lib/db';
 import { summarizeCashierSettlements } from '../../lib/accountingEngine';
 import { formatCurrency } from '../../lib/utils';
+import InvoiceEditDeleteModal from '../Common/InvoiceEditDeleteModal';
 import {
   format,
   startOfDay,
@@ -14,7 +15,7 @@ import {
   endOfMonth,
   isWithinInterval,
 } from 'date-fns-jalali';
-import { TrendingUp, Receipt, Users, Building2, Wallet } from 'lucide-react';
+import { TrendingUp, Receipt, Users, Building2, Wallet, Edit3 } from 'lucide-react';
 import DatePicker from 'react-multi-date-picker';
 import persian from 'react-date-object/calendars/persian';
 import persian_fa from 'react-date-object/locales/persian_fa';
@@ -24,6 +25,28 @@ type DatePreset = 'today' | 'yesterday' | 'this_week' | 'this_month' | 'custom';
 
 export default function ReportsScreen() {
   const [preset, setPreset] = useState<DatePreset>('today');
+  const [selectedOrderForEdit, setSelectedOrderForEdit] = useState<Order | null>(null);
+
+  const appUsers = useLiveQuery(() => db.appUsers.toArray()) || [];
+  const activeUserIdStr =
+    typeof window !== 'undefined' ? window.sessionStorage.getItem('arka_active_user_id') : null;
+  const activeUserId = activeUserIdStr ? Number(activeUserIdStr) : null;
+  const currentUser =
+    appUsers.find((u) => u.id === activeUserId) ||
+    appUsers.find((u) => u.isAdmin) ||
+    appUsers[0];
+
+  const canEditInvoice =
+    !currentUser ||
+    currentUser.isAdmin ||
+    (currentUser.permissions || []).includes('pos_edit_invoice') ||
+    (currentUser.permissions || []).includes('pos_cancel');
+
+  const canDeleteInvoice =
+    !currentUser ||
+    currentUser.isAdmin ||
+    (currentUser.permissions || []).includes('pos_delete_invoice') ||
+    (currentUser.permissions || []).includes('pos_cancel');
 
   const [customRange, setCustomRange] = useState<DateObject[]>([
     new DateObject({ calendar: persian }).subtract(7, 'days'),
@@ -316,6 +339,7 @@ export default function ReportsScreen() {
                     <th className="py-2.5 px-3 font-medium">نوع</th>
                     <th className="py-2.5 px-3 font-medium">نحوه تسویه / بانک</th>
                     <th className="py-2.5 px-3 font-medium">مبلغ کل</th>
+                    <th className="py-2.5 px-3 font-medium text-center">عملیات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -343,11 +367,22 @@ export default function ReportsScreen() {
                       <td className="py-2.5 px-3 text-blue-600 font-mono font-bold">
                         {formatCurrency(order.total)}
                       </td>
+                      <td className="py-2.5 px-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedOrderForEdit(order)}
+                          className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg font-extrabold text-[11px] inline-flex items-center gap-1 cursor-pointer transition"
+                          title="ویرایش یا حذف فاکتور"
+                        >
+                          <Edit3 size={12} />
+                          <span>مدیریت</span>
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {filteredOrders.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-slate-400">
+                      <td colSpan={5} className="py-8 text-center text-slate-400">
                         داده‌ای برای نمایش وجود ندارد.
                       </td>
                     </tr>
@@ -358,6 +393,19 @@ export default function ReportsScreen() {
           </div>
         </div>
       </div>
+
+      {/* Invoice Edit & Delete Modal */}
+      {selectedOrderForEdit && (
+        <InvoiceEditDeleteModal
+          order={selectedOrderForEdit}
+          canEdit={canEditInvoice}
+          canDelete={canDeleteInvoice}
+          onClose={() => setSelectedOrderForEdit(null)}
+          onOrderUpdated={() => {
+            // refresh
+          }}
+        />
+      )}
     </div>
   );
 }
