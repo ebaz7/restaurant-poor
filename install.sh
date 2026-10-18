@@ -147,6 +147,28 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (parsedUrl.pathname === '/api/db/raw-reset' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          if (payload.data) {
+            fs.writeFileSync(DB_FILE, JSON.stringify(payload.data, null, 2), 'utf8');
+          } else if (fs.existsSync(DB_FILE)) {
+            fs.unlinkSync(DB_FILE);
+          }
+          currentRev += 10;
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
     if (req.method === 'POST' && parsedUrl.pathname === '/api/sync-backup') {
       let body = '';
       req.on('data', (chunk) => { body += chunk.toString(); });
@@ -266,13 +288,25 @@ setup_official_ssl() {
     RESOLVED_IP=$(getent hosts "${DOMAIN}" | awk '{print $1}' | head -n1)
 
     echo "[i] Server Public IP: $SERVER_IP"
-    echo "[i] Domain Resolved IP: ${RESOLVED_IP:-Not resolved}"
+    echo "[i] Domain Resolved IP: ${RESOLVED_IP:-Not resolved (NXDOMAIN)}"
+
+    if [ -z "$RESOLVED_IP" ]; then
+        echo "----------------------------------------------------------------"
+        echo "[!] هشدار مهم DNS / WARNING: Domain '${DOMAIN}' has NO active DNS A-record!"
+        echo "[i] علت: برای دامنه‌های ir. باید در پنل ایرنیک (nic.ir) یا کلودفلر/آروان، رکورد A ست شود."
+        echo "[i] IP سرور شما: ${SERVER_IP}"
+        echo "[i] راهنما: در پنل مدیریت دامنه، رکورد A برای @ و www را به ${SERVER_IP} متصل کنید."
+        echo "[v] دسترسی فوری بدون نیاز به دامنه:"
+        echo "    شما هم‌اکنون می‌توانید مستقیماً از طریق آی‌پی سرور بدون دامنه وارد برنامه شوید:"
+        echo "    >>> http://${SERVER_IP} <<<"
+        echo "----------------------------------------------------------------"
+    fi
 
     # Prepare standard Nginx HTTP proxy first so certbot webroot/nginx plugin can verify challenge
     cat <<EOF > /etc/nginx/sites-available/arka-restaurant.conf
 server {
-    listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
+    listen 80 default_server;
+    server_name _ ${DOMAIN} www.${DOMAIN};
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -321,9 +355,26 @@ EOF
 
         cat <<EOF > /etc/nginx/sites-available/arka-restaurant.conf
 server {
-    listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
-    return 301 https://\$host\$request_uri;
+    listen 80 default_server;
+    server_name _ ${DOMAIN} www.${DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        if (\$host ~* ^(${DOMAIN}|www\.${DOMAIN})$) {
+            return 301 https://\$host\$request_uri;
+        }
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 }
 
 server {
@@ -380,6 +431,9 @@ configure_ssl_and_nginx() {
     # Fallback to local / CDN self-signed SSL
     echo "[i] Configuring Internal / CDN SSL for $DOMAIN..."
     apt-get install -y nginx openssl || true
+    systemctl stop apache2 2>/dev/null || true
+    systemctl disable apache2 2>/dev/null || true
+
     local SSL_DIR="/etc/nginx/ssl"
     mkdir -p "$SSL_DIR"
     local CERT_FILE="$SSL_DIR/${DOMAIN}.crt"
@@ -400,8 +454,8 @@ configure_ssl_and_nginx() {
 
     cat <<EOF > /etc/nginx/sites-available/arka-restaurant.conf
 server {
-    listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
+    listen 80 default_server;
+    server_name _ ${DOMAIN} www.${DOMAIN};
 
     location / {
         proxy_pass http://127.0.0.1:${PORT};

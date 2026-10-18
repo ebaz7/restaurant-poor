@@ -101,6 +101,8 @@ export interface AppSettings {
   isRawInitialized?: boolean;
   requireLoginOnStart?: boolean;
   autoBackupBeforeUpdate?: boolean;
+  // Kitchen Privacy: hide COGS / cost prices from chef
+  hideCostPriceFromKitchen?: boolean;
 }
 
 export type PermissionKey =
@@ -844,6 +846,9 @@ async function runInitializeDefaultDatabase(): Promise<void> {
       }
       if (firstSetting.autoBackupBeforeUpdate === undefined) {
         updates.autoBackupBeforeUpdate = true;
+      }
+      if (firstSetting.hideCostPriceFromKitchen === undefined) {
+        updates.hideCostPriceFromKitchen = false;
       }
       if (Object.keys(updates).length > 0) {
         await db.settings.update(firstSetting.id!, updates);
@@ -1646,27 +1651,36 @@ export async function resetDatabaseToRaw(): Promise<void> {
         }))
       );
 
-      const firstSetting = await db.settings.toCollection().first();
-      if (firstSetting?.id) {
-        await db.settings.update(firstSetting.id, {
-          restaurantName: '',
-          phone: '',
-          address: '',
-          website: '',
-          instagram: '',
-          telegram: '',
-          logoUrl: '',
-          taxEnabled: false,
-          taxPercentage: 0,
-          requireCustomerPhone: false,
-          currencyUnit: firstSetting.currencyUnit || 'toman',
-          selfServicePricePerPerson: 0,
-          selfServiceTitle: '',
-          defaultInvoiceMode: 'self_service',
-          lockSelfServiceMode: false,
-          isRawInitialized: true,
-        });
-      }
+      await db.settings.clear();
+      await db.settings.add({
+        restaurantName: '',
+        phone: '',
+        address: '',
+        website: '',
+        instagram: '',
+        telegram: '',
+        logoUrl: '',
+        taxEnabled: false,
+        taxPercentage: 0,
+        requireCustomerPhone: false,
+        currencyUnit: 'toman',
+        selfServicePricePerPerson: 0,
+        selfServiceTitle: '',
+        defaultInvoiceMode: 'self_service',
+        lockSelfServiceMode: false,
+        autoBackupEnabled: false,
+        autoBackupIntervalHours: 1,
+        telegramBotToken: '',
+        telegramChatId: '',
+        baleBotToken: '',
+        baleChatId: '',
+        lastAutoBackupAt: '',
+        lastAutoBackupStatus: '',
+        isRawInitialized: true,
+        requireLoginOnStart: false,
+        autoBackupBeforeUpdate: true,
+        hideCostPriceFromKitchen: false,
+      });
     }
   );
 }

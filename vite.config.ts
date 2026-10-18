@@ -63,6 +63,28 @@ function centralServerDbPlugin(): Plugin {
           return;
         }
 
+        if (url.pathname === '/api/db/raw-reset' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => (body += c.toString()));
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body || '{}');
+              if (payload.data) {
+                fs.writeFileSync(dbFile, JSON.stringify(payload.data, null, 2), 'utf8');
+              } else if (fs.existsSync(dbFile)) {
+                fs.unlinkSync(dbFile);
+              }
+              currentRev += 10;
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ ok: true, rev: currentRev }));
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ ok: false, error: err?.message }));
+            }
+          });
+          return;
+        }
+
         if (url.pathname === '/api/sync-backup' && req.method === 'POST') {
           let body = '';
           req.on('data', (c) => (body += c.toString()));

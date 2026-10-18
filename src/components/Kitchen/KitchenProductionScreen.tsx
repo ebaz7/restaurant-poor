@@ -20,11 +20,15 @@ import {
   Calculator,
   Utensils,
   RotateCcw,
+  EyeOff,
 } from 'lucide-react';
 
 type MobileKitchenTab = 'input' | 'consumption' | 'history';
 
 export default function KitchenProductionScreen() {
+  const settings = useLiveQuery(() => db.settings.toCollection().first());
+  const hideCostPrice = settings?.hideCostPriceFromKitchen ?? false;
+
   const menuItems = useLiveQuery(() => db.menuItems.toArray()) || [];
   const categories = useLiveQuery(() => db.categories.toArray()) || [];
   const recipes = useLiveQuery(() => db.productionRecipes.toArray()) || [];
@@ -224,12 +228,19 @@ export default function KitchenProductionScreen() {
                   {formatNumber(todayStats.totalPortionsToday)} پرس
                 </span>
               </div>
-              <div className="hidden sm:block px-2.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold">
-                بهای پخت امروز:{' '}
-                <span className="font-mono font-black text-slate-900">
-                  {formatCurrency(todayStats.totalCostToday)}
-                </span>
-              </div>
+              {hideCostPrice ? (
+                <div className="px-2.5 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 font-bold flex items-center gap-1.5">
+                  <EyeOff size={13} className="text-amber-700" />
+                  <span>قیمت تمام شده: محرمانه</span>
+                </div>
+              ) : (
+                <div className="hidden sm:block px-2.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold">
+                  بهای پخت امروز:{' '}
+                  <span className="font-mono font-black text-slate-900">
+                    {formatCurrency(todayStats.totalCostToday)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -491,9 +502,11 @@ export default function KitchenProductionScreen() {
                           × {formatNumber(prod.quantityProduced)} پرس
                         </span>
                       </span>
-                      <span className="font-mono text-[11px] font-bold text-slate-700">
-                        {formatCurrency(prod.batchTotalCost)}
-                      </span>
+                      {!hideCostPrice && (
+                        <span className="font-mono text-[11px] font-bold text-slate-700">
+                          {formatCurrency(prod.batchTotalCost)}
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -530,12 +543,14 @@ export default function KitchenProductionScreen() {
                           مانده پس از پخت: {formatNumber(mc.remainingStock)} {mc.unit}
                         </span>
                       </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-600 mt-1 pt-1 border-t border-slate-100">
-                        <span>ارزش ریالی مصرف این ماده:</span>
-                        <span className="font-mono font-bold text-slate-900">
-                          {formatCurrency(mc.totalMaterialCost)}
-                        </span>
-                      </div>
+                      {!hideCostPrice && (
+                        <div className="flex items-center justify-between text-[11px] text-slate-600 mt-1 pt-1 border-t border-slate-100">
+                          <span>ارزش ریالی مصرف این ماده:</span>
+                          <span className="font-mono font-bold text-slate-900">
+                            {formatCurrency(mc.totalMaterialCost)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -555,28 +570,37 @@ export default function KitchenProductionScreen() {
 
           {/* Footer Cost Breakdown & Submit Button */}
           <div className="p-3 border-t border-slate-200 bg-slate-50 space-y-2 shrink-0">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-600 font-bold">بهای مواد اولیه مصرفی:</span>
-              <span className="font-mono font-bold text-slate-900">
-                {formatCurrency(batchSummary.totalMaterialsCost)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-600 font-bold">دستمزد، سربار و بسته‌بندی:</span>
-              <span className="font-mono font-bold text-slate-900">
-                {formatCurrency(
-                  batchSummary.totalLaborCost +
-                    batchSummary.totalOverheadCost +
-                    batchSummary.totalPackagingCost
-                )}
-              </span>
-            </div>
-            <div className="flex items-center justify-between text-sm font-black pt-1 border-t border-slate-200">
-              <span className="text-slate-900">بهای تمام شده کل پارت تولید:</span>
-              <span className="font-mono text-orange-600">
-                {formatCurrency(batchSummary.totalBatchCost)}
-              </span>
-            </div>
+            {hideCostPrice ? (
+              <div className="p-2 rounded-xl bg-amber-50 border border-amber-200 text-center flex items-center justify-center gap-1.5 text-[11px] font-bold text-amber-900">
+                <EyeOff size={14} className="text-amber-700" />
+                <span>قیمت تمام شده و مبالغ ریالی طبق تنظیمات مدیریت برای آشپز مخفی شده است.</span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-600 font-bold">بهای مواد اولیه مصرفی:</span>
+                  <span className="font-mono font-bold text-slate-900">
+                    {formatCurrency(batchSummary.totalMaterialsCost)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-600 font-bold">دستمزد، سربار و بسته‌بندی:</span>
+                  <span className="font-mono font-bold text-slate-900">
+                    {formatCurrency(
+                      batchSummary.totalLaborCost +
+                        batchSummary.totalOverheadCost +
+                        batchSummary.totalPackagingCost
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-sm font-black pt-1 border-t border-slate-200">
+                  <span className="text-slate-900">بهای تمام شده کل پارت تولید:</span>
+                  <span className="font-mono text-orange-600">
+                    {formatCurrency(batchSummary.totalBatchCost)}
+                  </span>
+                </div>
+              </>
+            )}
 
             <button
               type="button"
@@ -667,12 +691,14 @@ export default function KitchenProductionScreen() {
                         </div>
                       ))}
                     </div>
-                    <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200">
-                      <span className="text-slate-500">بهای تمام شده پارت:</span>
-                      <span className="font-mono font-black text-slate-900">
-                        {formatCurrency(log.totalBatchCost)}
-                      </span>
-                    </div>
+                    {!hideCostPrice && (
+                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200">
+                        <span className="text-slate-500">بهای تمام شده پارت:</span>
+                        <span className="font-mono font-black text-slate-900">
+                          {formatCurrency(log.totalBatchCost)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))
               )}

@@ -16,6 +16,7 @@ import {
   setGlobalCurrencyUnit,
   getCurrencyLabel,
 } from '../../lib/utils';
+import { notifyRawResetToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { PWAInstallButton } from '../Common/PWAInstallModal';
 import {
@@ -39,6 +40,7 @@ import {
   KeyRound,
   Check,
   Lock,
+  EyeOff,
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 
@@ -168,18 +170,25 @@ export default function SettingsScreen() {
   const handleFactoryRawReset = async () => {
     setIsResettingRaw(true);
     try {
-      // If Bale or Telegram bot is configured, automatically send backup before wiping data!
+      // If Bale or Telegram bot is configured, attempt auto backup before wiping data
       const hasBots =
         Boolean(formData.baleBotToken?.trim() && formData.baleChatId?.trim()) ||
         Boolean(formData.telegramBotToken?.trim() && formData.telegramChatId?.trim());
 
       if (hasBots) {
-        await sendBackupToMessengers(formData, 'بکاپ خودکار قبل از خام‌سازی ۱۰۰٪ نرم‌افزار');
+        try {
+          await Promise.race([
+            sendBackupToMessengers(formData, 'بکاپ خودکار قبل از خام‌سازی ۱۰۰٪ نرم‌افزار'),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+          ]);
+        } catch (botErr) {
+          console.warn('Bot backup before reset warning:', botErr);
+        }
       }
 
       await resetDatabaseToRaw();
-      const rawCleared = {
-        ...formData,
+
+      const pristineRawSettings: AppSettings = {
         restaurantName: '',
         phone: '',
         address: '',
@@ -190,19 +199,36 @@ export default function SettingsScreen() {
         taxEnabled: false,
         taxPercentage: 0,
         requireCustomerPhone: false,
+        currencyUnit: formData.currencyUnit || 'toman',
         selfServicePricePerPerson: 0,
         selfServiceTitle: '',
+        defaultInvoiceMode: 'self_service',
         lockSelfServiceMode: false,
+        autoBackupEnabled: false,
+        autoBackupIntervalHours: 1,
+        telegramBotToken: '',
+        telegramChatId: '',
+        baleBotToken: '',
+        baleChatId: '',
+        lastAutoBackupAt: '',
+        lastAutoBackupStatus: '',
         isRawInitialized: true,
+        requireLoginOnStart: false,
+        autoBackupBeforeUpdate: true,
+        hideCostPriceFromKitchen: false,
       };
-      setFormData(rawCleared);
-      await syncBackupToServer(rawCleared);
+
+      setFormData(pristineRawSettings);
+      await notifyRawResetToCentralServer();
+      await syncBackupToServer(pristineRawSettings);
+
       setConfirmRawReset(false);
       showNotice(
         'success',
-        'نرم‌افزار و فرم‌های تنظیمات ۱۰۰٪ خام شدند! نام فروشگاه، تلفن، آدرس، قیمت سلف، فاکتورها، منوها، انبار و اسناد نمونه همگی صفر و پاکسازی شدند.'
+        'نرم‌افزار و فرم‌های تنظیمات ۱۰۰٪ خام شدند! نام فروشگاه، تلفن، آدرس، قیمت سلف، فاکتورها، منوها، انبار، اسناد، چک‌ها و دیتابیس سرور مرکزی کاملاً صفر و پاکسازی شدند.'
       );
-    } catch (err) {
+    } catch (err: any) {
+      console.error('Raw reset error:', err);
       showNotice('error', 'خطا در خام‌سازی دیتابیس.');
     } finally {
       setIsResettingRaw(false);
@@ -694,6 +720,33 @@ export default function SettingsScreen() {
                         className="w-4 h-4 accent-blue-600"
                       />
                       <span>اجباری بودن شماره موبایل مشتری</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Kitchen Privacy: Hide COGS from Chef */}
+                <div className="border-t border-slate-200 pt-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-amber-50/80 rounded-xl border border-amber-200">
+                    <div className="flex items-start gap-2.5">
+                      <EyeOff size={18} className="text-amber-700 shrink-0 mt-0.5" />
+                      <div>
+                        <label className="cursor-pointer font-extrabold text-amber-950 text-xs block">
+                          مخفی‌سازی بهای تمام شده غذاها برای آشپز و پرسنل پخت
+                        </label>
+                        <span className="text-[11px] text-amber-800 leading-relaxed block mt-0.5">
+                          با فعال بودن این گزینه، ارقام ریالی، مبالغ خرید مواد اولیه، دستمزد، سربار و بهای تمام شده در بخش آشپزخانه و پخت برای آشپز مخفی می‌گردد و سرآشپز فقط مقادیر مصرف مواد (کیلوگرم/گرم) و تعداد پرس را مشاهده می‌کند.
+                        </span>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={formData.hideCostPriceFromKitchen || false}
+                        onChange={(e) =>
+                          setFormData({ ...formData, hideCostPriceFromKitchen: e.target.checked })
+                        }
+                        className="w-5 h-5 accent-amber-600 rounded cursor-pointer"
+                      />
                     </label>
                   </div>
                 </div>

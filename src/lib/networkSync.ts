@@ -268,6 +268,52 @@ export function notifyDataChanged() {
 }
 
 /**
+ * Explicitly notifies central server that a 100% factory raw reset was performed,
+ * wiping server data and advancing revision so no client pulls old data back.
+ */
+export async function notifyRawResetToCentralServer(): Promise<boolean> {
+  if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+  currentSyncState.isSyncing = true;
+  notifyListeners();
+
+  try {
+    const jsonString = await exportDB();
+    const data = JSON.parse(jsonString);
+
+    const res = await fetch(`${currentSyncState.serverUrl}/api/db/raw-reset`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        data,
+        timestamp: new Date().toISOString(),
+      }),
+    });
+
+    if (res.ok) {
+      const result = await res.json();
+      currentSyncState.localRevision = Number(result.rev) || (currentSyncState.localRevision + 10);
+      currentSyncState.serverRevision = currentSyncState.localRevision;
+      currentSyncState.lastSyncTime = new Date();
+      currentSyncState.lastError = null;
+      currentSyncState.isOnline = true;
+      return true;
+    } else {
+      // Fallback to normal sync push
+      return await pushToCentralServer(false);
+    }
+  } catch (err: any) {
+    console.warn('Central server raw-reset sync warning:', err);
+    return false;
+  } finally {
+    currentSyncState.isSyncing = false;
+    notifyListeners();
+  }
+}
+
+/**
  * Hard cache refresh: unregisters service workers and clears caches so new software code is loaded immediately.
  */
 export async function clearCacheAndHardReload() {
