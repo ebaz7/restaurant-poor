@@ -576,6 +576,7 @@ server {
 
 server {
     listen 443 ssl default_server;
+    http2 on;
     server_name _ ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate ${CERT_FILE};
