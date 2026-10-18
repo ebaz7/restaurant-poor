@@ -35,6 +35,7 @@ import ReportsScreen from './components/Reports/ReportsScreen';
 import SettingsScreen from './components/Settings/SettingsScreen';
 import CustomersScreen from './components/Customers/CustomersScreen';
 import AccountingScreen from './components/Accounting/AccountingScreen';
+import FirstTimeAdminSetup from './components/Common/FirstTimeAdminSetup';
 import {
   db,
   initializeDefaultDatabase,
@@ -276,6 +277,20 @@ export default function App() {
   };
 
   const isSelfServiceLocked = settings?.lockSelfServiceMode ?? true;
+
+  // 100% Raw Factory State Setup: Require defining the first administrator user
+  if (appUsers.length === 0) {
+    return (
+      <FirstTimeAdminSetup
+        settings={settings}
+        onCompleted={(newAdminId) => {
+          setCurrentUserId(newAdminId);
+          setIsLocked(false);
+          setActiveTab('pos');
+        }}
+      />
+    );
+  }
 
   // Full-Screen Login / User Switcher Overlay
   if (isLocked && activeUsers.length > 0) {

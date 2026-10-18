@@ -222,10 +222,17 @@ export default function SettingsScreen() {
       await notifyRawResetToCentralServer();
       await syncBackupToServer(pristineRawSettings);
 
+      try {
+        window.sessionStorage.clear();
+        window.localStorage.removeItem('arka_active_user_id');
+      } catch {
+        // ignore
+      }
+
       setConfirmRawReset(false);
       showNotice(
         'success',
-        'نرم‌افزار و فرم‌های تنظیمات ۱۰۰٪ خام شدند! نام فروشگاه، تلفن، آدرس، قیمت سلف، فاکتورها، منوها، انبار، اسناد، چک‌ها و دیتابیس سرور مرکزی کاملاً صفر و پاکسازی شدند.'
+        'نرم‌افزار ۱۰۰٪ خام شد! همه اطلاعات پاکسازی شده و سیستم آماده تعریف اولین کاربر مدیر کل می‌باشد.'
       );
     } catch (err: any) {
       console.error('Raw reset error:', err);
@@ -661,7 +668,7 @@ export default function SettingsScreen() {
                         قیمت پیش‌فرض سلف سرویس + نوشابه به ازای هر نفر ({currencyLabel})
                       </label>
                       <FormattedNumberInput
-                        value={formData.selfServicePricePerPerson ?? 220000}
+                        value={formData.selfServicePricePerPerson ?? 0}
                         onValueChange={(val) =>
                           setFormData({ ...formData, selfServicePricePerPerson: val })
                         }
@@ -675,9 +682,10 @@ export default function SettingsScreen() {
                       <input
                         type="text"
                         name="selfServiceTitle"
-                        value={formData.selfServiceTitle || 'ورودی بار سلف سرویس + نوشابه'}
+                        value={formData.selfServiceTitle || ''}
                         onChange={handleChange}
                         className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                        placeholder="مثال: ورودی بار سلف سرویس + نوشابه"
                       />
                     </div>
                   </div>

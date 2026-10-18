@@ -771,9 +771,29 @@ export function initializeDefaultDatabase(): Promise<void> {
 }
 
 async function runInitializeDefaultDatabase(): Promise<void> {
-  // 0. Ensure at least one Admin User exists
+  // Check if raw mode is requested
+  let isRawMode = false;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage.getItem('arka_raw_mode') === '1') {
+      isRawMode = true;
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  // 1. Settings check
+  const settingsCount = await db.settings.count();
+  if (settingsCount > 0) {
+    const firstSetting = await db.settings.toCollection().first();
+    if (firstSetting?.isRawInitialized) {
+      isRawMode = true;
+    }
+  }
+
+  // 0. Ensure at least one Admin User exists ONLY IF NOT IN 100% RAW MODE
+  // In 100% raw mode, the user must explicitly register the first administrator user/pass themselves!
   const usersCount = await db.appUsers.count();
-  if (usersCount === 0) {
+  if (usersCount === 0 && !isRawMode) {
     await db.appUsers.add({
       username: 'admin',
       fullName: 'مدیر کل سیستم',
@@ -786,54 +806,71 @@ async function runInitializeDefaultDatabase(): Promise<void> {
     });
   }
 
-  // 1. Settings
-  const settingsCount = await db.settings.count();
-  let isRawMode = false;
-  try {
-    if (typeof window !== 'undefined' && window.localStorage.getItem('arka_raw_mode') === '1') {
-      isRawMode = true;
-    }
-  } catch {
-    // ignore storage errors
-  }
-
   if (settingsCount === 0) {
-    await db.settings.add({
-      restaurantName: 'رستوران و سلف سرویس آرکا',
-      phone: '021-88776655',
-      address: 'تهران، بلوار کشاورز، پلاک ۱۲۰',
-      website: 'www.arkarestaurant.ir',
-      instagram: '@arka_restaurant',
-      telegram: '@arka_pos',
-      logoUrl: '',
-      taxEnabled: false,
-      taxPercentage: 9,
-      requireCustomerPhone: false,
-      currencyUnit: 'toman',
-      selfServicePricePerPerson: 220000,
-      selfServiceTitle: 'ورودی بار سلف سرویس + نوشابه',
-      defaultInvoiceMode: 'self_service',
-      lockSelfServiceMode: true,
-      autoBackupEnabled: false,
-      autoBackupIntervalHours: 1,
-      telegramBotToken: '',
-      telegramChatId: '',
-      baleBotToken: '',
-      baleChatId: '',
-      isRawInitialized: isRawMode,
-      requireLoginOnStart: false,
-      autoBackupBeforeUpdate: true,
-    });
+    if (isRawMode) {
+      await db.settings.add({
+        restaurantName: '',
+        phone: '',
+        address: '',
+        website: '',
+        instagram: '',
+        telegram: '',
+        logoUrl: '',
+        taxEnabled: false,
+        taxPercentage: 0,
+        requireCustomerPhone: false,
+        currencyUnit: 'toman',
+        selfServicePricePerPerson: 0,
+        selfServiceTitle: '',
+        defaultInvoiceMode: 'self_service',
+        lockSelfServiceMode: false,
+        autoBackupEnabled: false,
+        autoBackupIntervalHours: 1,
+        telegramBotToken: '',
+        telegramChatId: '',
+        baleBotToken: '',
+        baleChatId: '',
+        isRawInitialized: true,
+        requireLoginOnStart: false,
+        autoBackupBeforeUpdate: true,
+        hideCostPriceFromKitchen: false,
+      });
+    } else {
+      await db.settings.add({
+        restaurantName: 'رستوران و سلف سرویس آرکا',
+        phone: '021-88776655',
+        address: 'تهران، بلوار کشاورز، پلاک ۱۲۰',
+        website: 'www.arkarestaurant.ir',
+        instagram: '@arka_restaurant',
+        telegram: '@arka_pos',
+        logoUrl: '',
+        taxEnabled: false,
+        taxPercentage: 9,
+        requireCustomerPhone: false,
+        currencyUnit: 'toman',
+        selfServicePricePerPerson: 220000,
+        selfServiceTitle: 'ورودی بار سلف سرویس + نوشابه',
+        defaultInvoiceMode: 'self_service',
+        lockSelfServiceMode: true,
+        autoBackupEnabled: false,
+        autoBackupIntervalHours: 1,
+        telegramBotToken: '',
+        telegramChatId: '',
+        baleBotToken: '',
+        baleChatId: '',
+        isRawInitialized: false,
+        requireLoginOnStart: false,
+        autoBackupBeforeUpdate: true,
+        hideCostPriceFromKitchen: false,
+      });
+    }
   } else {
     const firstSetting = await db.settings.toCollection().first();
     if (firstSetting) {
-      if (firstSetting.isRawInitialized) {
-        isRawMode = true;
-      }
       const updates: Partial<AppSettings> = {};
       if (firstSetting.selfServicePricePerPerson === undefined) {
-        updates.selfServicePricePerPerson = 220000;
-        updates.selfServiceTitle = 'ورودی بار سلف سرویس + نوشابه';
+        updates.selfServicePricePerPerson = isRawMode ? 0 : 220000;
+        updates.selfServiceTitle = isRawMode ? '' : 'ورودی بار سلف سرویس + نوشابه';
         updates.autoBackupEnabled = false;
         updates.autoBackupIntervalHours = 1;
       }
@@ -842,7 +879,7 @@ async function runInitializeDefaultDatabase(): Promise<void> {
       }
       if (!firstSetting.defaultInvoiceMode) {
         updates.defaultInvoiceMode = 'self_service';
-        updates.lockSelfServiceMode = true;
+        updates.lockSelfServiceMode = !isRawMode;
       }
       if (firstSetting.autoBackupBeforeUpdate === undefined) {
         updates.autoBackupBeforeUpdate = true;
@@ -1624,6 +1661,7 @@ export async function resetDatabaseToRaw(): Promise<void> {
       db.kitchenProductions,
       db.cashClosures,
       db.settings,
+      db.appUsers,
     ],
     async () => {
       await db.categories.clear();
@@ -1640,6 +1678,7 @@ export async function resetDatabaseToRaw(): Promise<void> {
       await db.kitchenProductions.clear();
       await db.cashClosures.clear();
       await db.accounts.clear();
+      await db.appUsers.clear();
 
       await db.accounts.bulkAdd(
         DEFAULT_CHART_OF_ACCOUNTS.map((a) => ({
@@ -1683,5 +1722,15 @@ export async function resetDatabaseToRaw(): Promise<void> {
       });
     }
   );
+
+  try {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem('arka_active_user_id');
+      window.localStorage.removeItem('arka_active_user_id');
+      window.localStorage.setItem('arka_raw_mode', '1');
+    }
+  } catch {
+    // ignore
+  }
 }
 

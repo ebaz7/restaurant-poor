@@ -471,8 +471,8 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    server_name ${DOMAIN} www.${DOMAIN};
+    listen 443 ssl default_server;
+    server_name _ ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};

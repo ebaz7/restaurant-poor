@@ -94,9 +94,9 @@ export default function POSScreen() {
       id: '1',
       title: 'سفارش 1',
       invoiceMode: 'self_service',
-      selfServiceGuests: 2,
-      selfServiceUnitPrice: 220000,
-      selfServiceDrinkNote: 'نوشابه قوطی + استفاده از بار سلف سرویس',
+      selfServiceGuests: 0,
+      selfServiceUnitPrice: 0,
+      selfServiceDrinkNote: '',
       customerPhone: '',
       customerName: '',
       customerSubscriptionCode: '',
@@ -145,10 +145,12 @@ export default function POSScreen() {
         prev.map((tab) => ({
           ...tab,
           invoiceMode: settings?.lockSelfServiceMode ? 'self_service' : (tab.invoiceMode || defaultMode),
-          selfServiceUnitPrice:
-            tab.selfServiceUnitPrice === 220000 && settings?.selfServicePricePerPerson
-              ? settings.selfServicePricePerPerson
-              : tab.selfServiceUnitPrice,
+          selfServiceUnitPrice: settings?.selfServicePricePerPerson ?? 0,
+          selfServiceGuests:
+            tab.selfServiceGuests === 0 && (settings?.selfServicePricePerPerson ?? 0) > 0
+              ? 1
+              : tab.selfServiceGuests,
+          selfServiceDrinkNote: tab.selfServiceDrinkNote || settings?.selfServiceTitle || '',
           bankId: tab.bankId ?? defaultBank?.id,
         }))
       );
@@ -318,15 +320,16 @@ export default function POSScreen() {
 
   const handleNewTab = () => {
     const newId = Date.now().toString();
+    const unitPrice = settings?.selfServicePricePerPerson ?? 0;
     setOpenTabs([
       ...openTabs,
       {
         id: newId,
         title: `سفارش ${openTabs.length + 1}`,
         invoiceMode: defaultInvoiceMode,
-        selfServiceGuests: 2,
-        selfServiceUnitPrice: settings?.selfServicePricePerPerson || 220000,
-        selfServiceDrinkNote: 'نوشابه قوطی + استفاده از بار سلف سرویس',
+        selfServiceGuests: unitPrice > 0 ? 1 : 0,
+        selfServiceUnitPrice: unitPrice,
+        selfServiceDrinkNote: settings?.selfServiceTitle || '',
         customerPhone: '',
         customerName: '',
         customerSubscriptionCode: '',
@@ -344,15 +347,16 @@ export default function POSScreen() {
 
   const handleCloseTab = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const unitPrice = settings?.selfServicePricePerPerson ?? 0;
     if (openTabs.length === 1) {
       setOpenTabs([
         {
           id: Date.now().toString(),
           title: 'سفارش 1',
           invoiceMode: defaultInvoiceMode,
-          selfServiceGuests: 2,
-          selfServiceUnitPrice: settings?.selfServicePricePerPerson || 220000,
-          selfServiceDrinkNote: 'نوشابه قوطی + استفاده از بار سلف سرویس',
+          selfServiceGuests: unitPrice > 0 ? 1 : 0,
+          selfServiceUnitPrice: unitPrice,
+          selfServiceDrinkNote: settings?.selfServiceTitle || '',
           customerPhone: '',
           customerName: '',
           customerSubscriptionCode: '',
