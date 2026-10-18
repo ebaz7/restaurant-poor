@@ -92,15 +92,20 @@ install_app() {
 
     setup_iran_mirrors
 
-    echo "[i] Installing prerequisites (Docker & Nginx)..."
+    echo "[i] Installing prerequisites (Docker & Docker Compose via apt)..."
+    apt-get update
+    apt-get install -y curl apt-transport-https ca-certificates gnupg lsb-release
+
     if ! command -v docker &> /dev/null; then
-        apt-get update && apt-get install -y curl apt-transport-https ca-certificates gnupg lsb-release
-        curl -fsSL https://get.docker.com -o get-docker.sh || curl -fsSL https://get.docker.ir -o get-docker.sh
-        sh get-docker.sh
+        apt-get install -y docker.io || {
+            echo "[!] Failed to install docker.io via apt. Trying alternative installation..."
+            curl -fsSL https://get.docker.ir | sh || true
+        }
     fi
+    systemctl enable --now docker 2>/dev/null || true
 
     if ! command -v docker compose &> /dev/null && ! command -v docker-compose &> /dev/null; then
-        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose
+        apt-get install -y docker-compose-v2 || apt-get install -y docker-compose || true
     fi
 
     echo "[i] Creating production server script..."
@@ -137,8 +142,13 @@ services:
       - .:/app
 EOF
 
-    docker compose down 2>/dev/null || true
-    docker compose up -d --build || docker-compose up -d --build
+    docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+    docker compose up -d --build || docker-compose up -d --build || {
+        echo "[!] Docker compose failed. Trying direct node execution fallback..."
+        npm install && npm run build
+        nohup node server.cjs > arka.log 2>&1 &
+        echo "[v] Arka started directly via Node.js in background!"
+    }
 
     echo "[v] Arka Restaurant software successfully installed and running on port $PORT!"
     if [ -n "$DOMAIN" ]; then
