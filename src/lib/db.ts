@@ -1649,6 +1649,21 @@ export async function resetDatabaseToRaw(): Promise<void> {
       const firstSetting = await db.settings.toCollection().first();
       if (firstSetting?.id) {
         await db.settings.update(firstSetting.id, {
+          restaurantName: '',
+          phone: '',
+          address: '',
+          website: '',
+          instagram: '',
+          telegram: '',
+          logoUrl: '',
+          taxEnabled: false,
+          taxPercentage: 0,
+          requireCustomerPhone: false,
+          currencyUnit: firstSetting.currencyUnit || 'toman',
+          selfServicePricePerPerson: 0,
+          selfServiceTitle: '',
+          defaultInvoiceMode: 'self_service',
+          lockSelfServiceMode: false,
           isRawInitialized: true,
         });
       }

@@ -178,11 +178,29 @@ export default function SettingsScreen() {
       }
 
       await resetDatabaseToRaw();
-      await syncBackupToServer(formData);
+      const rawCleared = {
+        ...formData,
+        restaurantName: '',
+        phone: '',
+        address: '',
+        website: '',
+        instagram: '',
+        telegram: '',
+        logoUrl: '',
+        taxEnabled: false,
+        taxPercentage: 0,
+        requireCustomerPhone: false,
+        selfServicePricePerPerson: 0,
+        selfServiceTitle: '',
+        lockSelfServiceMode: false,
+        isRawInitialized: true,
+      };
+      setFormData(rawCleared);
+      await syncBackupToServer(rawCleared);
       setConfirmRawReset(false);
       showNotice(
         'success',
-        'نرم‌افزار به صورت ۱۰۰٪ خام شد! تمام فاکتورها، منوها، انبار، چک‌ها، بانک‌ها و اسناد نمونه پاک شدند و آماده ثبت اطلاعات واقعی شماست.'
+        'نرم‌افزار و فرم‌های تنظیمات ۱۰۰٪ خام شدند! نام فروشگاه، تلفن، آدرس، قیمت سلف، فاکتورها، منوها، انبار و اسناد نمونه همگی صفر و پاکسازی شدند.'
       );
     } catch (err) {
       showNotice('error', 'خطا در خام‌سازی دیتابیس.');
