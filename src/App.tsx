@@ -122,12 +122,29 @@ export default function App() {
   const [pinInput, setPinInput] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
 
+  const [isInitialSyncPending, setIsInitialSyncPending] = useState<boolean>(true);
+
   // Initialize central network synchronization and database on startup
   useEffect(() => {
-    initializeDefaultDatabase();
-    initNetworkSync();
+    let isMounted = true;
+    async function startStartupSync() {
+      try {
+        await initializeDefaultDatabase();
+        await initNetworkSync();
+      } catch (e) {
+        console.warn('Startup sync error:', e);
+      } finally {
+        if (isMounted) {
+          setIsInitialSyncPending(false);
+        }
+      }
+    }
+    startStartupSync();
     const unsubscribe = subscribeSyncState((st) => setSyncState(st));
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
   // Check if requireLoginOnStart is enabled when settings load
@@ -294,8 +311,23 @@ export default function App() {
 
   const isSelfServiceLocked = settings?.lockSelfServiceMode ?? true;
 
-  // 100% Raw Factory State Setup: Require defining the first administrator user
-  if (appUsers.length === 0) {
+  // 1. Initial network sync loading screen when local DB is empty
+  if (isInitialSyncPending && appUsers.length === 0) {
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center" dir="rtl">
+        <div className="w-16 h-16 rounded-2xl bg-teal-500/20 border border-teal-500/40 flex items-center justify-center text-teal-400 mb-4 animate-bounce">
+          <Server size={32} />
+        </div>
+        <h2 className="text-base font-extrabold mb-1.5">در حال اتصال به سرور مرکزی و همگام‌سازی...</h2>
+        <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+          دریافت اطلاعات فاکتورها، منو و کاربران از سرور اصلی رستوران. لطفاً چند لحظه شکیبا باشید...
+        </p>
+      </div>
+    );
+  }
+
+  // 2. 100% Raw Factory State Setup: ONLY show FirstTimeAdminSetup if sync completed AND DB is still 100% empty!
+  if (!isInitialSyncPending && appUsers.length === 0) {
     return (
       <FirstTimeAdminSetup
         settings={settings}

@@ -150,13 +150,13 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
             <Sparkles size={32} />
           </div>
           <div className="inline-block px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-extrabold">
-            ✨ دیتابیس ۱۰۰٪ خام کارخانه‌ای — آماده راه‌اندازی
+            ✨ سیستم آماده راه‌اندازی جدید یا اتصال شبکه
           </div>
           <h1 className="text-xl font-black text-slate-900">
-            تعریف اولین کاربر مدیر کل سیستم
+            تعریف مدیر سیستم یا اتصال به سرور مرکزی
           </h1>
           <p className="text-xs text-slate-500 leading-relaxed max-w-sm mx-auto">
-            دیتابیس، صندوق، قیمت‌ها و تنظیمات کاملاً پاکسازی شدند. برای ورود و مدیریت نرم‌افزار، لطفاً اطلاعات حساب اولین مدیر را ثبت فرمایید:
+            اگر این دستگاه قرار است مستقل کار کند اطلاعات زیر را تکمیل فرمایید. اگر قرار است به عنوان کلاینت/گوشی به سرور دیگری متصل شود از آدرس سرور استفاده فرمایید:
           </p>
         </div>
 
