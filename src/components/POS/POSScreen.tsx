@@ -403,6 +403,39 @@ export default function POSScreen() {
     }
   };
 
+  const handleAddQuickBeverage = (drinkName: string, defaultPrice: number = 15000) => {
+    const matched = allMenuItems?.find(
+      (i) => i.name.trim() === drinkName.trim() || i.name.includes(drinkName)
+    );
+    const menuItemId =
+      matched?.id ||
+      100000 + Math.abs(drinkName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0));
+    const price = matched?.price ?? defaultPrice;
+
+    const existingItem = activeTab.items.find(
+      (i) => i.menuItemId === menuItemId || i.name === drinkName
+    );
+    if (existingItem) {
+      updateActiveTab({
+        items: activeTab.items.map((i) =>
+          i.menuItemId === existingItem.menuItemId ? { ...i, quantity: i.quantity + 1 } : i
+        ),
+      });
+    } else {
+      updateActiveTab({
+        items: [
+          ...activeTab.items,
+          {
+            menuItemId,
+            name: matched?.name || drinkName,
+            price,
+            quantity: 1,
+          },
+        ],
+      });
+    }
+  };
+
   const handleAdjustQuantity = (menuItemId: number, delta: number) => {
     updateActiveTab({
       items: activeTab.items
@@ -837,17 +870,17 @@ export default function POSScreen() {
           {/* Self-Service Quick Banner & Direct Checkout when in Mode 2 */}
           {activeTab.invoiceMode === 'self_service' ? (
             <div className="flex-1 p-4 md:p-6 overflow-y-auto space-y-4 max-w-4xl mx-auto w-full">
-              <div className="bg-white border-2 border-teal-600 rounded-2xl p-5 shadow-sm space-y-4">
+              <div className="bg-white border-2 border-teal-600 rounded-2xl p-4 md:p-5 shadow-sm space-y-4">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div>
                     <div className="flex items-center gap-2">
                       <Users className="text-teal-700" size={24} />
                       <h2 className="text-base md:text-lg font-extrabold text-slate-900">
-                        صدور فیش سلف سرویس و دریافت نوشابه (حداکثر ۴ نفر)
+                        صدور فیش سلف سرویس و انتخاب نوشیدنی‌ها
                       </h2>
                     </div>
                     <p className="text-xs text-slate-600 mt-1">
-                      تعداد نفرات را انتخاب کنید (سقف هر فیش ۴ نفر است). به ازای هر نفر ۱ عدد نوشابه و مجوز استفاده از بار سلف در فیش درج می‌شود.
+                      تعداد نفرات مهمان سلف را انتخاب کرده و در صورت نیاز نوشیدنی‌های اضافی (نوشابه، دوغ، آب معدنی و...) به فاکتور بیافزایید.
                     </p>
                   </div>
 
@@ -858,46 +891,180 @@ export default function POSScreen() {
                         key={num}
                         type="button"
                         onClick={() => updateActiveTab({ selfServiceGuests: num })}
-                        className={`flex-1 md:w-20 py-3 px-3 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center ${
+                        className={`flex-1 md:w-20 py-2.5 px-2 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center cursor-pointer ${
                           activeTab.selfServiceGuests === num
                             ? 'bg-teal-600 text-white border-teal-700 shadow-sm scale-[1.02]'
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-teal-50 hover:border-teal-300'
                         }`}
                       >
                         <span className="text-base font-black font-mono">{num} نفر</span>
-                        <span className="text-[10px] opacity-85">{num} نوشابه</span>
+                        <span className="text-[10px] opacity-85">{num} سلف</span>
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-100">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      قیمت سلف و نوشابه به ازای هر نفر (تومان)
+                {/* Beverage Quick Presets & Description Note */}
+                <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block text-xs font-bold text-slate-800">
+                      ۱. انتخاب سریع نوع نوشیدنی سلف:
                     </label>
-                    <input
-                      type="number"
-                      value={activeTab.selfServiceUnitPrice || ''}
-                      onChange={(e) =>
-                        updateActiveTab({ selfServiceUnitPrice: Math.max(0, Number(e.target.value)) })
-                      }
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-left outline-none focus:ring-2 focus:ring-teal-600"
-                      dir="ltr"
-                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: '🥤 نوشابه قوطی', note: 'نوشابه قوطی + استفاده از بار سلف' },
+                        { label: '🥛 دوغ بطری/لیوانی', note: 'دوغ + استفاده از بار سلف' },
+                        { label: '💧 آب معدنی', note: 'آب معدنی + استفاده از بار سلف' },
+                        { label: '🍺 دلستر / ماءالشعیر', note: 'دلستر + استفاده از بار سلف' },
+                        { label: '🍊 آبمیوه / شربت', note: 'آبمیوه / شربت + استفاده از بار سلف' },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => updateActiveTab({ selfServiceDrinkNote: preset.note })}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                            activeTab.selfServiceDrinkNote === preset.note
+                              ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      شرح نوشیدنی و خدمات فیش سلف
-                    </label>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        قیمت سلف و نوشیدنی به ازای هر نفر (تومان)
+                      </label>
+                      <input
+                        type="number"
+                        value={activeTab.selfServiceUnitPrice || ''}
+                        onChange={(e) =>
+                          updateActiveTab({ selfServiceUnitPrice: Math.max(0, Number(e.target.value)) })
+                        }
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-left outline-none focus:ring-2 focus:ring-teal-600"
+                        dir="ltr"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        شرح نوشیدنی و خدمات فیش سلف
+                      </label>
+                      <input
+                        type="text"
+                        value={activeTab.selfServiceDrinkNote || ''}
+                        onChange={(e) => updateActiveTab({ selfServiceDrinkNote: e.target.value })}
+                        placeholder="مثال: نوشابه قوطی + استفاده از بار سلف سرویس"
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-teal-600"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Add Extra Beverages Panel */}
+                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
+                      <span>🥤 افزودن نوشیدنی یا نوشابه اضافه دستی (خارج از سهمیه سلف):</span>
+                      {activeTab.items.length > 0 && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-600 text-white font-mono text-[10px]">
+                          {activeTab.items.reduce((sum, i) => sum + i.quantity, 0)} مورد اضافه شد
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-[11px] text-amber-800">
+                      (مثلاً ۳ نفر هستند اما ۴ نوشابه یا ۲ دوغ می‌خواهند)
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', 15000)}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>۱+ نوشابه اضافه (۱۵,۰۰۰)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddQuickBeverage('دوغ اضافه', 15000)}
+                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>۱+ دوغ اضافه (۱۵,۰۰۰)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', 10000)}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>۱+ آب معدنی (۱۰,۰۰۰)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddQuickBeverage('دلستر اضافه', 20000)}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>۱+ دلستر اضافه (۲۰,۰۰۰)</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Menu Beverage & Food Catalog Grid for Self-Service */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                  <h3 className="text-xs md:text-sm font-extrabold text-slate-800">
+                    افزودن مستقیم انواع نوشیدنی و غذا از کاتالوگ منو به فاکتور سلف
+                  </h3>
+
+                  <div className="relative flex-1 max-w-xs">
+                    <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                     <input
                       type="text"
-                      value={activeTab.selfServiceDrinkNote || ''}
-                      onChange={(e) => updateActiveTab({ selfServiceDrinkNote: e.target.value })}
-                      placeholder="مثال: نوشابه قوطی + استفاده از بار سلف سرویس"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm outline-none focus:ring-2 focus:ring-teal-600"
+                      placeholder="جستجوی نوشابه، دوغ، آب معدنی..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pr-8 pl-3 py-1.5 bg-slate-100 rounded-xl text-xs outline-none focus:ring-2 focus:ring-teal-600"
                     />
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-60 overflow-y-auto pr-1">
+                  {displayedMenuItems.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleAddItem(item)}
+                      className="p-2.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-teal-50 hover:border-teal-400 text-right transition flex flex-col justify-between cursor-pointer group"
+                    >
+                      <span className="font-bold text-xs text-slate-800 line-clamp-1 group-hover:text-teal-950">
+                        {item.name}
+                      </span>
+                      <div className="flex justify-between items-center mt-2 pt-1 border-t border-slate-200/60">
+                        <span className="text-[11px] font-mono font-bold text-teal-700">
+                          {formatCurrency(item.price)}
+                        </span>
+                        <span className="p-1 rounded-lg bg-teal-600 text-white text-[10px] font-bold group-hover:scale-110 transition-transform">
+                          <Plus size={12} />
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                  {displayedMenuItems.length === 0 && (
+                    <div className="col-span-full py-6 text-center text-slate-400 text-xs">
+                      آیتمی یافت نشد.
+                    </div>
+                  )}
                 </div>
               </div>
 
