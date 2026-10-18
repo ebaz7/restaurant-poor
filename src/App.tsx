@@ -51,6 +51,7 @@ import {
   pullFromCentralServer,
   pushToCentralServer,
   clearCacheAndHardReload,
+  setServerUrl,
   SyncState,
 } from './lib/networkSync';
 
@@ -101,6 +102,20 @@ export default function App() {
   });
   const [showNetworkModal, setShowNetworkModal] = useState<boolean>(false);
   const [manualSyncMessage, setManualSyncMessage] = useState<string | null>(null);
+  const [customServerInput, setCustomServerInput] = useState<string>('');
+
+  useEffect(() => {
+    if (syncState.serverUrl) {
+      setCustomServerInput(syncState.serverUrl);
+    }
+  }, [syncState.serverUrl]);
+
+  const handleSaveServerUrl = () => {
+    if (!customServerInput.trim()) return;
+    setServerUrl(customServerInput.trim());
+    setManualSyncMessage('آدرس سرور جدید ذخیره شد و همگام‌سازی برقرار گردید.');
+    setTimeout(() => setManualSyncMessage(null), 4000);
+  };
 
   // Login Modal State
   const [selectedLoginUser, setSelectedLoginUser] = useState<AppUser | null>(null);
@@ -605,38 +620,51 @@ export default function App() {
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-bold">آدرس سرور مرکزی:</span>
-                  <span className="font-mono font-extrabold text-slate-900" dir="ltr">
-                    {syncState.serverUrl || window.location.origin}
-                  </span>
+              {/* Server URL Input & Configuration */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-slate-700 font-extrabold flex items-center justify-between">
+                    <span>آدرس/دامنه سرور مرکزی (Central Server URL):</span>
+                    <span className="text-[10px] text-teal-700 font-bold">قابل ویرایش برای گوشی و کلاینت‌ها</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={customServerInput}
+                      onChange={(e) => setCustomServerInput(e.target.value)}
+                      placeholder="https://foodmix.ir یا http://192.168.1.100:3000"
+                      className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-teal-500"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSaveServerUrl}
+                      className="px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold text-xs shrink-0 cursor-pointer shadow-xs transition"
+                    >
+                      ثبت آدرس
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-bold">وضعیت اتصال:</span>
-                  <span
-                    className={`font-extrabold px-2 py-0.5 rounded-md ${
-                      syncState.isOnline
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-rose-100 text-rose-800'
-                    }`}
-                  >
-                    {syncState.isOnline ? '🟢 متصل به سرور مرکزی' : '🔴 قطع ارتباط با سرور'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-bold">نسخه دیتابیس همگام:</span>
-                  <span className="font-mono font-bold text-slate-700">
-                    Rev #{syncState.localRevision} (سرور: #{syncState.serverRevision})
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-bold">آخرین همگام‌سازی:</span>
-                  <span className="text-slate-700 font-bold">
-                    {syncState.lastSyncTime
-                      ? syncState.lastSyncTime.toLocaleTimeString('fa-IR')
-                      : 'به‌تازگی'}
-                  </span>
+
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-200/60 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-bold">وضعیت اتصال:</span>
+                    <span
+                      className={`font-extrabold px-2 py-0.5 rounded-md ${
+                        syncState.isOnline
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {syncState.isOnline ? '🟢 متصل به سرور' : '🔴 قطع ارتباط'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 font-bold">نسخه دیتابیس:</span>
+                    <span className="font-mono font-bold text-slate-700">
+                      Rev #{syncState.localRevision}
+                    </span>
+                  </div>
                 </div>
               </div>
 

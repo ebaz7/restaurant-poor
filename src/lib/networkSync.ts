@@ -59,20 +59,35 @@ let syncDebounceTimer: any = null;
 let pollTimer: any = null;
 let isInitialized = false;
 
+export function setServerUrl(url: string) {
+  const cleanUrl = url.trim().replace(/\/+$/, '');
+  currentSyncState.serverUrl = cleanUrl;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem('arka_server_url', cleanUrl);
+    } catch {
+      // ignore
+    }
+  }
+  notifyListeners();
+  pullFromCentralServer(true);
+}
+
 /**
  * Initializes the central network synchronization engine on client startup:
  * 1. Checks connection with central server (/api/db/version).
  * 2. If server has data, pulls and initializes local Dexie database.
- * 3. Starts background polling (every 3.5s) to detect updates from other cashiers/devices.
+ * 3. Starts background polling (every 2s) to detect updates from other cashiers/devices.
  */
 export async function initNetworkSync(customServerUrl?: string) {
   if (isInitialized && !customServerUrl) return;
   isInitialized = true;
 
   if (customServerUrl) {
-    currentSyncState.serverUrl = customServerUrl.replace(/\/+$/, '');
+    setServerUrl(customServerUrl);
   } else if (typeof window !== 'undefined') {
-    currentSyncState.serverUrl = window.location.origin;
+    const savedUrl = window.localStorage.getItem('arka_server_url');
+    currentSyncState.serverUrl = savedUrl ? savedUrl.replace(/\/+$/, '') : window.location.origin;
   }
 
   // Attach hooks to Dexie tables so ANY change on this client automatically triggers sync to central server
@@ -212,6 +227,17 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
   try {
     const jsonString = await exportDB();
     const data = JSON.parse(jsonString);
+
+    // SAFEGUARD: If local client database is empty (e.g., fresh PWA client on phone),
+    // NEVER push empty data to central server! Force a pull from central server instead!
+    const catCount = Array.isArray(data?.categories) ? data.categories.length : 0;
+    const menuCount = Array.isArray(data?.menuItems) ? data.menuItems.length : 0;
+    const orderCount = Array.isArray(data?.orders) ? data.orders.length : 0;
+    if (catCount === 0 && menuCount === 0 && orderCount === 0 && !isInitialSeed) {
+      console.log('Local DB is empty. Pulling central database from server instead of pushing empty state...');
+      await pullFromCentralServer(true);
+      return true;
+    }
 
     const res = await fetch(`${currentSyncState.serverUrl}/api/db/sync`, {
       method: 'POST',

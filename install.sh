@@ -194,6 +194,37 @@ const server = http.createServer((req, res) => {
           const payload = JSON.parse(body || '{}');
           const clientRev = Number(payload.clientRevision) || 0;
 
+          function hasDbData(obj) {
+            if (!obj || typeof obj !== 'object') return false;
+            const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
+            const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
+            const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
+            const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
+            return (c + m + o + s) > 0;
+          }
+
+          let existingData = null;
+          if (fs.existsSync(DB_FILE)) {
+            try {
+              existingData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+            } catch (e) {}
+          }
+
+          const serverHasData = hasDbData(existingData);
+          const clientHasData = hasDbData(payload.data);
+
+          // SAFEGUARD: If server has existing data and incoming push is empty, REJECT!
+          if (serverHasData && !clientHasData) {
+            res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              ok: false,
+              isOutdated: true,
+              rev: currentRev,
+              error: 'دیتابیس سرور دارای اطلاعات موجود است و کلاینت خالی مجاز به پاک کردن آن نیست.'
+            }));
+            return;
+          }
+
           // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
           if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -206,7 +237,14 @@ const server = http.createServer((req, res) => {
             return;
           }
 
-          if (payload.data) {
+          if (payload.data && clientHasData) {
+            if (serverHasData) {
+              try {
+                const backupDir = path.join(DATA_DIR, 'backups');
+                if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+                fs.writeFileSync(path.join(backupDir, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
+              } catch (e) {}
+            }
             const tmpFile = DB_FILE + '.tmp';
             fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
@@ -950,6 +988,17 @@ update_app() {
         mkdir -p "$INSTALL_DIR/data"
         cp -rf /tmp/arka_data_preserve/* "$INSTALL_DIR/data/" 2>/dev/null || true
         rm -rf /tmp/arka_data_preserve
+
+        # Safety Fallback: If central_db.json was lost or empty, restore latest json from /opt/arka-backup/
+        if [ ! -s "$INSTALL_DIR/data/central_db.json" ]; then
+            LATEST_JSON=$(ls -t /opt/arka-backup/arka_db_*.json 2>/dev/null | head -n1)
+            if [ -n "$LATEST_JSON" ] && [ -s "$LATEST_JSON" ]; then
+                echo "[v] Restoring central database from backup archive: $LATEST_JSON"
+                cp -f "$LATEST_JSON" "$INSTALL_DIR/data/central_db.json" 2>/dev/null || true
+            fi
+        fi
+
+        chmod -R 777 "$INSTALL_DIR/data" 2>/dev/null || true
 
         echo "[+] Step 3/4: Updating production server script & building bundle..."
         create_server_script

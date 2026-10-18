@@ -111,6 +111,39 @@ function centralServerDbPlugin(): Plugin {
               const payload = JSON.parse(body || '{}');
               const clientRev = Number(payload.clientRevision) || 0;
 
+              // Helper to check if a DB object contains any actual data records
+              const hasData = (obj: any) => {
+                if (!obj || typeof obj !== 'object') return false;
+                const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
+                const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
+                const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
+                const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
+                return (c + m + o + s) > 0;
+              };
+
+              let existingData: any = null;
+              if (fs.existsSync(dbFile)) {
+                try {
+                  existingData = JSON.parse(fs.readFileSync(dbFile, 'utf8'));
+                } catch {}
+              }
+
+              const serverHasData = hasData(existingData);
+              const clientHasData = hasData(payload.data);
+
+              // SAFEGUARD: If server already has data and incoming client push is empty, REJECT!
+              if (serverHasData && !clientHasData) {
+                res.statusCode = 409;
+                res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                res.end(JSON.stringify({
+                  ok: false,
+                  isOutdated: true,
+                  rev: currentRev,
+                  error: 'دیتابیس سرور دارای اطلاعات موجود است و کلاینت خالی مجاز به پاک کردن آن نیست.'
+                }));
+                return;
+              }
+
               // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
               if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
                 res.statusCode = 409;
@@ -124,8 +157,17 @@ function centralServerDbPlugin(): Plugin {
                 return;
               }
 
-              if (payload.data) {
-                fs.writeFileSync(dbFile, JSON.stringify(payload.data, null, 2), 'utf8');
+              if (payload.data && clientHasData) {
+                if (serverHasData) {
+                  try {
+                    const backupDir = path.join(dataDir, 'backups');
+                    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+                    fs.writeFileSync(path.join(backupDir, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
+                  } catch {}
+                }
+                const tmpFile = dbFile + '.tmp';
+                fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
+                fs.renameSync(tmpFile, dbFile);
                 currentRev += 1;
               }
               res.setHeader('Content-Type', 'application/json; charset=utf-8');
