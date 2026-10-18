@@ -433,20 +433,23 @@ EOF
     rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
     nginx -t && systemctl enable --now nginx && systemctl reload nginx || systemctl restart nginx || true
 
-    echo "[i] Requesting official certificate from Let's Encrypt..."
+    echo "[i] Requesting official certificate from Let's Encrypt for ${DOMAIN} & www.${DOMAIN}..."
     local CERT_SUCCESS=0
 
-    # Try requesting for ${DOMAIN}
-    if certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
+    # If certificate already exists on server disk
+    if [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]; then
+        echo "[v] Active Let's Encrypt certificate found at /etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
         CERT_SUCCESS=1
     else
-        echo "[!] Nginx plugin challenge failed. Attempting webroot challenge..."
-        if certbot certonly --webroot -w /var/www/html -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email; then
+        # Try webroot challenge first (non-disruptive)
+        if certbot certonly --webroot -w /var/www/html -d "${DOMAIN}" -d "www.${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --expand; then
+            CERT_SUCCESS=1
+        elif certbot certonly --webroot -w /var/www/html -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --expand; then
             CERT_SUCCESS=1
         else
-            echo "[!] Attempting standalone challenge..."
+            echo "[!] Webroot challenge failed. Attempting standalone challenge..."
             systemctl stop nginx || true
-            if certbot certonly --standalone -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email; then
+            if certbot certonly --standalone -d "${DOMAIN}" -d "www.${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --expand || certbot certonly --standalone -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email --expand; then
                 CERT_SUCCESS=1
             fi
             systemctl start nginx || true
@@ -467,23 +470,13 @@ server {
     }
 
     location / {
-        if (\$host ~* ^(${DOMAIN}|www\.${DOMAIN})$) {
-            return 301 https://\$host\$request_uri;
-        }
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        return 301 https://\$host\$request_uri;
     }
 }
 
 server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN} www.${DOMAIN};
+    listen 443 ssl default_server;
+    server_name _ ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -576,7 +569,6 @@ server {
 
 server {
     listen 443 ssl default_server;
-    http2 on;
     server_name _ ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate ${CERT_FILE};
