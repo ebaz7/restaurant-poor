@@ -983,38 +983,38 @@ export default function POSScreen() {
                   <div className="flex flex-wrap gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', 15000)}
+                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', settings?.defaultSodaPrice ?? 15000)}
                       className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ نوشابه اضافه (۱۵,۰۰۰)</span>
+                      <span>۱+ نوشابه ({formatCurrency(settings?.defaultSodaPrice ?? 15000)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('دوغ اضافه', 15000)}
+                      onClick={() => handleAddQuickBeverage('دوغ اضافه', settings?.defaultDoughPrice ?? 15000)}
                       className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ دوغ اضافه (۱۵,۰۰۰)</span>
+                      <span>۱+ دوغ ({formatCurrency(settings?.defaultDoughPrice ?? 15000)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', 10000)}
+                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', settings?.defaultWaterPrice ?? 10000)}
                       className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ آب معدنی (۱۰,۰۰۰)</span>
+                      <span>۱+ آب معدنی ({formatCurrency(settings?.defaultWaterPrice ?? 10000)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('دلستر اضافه', 20000)}
+                      onClick={() => handleAddQuickBeverage('دلستر اضافه', settings?.defaultDelsterPrice ?? 20000)}
                       className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ دلستر اضافه (۲۰,۰۰۰)</span>
+                      <span>۱+ دلستر ({formatCurrency(settings?.defaultDelsterPrice ?? 20000)})</span>
                     </button>
                   </div>
                 </div>

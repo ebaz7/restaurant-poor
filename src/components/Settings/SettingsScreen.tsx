@@ -713,6 +713,66 @@ export default function SettingsScreen() {
                       />
                     </div>
                   </div>
+
+                  {/* Default Beverage Unit Prices */}
+                  <div className="border-t border-slate-100 pt-3">
+                    <label className="block text-xs font-extrabold text-slate-900 mb-2">
+                      🥤 تنظیم قیمت پیش‌فرض انواع نوشیدنی‌های اضافه ({currencyLabel}):
+                    </label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          🥤 نوشابه قوطی اضافه:
+                        </label>
+                        <FormattedNumberInput
+                          value={formData.defaultSodaPrice ?? 15000}
+                          onValueChange={(val) =>
+                            setFormData({ ...formData, defaultSodaPrice: val })
+                          }
+                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          🥛 دوغ بطری/لیوانی:
+                        </label>
+                        <FormattedNumberInput
+                          value={formData.defaultDoughPrice ?? 15000}
+                          onValueChange={(val) =>
+                            setFormData({ ...formData, defaultDoughPrice: val })
+                          }
+                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          💧 آب معدنی:
+                        </label>
+                        <FormattedNumberInput
+                          value={formData.defaultWaterPrice ?? 10000}
+                          onValueChange={(val) =>
+                            setFormData({ ...formData, defaultWaterPrice: val })
+                          }
+                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-slate-700 mb-1">
+                          🍺 دلستر / ماءالشعیر:
+                        </label>
+                        <FormattedNumberInput
+                          value={formData.defaultDelsterPrice ?? 20000}
+                          onValueChange={(val) =>
+                            setFormData({ ...formData, defaultDelsterPrice: val })
+                          }
+                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Tax & Customer Phone toggles */}

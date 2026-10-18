@@ -82,9 +82,13 @@ export interface AppSettings {
   requireCustomerPhone: boolean;
   // Currency unit ('toman' | 'rial')
   currencyUnit?: 'toman' | 'rial';
-  // Self-Service default settings
+  // Self-Service & Beverage default prices
   selfServicePricePerPerson?: number;
   selfServiceTitle?: string;
+  defaultSodaPrice?: number;
+  defaultDoughPrice?: number;
+  defaultWaterPrice?: number;
+  defaultDelsterPrice?: number;
   // Default Invoice Mode ('self_service' | 'standard') and lock option
   defaultInvoiceMode?: 'self_service' | 'standard';
   lockSelfServiceMode?: boolean;
