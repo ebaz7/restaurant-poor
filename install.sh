@@ -460,9 +460,19 @@ EOF
         local CERT_FILE="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
         local KEY_FILE="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 
+        # Remove default conflicting site configs
+        rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default 2>/dev/null || true
+
+        # Ensure internal app port is not 80 or 443
+        local APP_TARGET_PORT="$PORT"
+        if [ "$APP_TARGET_PORT" == "80" ] || [ "$APP_TARGET_PORT" == "443" ]; then
+            APP_TARGET_PORT="3000"
+        fi
+
         cat <<EOF > /etc/nginx/sites-available/arka-restaurant.conf
 server {
     listen 80 default_server;
+    listen [::]:80 default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
 
     location /.well-known/acme-challenge/ {
@@ -476,6 +486,7 @@ server {
 
 server {
     listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
 
     ssl_certificate ${CERT_FILE};
@@ -484,7 +495,7 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass http://127.0.0.1:${PORT};
+        proxy_pass http://127.0.0.1:${APP_TARGET_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -496,6 +507,7 @@ server {
     }
 }
 EOF
+        ln -sf /etc/nginx/sites-available/arka-restaurant.conf /etc/nginx/sites-enabled/arka-restaurant.conf
         nginx -t && systemctl reload nginx || systemctl restart nginx
         echo "================================================================"
         echo "[v] SUCCESS! Official Let's Encrypt SSL is ACTIVE for https://${DOMAIN}"

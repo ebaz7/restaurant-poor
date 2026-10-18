@@ -36,6 +36,7 @@ import SettingsScreen from './components/Settings/SettingsScreen';
 import CustomersScreen from './components/Customers/CustomersScreen';
 import AccountingScreen from './components/Accounting/AccountingScreen';
 import FirstTimeAdminSetup from './components/Common/FirstTimeAdminSetup';
+import { PWAInstallButton } from './components/Common/PWAInstallButton';
 import {
   db,
   initializeDefaultDatabase,
@@ -500,6 +501,8 @@ export default function App() {
               </>
             )}
           </button>
+
+          <PWAInstallButton variant="compact" className="w-24 mt-1" />
 
           <div className="flex flex-col items-center gap-0.5 w-full mt-1">
             <NavButton

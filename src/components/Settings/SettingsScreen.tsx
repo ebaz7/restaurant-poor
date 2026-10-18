@@ -20,7 +20,7 @@ import {
 } from '../../lib/utils';
 import { notifyRawResetToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
-import { PWAInstallButton } from '../Common/PWAInstallModal';
+import { PWAInstallButton } from '../Common/PWAInstallButton';
 import {
   Save,
   Download,
