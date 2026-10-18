@@ -897,122 +897,44 @@ export default function POSScreen() {
                 </div>
               </div>
 
-              {/* Payment Method & Bank Selector for Self Service */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                <h3 className="text-xs font-extrabold text-slate-800">نحوه تسویه حساب فیش سلف:</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {[
-                    { id: 'card', label: 'کارتخوان' },
-                    { id: 'cash', label: 'نقدی' },
-                    { id: 'split', label: 'ترکیبی' },
-                    { id: 'credit', label: 'نسیه' },
-                  ].map((pm) => (
-                    <button
-                      key={pm.id}
-                      type="button"
-                      onClick={() => updateActiveTab({ paymentMethod: pm.id as any })}
-                      className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all ${
-                        activeTab.paymentMethod === pm.id
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      {pm.label}
-                    </button>
-                  ))}
+              {/* Navigation prompt to checkout panel on mobile screens only */}
+              <div className="lg:hidden bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="text-right">
+                  <span className="text-xs text-slate-500 block">مبلغ قابل پرداخت فیش سلف ({activeTab.selfServiceGuests} نفر):</span>
+                  <span className="text-xl font-black text-teal-700 font-mono tabular-nums">
+                    {formatCurrency(activeTabTotal)}
+                  </span>
                 </div>
 
-                {/* Bank Account Selector when Card or Split */}
-                {(activeTab.paymentMethod === 'card' || activeTab.paymentMethod === 'split') && (
-                  <div className="flex items-center gap-2 pt-2">
-                    <Building2 size={16} className="text-blue-600 shrink-0" />
-                    <select
-                      aria-label="انتخاب بانک کارتخوان"
-                      value={activeTab.bankId || defaultBank?.id || ''}
-                      onChange={(e) => updateActiveTab({ bankId: Number(e.target.value) })}
-                      className="flex-1 px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 outline-none focus:ring-2 focus:ring-teal-500"
-                    >
-                      {activeBanks.map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.bankName} ({b.cardNumber})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setShowCartOnMobile(true)}
+                  className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+                >
+                  <span>مرحله بعد: انتخاب بانک، تخفیف و تسویه</span>
+                  <ArrowLeft size={16} />
+                </button>
+              </div>
 
-                {/* Split Cash Input when Split payment is active */}
-                {activeTab.paymentMethod === 'split' && (
-                  <div className="flex items-center gap-2 text-xs pt-2">
-                    <span className="text-slate-700 font-bold whitespace-nowrap">سهم نقد (تومان):</span>
-                    <input
-                      type="number"
-                      value={activeTab.cashAmount || ''}
-                      onChange={(e) => updateActiveTab({ cashAmount: Number(e.target.value) })}
-                      placeholder="مبلغ نقد..."
-                      className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl font-mono text-left font-bold"
-                      dir="ltr"
-                    />
-                    <span className="text-xs text-blue-700 font-mono font-bold whitespace-nowrap">
-                      سهم کارت: {formatCurrency(Math.max(0, activeTabTotal - (activeTab.cashAmount || 0)))}
-                    </span>
-                  </div>
-                )}
-
-                {/* Discount Option Right Next to Checkout Stage */}
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-100">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold text-slate-700 whitespace-nowrap">تخفیف فیش:</span>
-                    <select
-                      aria-label="نوع تخفیف فیش سلف"
-                      value={activeTab.discountType}
-                      onChange={(e) => updateActiveTab({ discountType: e.target.value as any, discountValue: 0 })}
-                      className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none font-medium text-slate-700"
-                    >
-                      <option value="none">بدون تخفیف</option>
-                      <option value="percent">درصدی (%)</option>
-                      <option value="amount">مبلغی (تومان)</option>
-                    </select>
-
-                    {activeTab.discountType !== 'none' && (
-                      <input
-                        type="number"
-                        value={activeTab.discountValue || ''}
-                        onChange={(e) => updateActiveTab({ discountValue: Number(e.target.value) })}
-                        className="w-28 px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none text-left font-mono font-bold"
-                        dir="ltr"
-                        placeholder={activeTab.discountType === 'percent' ? 'درصد...' : 'مبلغ...'}
-                      />
-                    )}
-                  </div>
-
-                  {discountAmount > 0 && (
-                    <span className="text-xs font-bold text-emerald-600 font-mono whitespace-nowrap">
-                      کسر تخفیف: -{formatCurrency(discountAmount)}
-                    </span>
-                  )}
-                </div>
-
-                {/* Summary & Checkout Button */}
-                <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="flex flex-col text-right w-full sm:w-auto">
-                    <span className="text-xs text-slate-500">مبلغ قابل پرداخت نهایی ({activeTab.selfServiceGuests} نفر):</span>
-                    <span className="text-xl font-black text-teal-700 font-mono tabular-nums">
+              {/* Mobile floating bar for quick checkout */}
+              {!showCartOnMobile && canCheckout && (
+                <div className="lg:hidden p-3.5 bg-white border-t border-slate-200 flex justify-between items-center z-30 shrink-0 sticky bottom-0 shadow-lg rounded-2xl mt-4">
+                  <div className="flex flex-col text-right">
+                    <span className="text-[10px] text-slate-500">مبلغ قابل پرداخت:</span>
+                    <span className="font-bold text-teal-700 text-base font-mono">
                       {formatCurrency(activeTabTotal)}
                     </span>
                   </div>
-
                   <button
                     type="button"
-                    onClick={handleCheckout}
-                    disabled={!canCheckout}
-                    className="w-full sm:w-auto px-8 py-3.5 bg-teal-600 hover:bg-teal-700 disabled:bg-slate-300 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+                    onClick={() => setShowCartOnMobile(true)}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2"
                   >
-                    <CreditCard size={18} />
-                    <span>ثبت و صدور فیش سلف سرویس ({activeTab.selfServiceGuests} نفر)</span>
+                    <span>مشاهده فاکتور و تسویه</span>
+                    <ArrowLeft size={15} />
                   </button>
                 </div>
-              </div>
+              )}
             </div>
           ) : (
             <>
