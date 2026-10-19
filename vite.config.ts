@@ -177,6 +177,17 @@ function centralServerDbPlugin(): Plugin {
       server.middlewares.use((req, res, next) => {
         const url = req.url ? new URL(req.url, 'http://localhost:3000') : new URL('http://localhost:3000');
 
+        if (
+          url.pathname === '/registerSW.js' ||
+          url.pathname === '/sw.js' ||
+          url.pathname === '/dev-sw.js'
+        ) {
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.end('// No-op in dev mode\n');
+          return;
+        }
+
         if (url.pathname === '/api/license/status' && req.method === 'GET') {
           const record = getOrCreateServerLicense();
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -483,8 +494,7 @@ export default defineConfig(() => {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],
