@@ -14,10 +14,12 @@
     "tauri:build": "npm run build && npx @tauri-apps/cli build",
     "build:win": "npm run build && npx @tauri-apps/cli build",
     "package-win": "npm run build && npm run obfuscate && electron-builder --win",
+    "package:server-win": "npm run build && node package-server-windows.cjs",
+    "build:server-win": "node package-server-windows.cjs",
     "obfuscate": "javascript-obfuscator dist/assets --output dist/assets --compact true --self-defending true --string-array true --string-array-encoding base64 --string-array-threshold 0.8",
     "preview": "vite preview",
     "preview-local": "vite preview --port=7375 --host=0.0.0.0",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist server.js dist-windows-server",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
