@@ -176,6 +176,20 @@ pause
 `;
 fs.writeFileSync(path.join(OUT_DIR, 'stop-server.bat'), stopServerBat, 'utf8');
 
+// Copy cleanup script if exists
+if (fs.existsSync(path.join(ROOT, 'cleanup-old-tauri-installation.bat'))) {
+  fs.copyFileSync(
+    path.join(ROOT, 'cleanup-old-tauri-installation.bat'),
+    path.join(OUT_DIR, 'cleanup-old-tauri-installation.bat')
+  );
+  const publicDir = path.join(ROOT, 'public');
+  if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'cleanup-old-tauri-installation.bat'),
+    path.join(publicDir, 'cleanup-old-tauri-installation.bat')
+  );
+}
+
 // 8. Create README_راهنما.txt
 const readmeTxt = `======================================================================
                سامانه جامع فروش، صندوقداری و مدیریت رستوران آرکا

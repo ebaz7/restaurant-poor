@@ -1,10 +1,12 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Account,
   BankAccount,
   Cheque,
   JournalVoucher,
   RawMaterial,
+  Order,
   db,
   recordJournalVoucher,
 } from '../../lib/db';
@@ -13,6 +15,7 @@ import {
   classifyChequeDueStatus,
 } from '../../lib/accountingEngine';
 import { formatCurrency } from '../../lib/utils';
+import InvoiceEditDeleteModal from '../Common/InvoiceEditDeleteModal';
 import { format } from 'date-fns-jalali';
 import {
   TrendingUp,
@@ -23,6 +26,10 @@ import {
   Package,
   FileText,
   ArrowLeft,
+  Receipt,
+  Edit2,
+  Trash2,
+  Search,
 } from 'lucide-react';
 
 interface Props {
@@ -42,6 +49,21 @@ export default function PnLAndOverviewTab({
   materials,
   onNavigateSubTab,
 }: Props) {
+  const orders = useLiveQuery(() => db.orders.orderBy('createdAt').reverse().toArray()) || [];
+  const [selectedOrderForModal, setSelectedOrderForModal] = useState<Order | null>(null);
+  const [invoiceSearch, setInvoiceSearch] = useState('');
+
+  const filteredOrders = useMemo(() => {
+    const q = invoiceSearch.trim().toLowerCase();
+    if (!q) return orders.slice(0, 50);
+    return orders.filter(
+      (o) =>
+        String(o.invoiceNumber).includes(q) ||
+        (o.customerName && o.customerName.toLowerCase().includes(q)) ||
+        (o.customerPhone && o.customerPhone.includes(q))
+    );
+  }, [orders, invoiceSearch]);
+
   const allLines = useMemo(() => vouchers.flatMap((v) => v.lines), [vouchers]);
 
   const pnl = useMemo(() => {
@@ -473,6 +495,115 @@ export default function PnLAndOverviewTab({
           </div>
         </div>
       </div>
+
+      {/* Sales Invoices Management Table (مدیریت، ویرایش و حذف فاکتورهای فروش) */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+        <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div>
+            <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+              <Receipt size={18} className="text-blue-600" />
+              <span>مدیریت، ویرایش و حذف فاکتورهای فروش ({orders.length} فاکتور ثبت شده)</span>
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              ویرایش یا حذف هر فاکتور فروش به صورت خودکار سند حسابداری و موجودی بانک مربوطه را اصلاح می‌کند.
+            </p>
+          </div>
+          <div className="relative w-full sm:w-64">
+            <Search size={14} className="absolute right-3 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="جستجوی شماره فاکتور یا نام مشتری..."
+              value={invoiceSearch}
+              onChange={(e) => setInvoiceSearch(e.target.value)}
+              className="w-full pr-8 pl-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto max-h-96 overflow-y-auto">
+          <table className="w-full text-right text-xs">
+            <thead className="bg-slate-50 text-slate-500 border-b border-slate-200 sticky top-0">
+              <tr>
+                <th className="py-2.5 px-4">شماره فاکتور</th>
+                <th className="py-2.5 px-4">تاریخ و ساعت</th>
+                <th className="py-2.5 px-4">مشتری</th>
+                <th className="py-2.5 px-4">نوع فاکتور</th>
+                <th className="py-2.5 px-4">نحوه تسویه</th>
+                <th className="py-2.5 px-4">مبلغ کل</th>
+                <th className="py-2.5 px-4 text-center">ویرایش / حذف</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredOrders.map((ord) => (
+                <tr key={ord.id} className="hover:bg-slate-50">
+                  <td className="py-2.5 px-4 font-mono font-black text-blue-700">
+                    #{ord.invoiceNumber}
+                  </td>
+                  <td className="py-2.5 px-4 font-mono text-[11px] text-slate-600" dir="ltr">
+                    {ord.createdAt ? format(new Date(ord.createdAt), 'yyyy/MM/dd HH:mm') : '-'}
+                  </td>
+                  <td className="py-2.5 px-4 font-bold text-slate-800">
+                    {ord.customerName || 'مهمان عمومی'}
+                    {ord.customerPhone && (
+                      <span className="block text-[10px] font-mono text-slate-400" dir="ltr">
+                        {ord.customerPhone}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-2.5 px-4">
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        ord.invoiceMode === 'self_service'
+                          ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                          : 'bg-blue-50 text-blue-700 border border-blue-200'
+                      }`}
+                    >
+                      {ord.invoiceMode === 'self_service' ? 'فیش سلف سرویس' : 'منوی عادی'}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-4 font-semibold text-slate-700">
+                    {ord.paymentMethod === 'cash'
+                      ? 'نقدی'
+                      : ord.paymentMethod === 'credit'
+                      ? 'نسیه'
+                      : ord.bankName || 'کارتخوان'}
+                  </td>
+                  <td className="py-2.5 px-4 font-mono font-black text-slate-900">
+                    {formatCurrency(ord.total)}
+                  </td>
+                  <td className="py-2.5 px-4 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedOrderForModal(ord)}
+                      className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold inline-flex items-center gap-1.5 text-[11px] cursor-pointer"
+                    >
+                      <Edit2 size={13} />
+                      <span>ویرایش / حذف</span>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {filteredOrders.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-slate-400">
+                    هیچ فاکتور فروشی یافت نشد.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Invoice Edit / Delete Modal */}
+      {selectedOrderForModal && (
+        <InvoiceEditDeleteModal
+          order={selectedOrderForModal}
+          canEdit={true}
+          canDelete={true}
+          onClose={() => setSelectedOrderForModal(null)}
+        />
+      )}
     </div>
   );
 }

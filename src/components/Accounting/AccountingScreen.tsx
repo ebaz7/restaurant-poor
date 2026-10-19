@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../lib/db';
+import { db, syncStaffMonthlySalaries } from '../../lib/db';
 import { classifyChequeDueStatus } from '../../lib/accountingEngine';
 import PnLAndOverviewTab from './PnLAndOverviewTab';
 import CostingAndBOMTab from './CostingAndBOMTab';
@@ -37,6 +37,10 @@ export default function AccountingScreen() {
   const transactions = useLiveQuery(() => db.inventoryTransactions.toArray()) || [];
   const menuItems = useLiveQuery(() => db.menuItems.toArray()) || [];
   const recipes = useLiveQuery(() => db.productionRecipes.toArray()) || [];
+
+  useEffect(() => {
+    syncStaffMonthlySalaries();
+  }, [persons.length]);
 
   const urgentChequeCount = useMemo(() => {
     const now = new Date();

@@ -185,6 +185,52 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
     setIngredients(ingredients.filter((i) => i.materialId !== materialId));
   };
 
+  const handleUpdateIngredient = (
+    materialId: number,
+    patch: { quantity?: number; wastePercent?: number }
+  ) => {
+    setIngredients((prev) =>
+      prev.map((ing) =>
+        ing.materialId === materialId
+          ? {
+              ...ing,
+              quantity:
+                patch.quantity !== undefined
+                  ? Math.max(0.0001, Number(patch.quantity) || 0)
+                  : ing.quantity,
+              wastePercent:
+                patch.wastePercent !== undefined
+                  ? Math.max(0, Number(patch.wastePercent) || 0)
+                  : ing.wastePercent,
+            }
+          : ing
+      )
+    );
+  };
+
+  const handleDeleteRecipe = async () => {
+    if (!selectedMenuItemId || !selectedMenuItem) return;
+    const existing = await db.productionRecipes
+      .where('menuItemId')
+      .equals(selectedMenuItemId)
+      .first();
+    if (!existing || !existing.id) {
+      setIngredients([]);
+      return;
+    }
+    if (
+      !window.confirm(
+        `آیا از حذف کامل فرمول تولید (BOM) غذای «${selectedMenuItem.name}» اطمینان دارید؟`
+      )
+    ) {
+      return;
+    }
+    await db.productionRecipes.delete(existing.id);
+    setIngredients([]);
+    setSaveMessage(`فرمول تولید «${selectedMenuItem.name}» به طور کامل حذف شد.`);
+    setTimeout(() => setSaveMessage(''), 3500);
+  };
+
   const handleSaveRecipe = async () => {
     if (!selectedMenuItemId || !selectedMenuItem) return;
 
@@ -364,14 +410,14 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
                 </div>
               </div>
 
-              {/* Ingredients Table */}
+              {/* Ingredients Table (with Inline Edit & Delete) */}
               <div className="border border-slate-200 rounded-xl overflow-x-auto">
                 <table className="w-full text-right text-xs">
                   <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
                     <tr>
                       <th className="py-2 px-3">نام ماده اولیه</th>
-                      <th className="py-2 px-3">مقدار خالص</th>
-                      <th className="py-2 px-3">درصد پرت</th>
+                      <th className="py-2 px-3">مقدار خالص (قابل ویرایش)</th>
+                      <th className="py-2 px-3">درصد پرت (قابل ویرایش)</th>
                       <th className="py-2 px-3">فی واحد انبار</th>
                       <th className="py-2 px-3">هزینه در ۱ پرس</th>
                       <th className="py-2 px-3 text-center">حذف</th>
@@ -389,10 +435,42 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
                             {liveMat?.name || ing.materialName}
                           </td>
                           <td className="py-2 px-3 font-mono">
-                            {ing.quantity} {liveMat?.unit || ing.unit}
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0.001"
+                                value={ing.quantity}
+                                onChange={(e) =>
+                                  handleUpdateIngredient(ing.materialId, {
+                                    quantity: Number(e.target.value),
+                                  })
+                                }
+                                className="w-20 px-2 py-1 border border-slate-300 rounded-lg font-mono text-left bg-white font-bold"
+                                dir="ltr"
+                              />
+                              <span className="text-[11px] text-slate-500">
+                                {liveMat?.unit || ing.unit}
+                              </span>
+                            </div>
                           </td>
                           <td className="py-2 px-3 font-mono text-slate-500">
-                            {ing.wastePercent || 0}%
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                step="1"
+                                min="0"
+                                value={ing.wastePercent || 0}
+                                onChange={(e) =>
+                                  handleUpdateIngredient(ing.materialId, {
+                                    wastePercent: Number(e.target.value),
+                                  })
+                                }
+                                className="w-16 px-2 py-1 border border-slate-300 rounded-lg font-mono text-center bg-white"
+                                dir="ltr"
+                              />
+                              <span>%</span>
+                            </div>
                           </td>
                           <td className="py-2 px-3 font-mono text-slate-600">
                             {formatCurrency(unitCost)}
@@ -404,7 +482,8 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
                             <button
                               type="button"
                               onClick={() => handleRemoveIngredient(ing.materialId)}
-                              className="text-slate-400 hover:text-red-600 p-1"
+                              className="text-slate-400 hover:text-red-600 p-1 cursor-pointer"
+                              title="حذف ماده اولیه از فرمول"
                             >
                               <Trash2 size={14} />
                             </button>
@@ -504,21 +583,32 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
                       <button
                         type="button"
                         onClick={() => setSellingPriceInput(costResult.suggestedPriceFor40Margin)}
-                        className="mr-2 text-[11px] text-blue-400 hover:underline"
+                        className="mr-2 text-[11px] text-blue-400 hover:underline cursor-pointer"
                       >
                         (اعمال این قیمت)
                       </button>
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleSaveRecipe}
-                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs flex items-center gap-2 shrink-0 cursor-pointer"
-                  >
-                    <Save size={16} />
-                    <span>ذخیره فرمول تولید و قیمت تمام شده</span>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleDeleteRecipe}
+                      className="px-3.5 py-2.5 bg-rose-600/90 hover:bg-rose-600 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                      title="حذف کامل فرمول تولید این غذا"
+                    >
+                      <Trash2 size={15} />
+                      <span>حذف فرمول</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveRecipe}
+                      className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer"
+                    >
+                      <Save size={16} />
+                      <span>ذخیره فرمول تولید و قیمت تمام شده</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

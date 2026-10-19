@@ -5,6 +5,8 @@ import {
   JournalVoucher,
   db,
   recordJournalVoucher,
+  deleteJournalVoucherAndSyncBanks,
+  updateJournalVoucherAndSyncBanks,
 } from '../../lib/db';
 import {
   AccountType,
@@ -25,6 +27,9 @@ import {
   FilePlus2,
   Search,
   Code2,
+  Edit2,
+  X,
+  Save,
 } from 'lucide-react';
 
 interface Props {
@@ -38,7 +43,8 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
   const [feedback, setFeedback] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Manual Double-Entry Voucher Builder
+  // Manual Double-Entry Voucher Builder (Supports Create & Edit Mode)
+  const [editingVoucher, setEditingVoucher] = useState<JournalVoucher | null>(null);
   const [voucherDesc, setVoucherDesc] = useState('');
   const [lines, setLines] = useState<JournalLine[]>([
     {
@@ -64,8 +70,16 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
   const [newAccType, setNewAccType] = useState<AccountType>('expense');
   const [newAccDesc, setNewAccDesc] = useState('');
 
-  // Search Filter in Chart of Accounts
+  // Edit Account Modal State
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editAccCode, setEditAccCode] = useState('');
+  const [editAccName, setEditAccName] = useState('');
+  const [editAccType, setEditAccType] = useState<AccountType>('expense');
+  const [editAccDesc, setEditAccDesc] = useState('');
+
+  // Search Filter in Chart of Accounts & Ledger
   const [chartSearchQuery, setChartSearchQuery] = useState('');
+  const [ledgerSearchQuery, setLedgerSearchQuery] = useState('');
 
   const validation = useMemo(() => validateDoubleEntryLines(lines), [lines]);
   const currencyLabel = getCurrencyLabel();
@@ -94,6 +108,30 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
         (a.description && a.description.toLowerCase().includes(q))
     );
   }, [accounts, chartSearchQuery]);
+
+  const filteredVouchers = useMemo(() => {
+    const q = ledgerSearchQuery.trim().toLowerCase();
+    const list = !q
+      ? vouchers
+      : vouchers.filter(
+          (v) =>
+            String(v.voucherNumber).includes(q) ||
+            v.description.toLowerCase().includes(q) ||
+            v.lines.some(
+              (l) =>
+                l.accountName.toLowerCase().includes(q) ||
+                l.accountCode.includes(q) ||
+                (l.personName && l.personName.toLowerCase().includes(q)) ||
+                (l.description && l.description.toLowerCase().includes(q))
+            )
+        );
+    return [...list].reverse();
+  }, [vouchers, ledgerSearchQuery]);
+
+  const showToast = (msg: string) => {
+    setFeedback(msg);
+    setTimeout(() => setFeedback(''), 4000);
+  };
 
   const handleUpdateLine = (idx: number, patch: Partial<JournalLine>) => {
     const copy = [...lines];
@@ -129,6 +167,51 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
     setLines(lines.filter((_, i) => i !== idx));
   };
 
+  const handleStartEditVoucher = (v: JournalVoucher) => {
+    setEditingVoucher(v);
+    setVoucherDesc(v.description);
+    setLines(v.lines.map((l) => ({ ...l })));
+    setErrorMsg('');
+    setSubView('new_voucher');
+  };
+
+  const handleCancelEditVoucher = () => {
+    setEditingVoucher(null);
+    setVoucherDesc('');
+    setLines([
+      {
+        accountCode: '609',
+        accountName: 'سایر هزینه‌های عمومی و تنخواه',
+        debit: 500000,
+        credit: 0,
+        description: 'ردیف بدهکار',
+      },
+      {
+        accountCode: '101',
+        accountName: 'صندوق نقدی رستوران',
+        debit: 0,
+        credit: 500000,
+        description: 'ردیف بستانکار',
+      },
+    ]);
+  };
+
+  const handleDeleteVoucher = async (v: JournalVoucher) => {
+    if (!v.id) return;
+    if (
+      !window.confirm(
+        `آیا از حذف کامل سند حسابداری شماره #${v.voucherNumber} (${v.description}) اطمینان دارید؟ تراز حساب‌ها و موجودی بانک به صورت خودکار اصلاح خواهد شد.`
+      )
+    ) {
+      return;
+    }
+    await deleteJournalVoucherAndSyncBanks(v.id);
+    if (editingVoucher?.id === v.id) {
+      handleCancelEditVoucher();
+    }
+    showToast(`سند شماره #${v.voucherNumber} حذف شد و تراز حساب‌ها اصلاح گردید.`);
+  };
+
   const handleSaveManualVoucher = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
@@ -137,21 +220,28 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       return;
     }
 
-    await recordJournalVoucher({
-      date: new Date(),
-      description: voucherDesc.trim() || 'سند حسابداری دوبل دستی',
-      type: 'manual',
-      lines,
-    });
-
-    setVoucherDesc('');
-    setFeedback('سند حسابداری دوبل با موفقیت در دفتر روزنامه و کل ثبت شد.');
-    setTimeout(() => setFeedback(''), 4000);
+    if (editingVoucher && editingVoucher.id) {
+      await updateJournalVoucherAndSyncBanks(editingVoucher.id, {
+        description: voucherDesc.trim() || editingVoucher.description,
+        lines,
+      });
+      showToast(`تغییرات سند حسابداری شماره #${editingVoucher.voucherNumber} با موفقیت ذخیره شد.`);
+      handleCancelEditVoucher();
+      setSubView('ledger');
+    } else {
+      await recordJournalVoucher({
+        date: new Date(),
+        description: voucherDesc.trim() || 'سند حسابداری دوبل دستی',
+        type: 'manual',
+        lines,
+      });
+      setVoucherDesc('');
+      showToast('سند حسابداری دوبل با موفقیت در دفتر روزنامه و کل ثبت شد.');
+    }
   };
 
   const handleTypeChange = (type: AccountType) => {
     setNewAccType(type);
-    // Auto suggest next code
     const prefixMap: Record<AccountType, string> = {
       asset: '10',
       liability: '20',
@@ -190,13 +280,75 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       name,
       type: newAccType,
       isSystem: false,
-      description: newAccDesc.trim() || `سطح ${newAccLevel === 'general' ? 'کل' : newAccLevel === 'subsidiary' ? 'معین' : 'تفصیلی'} - ${typeLabel(newAccType)}`,
+      description:
+        newAccDesc.trim() ||
+        `سطح ${newAccLevel === 'general' ? 'کل' : newAccLevel === 'subsidiary' ? 'معین' : 'تفصیلی'} - ${typeLabel(newAccType)}`,
     });
     setNewAccCode('');
     setNewAccName('');
     setNewAccDesc('');
-    setFeedback(`سرفصل جدید «${code} - ${name}» به جدول کدینگ استاندارد حسابداری اضافه شد.`);
-    setTimeout(() => setFeedback(''), 4000);
+    showToast(`سرفصل جدید «${code} - ${name}» به جدول کدینگ استاندارد حسابداری اضافه شد.`);
+  };
+
+  const openEditAccountModal = (acc: Account) => {
+    setEditingAccount(acc);
+    setEditAccCode(acc.code);
+    setEditAccName(acc.name);
+    setEditAccType(acc.type);
+    setEditAccDesc(acc.description || '');
+  };
+
+  const handleSaveEditAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAccount || !editingAccount.id) return;
+    const newCode = editAccCode.trim() || editingAccount.code;
+    const newName = editAccName.trim() || editingAccount.name;
+
+    if (
+      newCode !== editingAccount.code &&
+      accounts.some((a) => a.code === newCode && a.id !== editingAccount.id)
+    ) {
+      setErrorMsg(`کد حساب «${newCode}» تکراری است.`);
+      return;
+    }
+
+    await db.accounts.update(editingAccount.id, {
+      code: newCode,
+      name: newName,
+      type: editAccType,
+      description: editAccDesc.trim(),
+    });
+
+    // Update vouchers that used the old account code or name
+    if (newCode !== editingAccount.code || newName !== editingAccount.name) {
+      const allVouchers = await db.journalVouchers.toArray();
+      for (const v of allVouchers) {
+        if (v.id && v.lines.some((l) => l.accountCode === editingAccount.code)) {
+          const updatedLines = v.lines.map((l) =>
+            l.accountCode === editingAccount.code
+              ? { ...l, accountCode: newCode, accountName: newName }
+              : l
+          );
+          await db.journalVouchers.update(v.id, { lines: updatedLines });
+        }
+      }
+    }
+
+    setEditingAccount(null);
+    showToast(`سرفصل حسابداری «${newCode} - ${newName}» با موفقیت ویرایش شد.`);
+  };
+
+  const handleDeleteAccount = async (acc: Account) => {
+    if (!acc.id) return;
+    if (
+      !window.confirm(
+        `آیا از حذف سرفصل حسابداری «${acc.code} - ${acc.name}» اطمینان دارید؟`
+      )
+    ) {
+      return;
+    }
+    await db.accounts.delete(acc.id);
+    showToast(`سرفصل «${acc.code} - ${acc.name}» حذف شد.`);
   };
 
   const typeLabel = (t: AccountType) => {
@@ -230,7 +382,11 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
           }`}
         >
           <FilePlus2 size={15} />
-          <span>۱. صدور سند دوبل (جستجوی آنی سرفصل)</span>
+          <span>
+            {editingVoucher
+              ? `۱. در حال ویرایش سند #${editingVoucher.voucherNumber}`
+              : '۱. صدور سند دوبل (جستجوی آنی سرفصل)'}
+          </span>
         </button>
         <button
           type="button"
@@ -242,7 +398,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
           }`}
         >
           <BookOpen size={15} />
-          <span>۲. دفتر روزنامه اسناد ({vouchers.length})</span>
+          <span>۲. دفتر روزنامه اسناد و ویرایش/حذف ({vouchers.length})</span>
         </button>
         <button
           type="button"
@@ -254,7 +410,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
           }`}
         >
           <Layers size={15} />
-          <span>۳. تعریف کدینگ و سرفصل‌های حسابداری ({accounts.length})</span>
+          <span>۳. تعریف و ویرایش کدینگ حسابداری ({accounts.length})</span>
         </button>
       </div>
 
@@ -275,25 +431,116 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       {subView === 'new_voucher' && (
         <form
           onSubmit={handleSaveManualVoucher}
-          className="bg-white p-4 md:p-5 rounded-2xl border border-slate-200 space-y-4 shadow-2xs"
+          className={`bg-white p-4 md:p-5 rounded-2xl border space-y-4 shadow-2xs ${
+            editingVoucher ? 'border-amber-400 ring-2 ring-amber-100' : 'border-slate-200'
+          }`}
         >
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-100 pb-3">
             <div>
-              <h3 className="text-sm font-extrabold text-slate-900">
-                صدور سند حسابداری دوبل (تایپ مستقیم نام/کد سرفصل یا انتخاب از منو)
+              <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                {editingVoucher ? (
+                  <>
+                    <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-lg text-xs">
+                      حالت ویرایش سند #{editingVoucher.voucherNumber}
+                    </span>
+                    <span>ویرایش آرتیکل‌ها و مبالغ سند حسابداری</span>
+                  </>
+                ) : (
+                  <span>صدور سند حسابداری دوبل (تایپ مستقیم نام/کد سرفصل یا انتخاب از منو)</span>
+                )}
               </h3>
               <p className="text-[11px] text-slate-500 mt-0.5">
                 در هر ردیف می‌توانید نام یا کد سرفصل را تایپ کنید تا درجا پیدا شود، یا روی فلش منو کلیک کنید. مبالغ حین تایپ ۳ رقم ۳ رقم جدا می‌شوند.
               </p>
             </div>
-            <input
-              type="text"
-              placeholder="شرح کلی سند حسابداری..."
-              value={voucherDesc}
-              onChange={(e) => setVoucherDesc(e.target.value)}
-              className="w-full sm:w-72 px-3 py-2 border border-slate-300 rounded-xl text-xs font-bold"
-            />
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <input
+                type="text"
+                placeholder="شرح کلی سند حسابداری..."
+                value={voucherDesc}
+                onChange={(e) => setVoucherDesc(e.target.value)}
+                className="w-full sm:w-72 px-3 py-2 border border-slate-300 rounded-xl text-xs font-bold"
+              />
+              {editingVoucher && (
+                <button
+                  type="button"
+                  onClick={handleCancelEditVoucher}
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold shrink-0 cursor-pointer"
+                >
+                  لغو ویرایش
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Quick Double-Entry Templates for Staff Credit Accrual & Settlement */}
+          {!editingVoucher && (
+            <div className="flex flex-wrap items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px]">
+              <span className="font-bold text-slate-600">الگوهای آماده سند دوبل:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const firstStaff = persons.find((p) => p.role === 'staff') || persons[0];
+                  const amt = firstStaff?.monthlySalary || 10000000;
+                  setVoucherDesc(
+                    `ثبت طلب حقوق و کارکرد ماهانه - ${firstStaff?.name || 'پرسنل'}`
+                  );
+                  setLines([
+                    {
+                      accountCode: '601',
+                      accountName: 'هزینه حقوق و دستمزد پرسنل',
+                      debit: amt,
+                      credit: 0,
+                      description: 'شناسایی هزینه حقوق پرسنل',
+                    },
+                    {
+                      accountCode: '201',
+                      accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+                      personId: firstStaff?.id,
+                      personName: firstStaff?.name,
+                      debit: 0,
+                      credit: amt,
+                      description: 'ثبت طلب (بستانکار شدن پرسنل)',
+                    },
+                  ]);
+                }}
+                className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg font-bold cursor-pointer"
+              >
+                + ثبت طلب حقوق پرسنل (بستانکار شدن شخص)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const firstStaff = persons.find((p) => p.role === 'staff') || persons[0];
+                  const amt = firstStaff?.monthlySalary || 10000000;
+                  setVoucherDesc(
+                    `پرداخت حقوق / تسویه حساب پرسنل - ${firstStaff?.name || 'پرسنل'}`
+                  );
+                  setLines([
+                    {
+                      accountCode: '201',
+                      accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+                      personId: firstStaff?.id,
+                      personName: firstStaff?.name,
+                      debit: amt,
+                      credit: 0,
+                      description: 'پرداخت به پرسنل (کسر از طلب)',
+                    },
+                    {
+                      accountCode: '102',
+                      accountName: 'موجودی بانک‌ها و کارتخوان‌ها',
+                      debit: 0,
+                      credit: amt,
+                      description: 'پرداخت از بانک',
+                    },
+                  ]);
+                }}
+                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold cursor-pointer"
+              >
+                + پرداخت حقوق از بانک (تسویه طلب شخص)
+              </button>
+            </div>
+          )}
 
           <div className="space-y-2.5">
             {lines.map((line, idx) => (
@@ -394,7 +641,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
                     type="button"
                     onClick={() => handleRemoveLine(idx)}
                     disabled={lines.length <= 2}
-                    className="text-slate-400 hover:text-rose-600 disabled:opacity-30 p-1.5 rounded-lg"
+                    className="text-slate-400 hover:text-rose-600 disabled:opacity-30 p-1.5 rounded-lg cursor-pointer"
                     title="حذف ردیف"
                   >
                     <Trash2 size={15} />
@@ -408,7 +655,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
             <button
               type="button"
               onClick={handleAddLine}
-              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold flex items-center gap-1"
+              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold flex items-center gap-1 cursor-pointer"
             >
               <Plus size={14} />
               <span>افزودن ردیف جدید به سند</span>
@@ -439,7 +686,9 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
               disabled={!validation.isValid}
               className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl font-bold shadow-xs cursor-pointer"
             >
-              ثبت نهایی سند دوبل
+              {editingVoucher
+                ? `ذخیره تغییرات سند #${editingVoucher.voucherNumber}`
+                : 'ثبت نهایی سند دوبل'}
             </button>
           </div>
         </form>
@@ -447,16 +696,28 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
 
       {subView === 'ledger' && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
-          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-            <h3 className="text-xs md:text-sm font-extrabold text-slate-900">
-              دفتر روزنامه اسناد حسابداری (کلیه اسناد اتوماتیک صندوق، آشپزخانه، بانک، انبار و دستی)
-            </h3>
-            <span className="text-xs font-mono font-bold text-slate-600">
-              {vouchers.length} سند
-            </span>
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs md:text-sm font-extrabold text-slate-900">
+                دفتر روزنامه اسناد حسابداری (کلیه اسناد اتوماتیک و دستی با قابلیت ویرایش و حذف)
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                با کلیک روی «ویرایش سند» می‌توانید سرفصل‌ها، مبالغ یا شرح سند را تغییر دهید.
+              </p>
+            </div>
+            <div className="relative w-full sm:w-64">
+              <Search size={14} className="absolute right-3 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder="جستجوی شماره سند، شرح یا حساب..."
+                value={ledgerSearchQuery}
+                onChange={(e) => setLedgerSearchQuery(e.target.value)}
+                className="w-full pr-8 pl-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs"
+              />
+            </div>
           </div>
-          <div className="divide-y divide-slate-200 max-h-[60vh] overflow-y-auto">
-            {[...vouchers].reverse().map((v) => (
+          <div className="divide-y divide-slate-200 max-h-[65vh] overflow-y-auto">
+            {filteredVouchers.map((v) => (
               <div key={v.id} className="p-3.5 space-y-2 hover:bg-slate-50/50">
                 <div className="flex flex-wrap justify-between items-center gap-2 text-xs">
                   <div className="flex items-center gap-2">
@@ -466,11 +727,29 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
                     <span className="text-slate-400">·</span>
                     <span className="font-bold text-slate-900">{v.description}</span>
                   </div>
-                  <div className="flex items-center gap-3 text-slate-500 font-mono text-[11px]">
+                  <div className="flex items-center gap-2 text-slate-500 font-mono text-[11px]">
                     <span>{format(new Date(v.date), 'yyyy/MM/dd HH:mm')}</span>
                     <span className="font-bold text-slate-800">
                       تراز: {formatCurrency(v.totalAmount)}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => handleStartEditVoucher(v)}
+                      className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg font-sans font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                      title="ویرایش این سند حسابداری"
+                    >
+                      <Edit2 size={12} />
+                      <span>ویرایش سند</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteVoucher(v)}
+                      className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-sans font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                      title="حذف این سند حسابداری"
+                    >
+                      <Trash2 size={12} />
+                      <span>حذف</span>
+                    </button>
                   </div>
                 </div>
                 <div className="bg-slate-50 rounded-xl border border-slate-200/80 overflow-x-auto">
@@ -506,6 +785,11 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
                 </div>
               </div>
             ))}
+            {filteredVouchers.length === 0 && (
+              <div className="py-10 text-center text-xs text-slate-400">
+                سندی با مشخصات جستجو شده یافت نشد.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -645,6 +929,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
                     <th className="py-2.5 px-3">جمع بدهکار</th>
                     <th className="py-2.5 px-3">جمع بستانکار</th>
                     <th className="py-2.5 px-3">مانده حساب</th>
+                    <th className="py-2.5 px-3 text-center">ویرایش / حذف</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -675,12 +960,32 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
                         <td className="py-2 px-3 font-mono font-extrabold text-slate-900">
                           {formatCurrency(net)}
                         </td>
+                        <td className="py-2 px-3 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditAccountModal(acc)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                              title="ویرایش سرفصل حسابداری"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAccount(acc)}
+                              className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                              title="حذف سرفصل حسابداری"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     );
                   })}
                   {filteredChartAccounts.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400 font-semibold">
+                      <td colSpan={7} className="py-8 text-center text-slate-400 font-semibold">
                         سرفصل حسابداری با کد یا عنوان وارد شده یافت نشد.
                       </td>
                     </tr>
@@ -691,7 +996,91 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
           </div>
         </div>
       )}
+
+      {/* EDIT ACCOUNT MODAL */}
+      {editingAccount && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                ویرایش سرفصل حسابداری: {editingAccount.code} - {editingAccount.name}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingAccount(null)}
+                className="p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditAccount} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">ماهیت و گروه حساب</label>
+                <select
+                  value={editAccType}
+                  onChange={(e) => setEditAccType(e.target.value as AccountType)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white font-bold"
+                >
+                  <option value="asset">۱۰۰ - دارایی‌ها</option>
+                  <option value="liability">۲۰۰ - بدهی‌ها</option>
+                  <option value="equity">۳۰۰ - سرمایه</option>
+                  <option value="revenue">۴۰۰ - درآمد و فروش</option>
+                  <option value="cogs">۵۰۰ - بهای تمام شده</option>
+                  <option value="expense">۶۰۰ - هزینه عملیاتی</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">کد حساب</label>
+                  <input
+                    type="text"
+                    required
+                    value={editAccCode}
+                    onChange={(e) => setEditAccCode(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono font-bold text-left"
+                    dir="ltr"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">عنوان سرفصل</label>
+                  <input
+                    type="text"
+                    required
+                    value={editAccName}
+                    onChange={(e) => setEditAccName(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">توضیح سرفصل</label>
+                <input
+                  type="text"
+                  value={editAccDesc}
+                  onChange={(e) => setEditAccDesc(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Save size={15} />
+                  <span>ذخیره تغییرات</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingAccount(null)}
+                  className="px-4 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-

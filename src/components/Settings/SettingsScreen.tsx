@@ -1608,10 +1608,50 @@ export default function SettingsScreen() {
                         src-tauri/target/release/Arka-POS.exe
                       </div>
                       <div className="p-1.5 bg-white rounded border border-slate-200">
-                        <span className="text-slate-500 font-sans font-bold block text-[10px]">فایل نصبی ویندوز (.msi):</span>
-                        src-tauri/target/release/bundle/msi/Arka-POS_x64.msi
+                        <span className="text-slate-500 font-sans font-bold block text-[10px]">فایل نصبی ویندوز (.exe / .msi):</span>
+                        src-tauri/target/release/bundle/nsis/Arka-POS_1.2.0_x64-setup.exe
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* PURGE OLD TAURI INSTALLATIONS & CACHE CARD */}
+                <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-700 font-bold flex items-center justify-center shrink-0">
+                        <Trash2 size={20} />
+                      </div>
+                      <div>
+                        <h4 className="text-xs md:text-sm font-extrabold text-amber-900">
+                          حل مشکل بالا آمدن نسخه قدیمی تائوری هنگام نصب جدید
+                        </h4>
+                        <p className="text-[11px] text-amber-800">
+                          ویندوز و مرورگر WebView2 گاهی کدهای نسخه قبلی را در AppData ذخیره می‌کنند. برای پاکسازی ۱۰۰٪ کامل از این اسکریپت استفاده کنید:
+                        </p>
+                      </div>
+                    </div>
+
+                    <a
+                      href="/cleanup-old-tauri-installation.bat"
+                      download="cleanup-old-tauri-installation.bat"
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition shadow-sm shrink-0 cursor-pointer"
+                    >
+                      <Download size={15} />
+                      <span>دانلود اسکریپت پاکسازی نسخه قدیمی (.bat)</span>
+                    </a>
+                  </div>
+
+                  <div className="text-[11px] text-amber-950 bg-amber-100/60 p-2.5 rounded-xl space-y-1 font-medium">
+                    <div className="font-extrabold text-amber-900 flex items-center gap-1">
+                      <CheckCircle2 size={13} className="text-amber-700" />
+                      <span>عملکرد اسکریپت پاکسازی خودکار:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5 text-amber-900 pr-1">
+                      <li>بستن خودکار تمام پروسه‌های قدیمی تائوری (<code className="font-mono">arka-pos.exe</code> / <code className="font-mono">tauri.exe</code>)</li>
+                      <li>حذف آن‌اینستال نسخه قبلی و پاکسازی کامل پوشه‌های <code className="font-mono">%LOCALAPPDATA%\com.tauri.dev</code> و <code className="font-mono">%LOCALAPPDATA%\com.arkasystem.pos</code></li>
+                      <li>پاکسازی کش WebView2 و کلیدهای رجیستری ویندوز جهت نصب ۱۰۰٪ تمیز و بدون تداخل</li>
+                    </ul>
                   </div>
                 </div>
               </div>

@@ -6,6 +6,8 @@ import {
   JournalVoucher,
   db,
   recordJournalVoucher,
+  deleteJournalVoucherAndSyncBanks,
+  updateJournalVoucherAndSyncBanks,
 } from '../../lib/db';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
@@ -22,6 +24,10 @@ import {
   Printer,
   Search,
   PieChart,
+  Edit2,
+  Trash2,
+  X,
+  Save,
 } from 'lucide-react';
 
 interface Props {
@@ -50,9 +56,10 @@ export default function ExpensesAndBankPayTab({
   );
   const [expCode, setExpCode] = useState<string>('601');
   const [expAmount, setExpAmount] = useState<number>(0);
-  const [expPayFrom, setExpPayFrom] = useState<'bank' | 'cash'>('bank');
+  const [expPayFrom, setExpPayFrom] = useState<'bank' | 'cash' | 'credit'>('bank');
   const [expBankId, setExpBankId] = useState<number>(banks[0]?.id || 0);
   const [expPersonId, setExpPersonId] = useState<number>(0);
+  const [expPersonLedgerMode, setExpPersonLedgerMode] = useState<'settle_credit' | 'both_accrue_and_pay'>('settle_credit');
   const [expDesc, setExpDesc] = useState<string>('');
 
   // 2. Fast Bank Payment to Person or Special Account Form
@@ -71,6 +78,22 @@ export default function ExpensesAndBankPayTab({
   const [newHasChequeBook, setNewHasChequeBook] = useState<boolean>(false);
   const [newChequeSeries, setNewChequeSeries] = useState('');
   const [newChequePages, setNewChequePages] = useState<number>(50);
+
+  // Edit Bank Modal State
+  const [editingBank, setEditingBank] = useState<BankAccount | null>(null);
+  const [editBankName, setEditBankName] = useState('');
+  const [editBankCard, setEditBankCard] = useState('');
+  const [editBankInitBal, setEditBankInitBal] = useState<number>(0);
+  const [editBankCurrBal, setEditBankCurrBal] = useState<number>(0);
+  const [editBankHasPos, setEditBankHasPos] = useState<boolean>(true);
+  const [editBankHasCheque, setEditBankHasCheque] = useState<boolean>(false);
+  const [editBankChequeSeries, setEditBankChequeSeries] = useState('');
+  const [editBankChequePages, setEditBankChequePages] = useState<number>(50);
+
+  // Edit Voucher / Expense / Bank Tx Modal State
+  const [editingVoucher, setEditingVoucher] = useState<JournalVoucher | null>(null);
+  const [editVoucherAmount, setEditVoucherAmount] = useState<number>(0);
+  const [editVoucherDesc, setEditVoucherDesc] = useState<string>('');
 
   // 4. Bank Statement Filters
   const [selectedBankIdForStatement, setSelectedBankIdForStatement] = useState<number>(
@@ -91,6 +114,85 @@ export default function ExpensesAndBankPayTab({
     setTimeout(() => setFeedback(''), 4000);
   };
 
+  const openEditBankModal = (bank: BankAccount) => {
+    setEditingBank(bank);
+    setEditBankName(bank.bankName);
+    setEditBankCard(bank.cardNumber);
+    setEditBankInitBal(bank.initialBalance || 0);
+    setEditBankCurrBal(bank.currentBalance || 0);
+    setEditBankHasPos(bank.hasPos !== false);
+    setEditBankHasCheque(Boolean(bank.hasChequeBook));
+    setEditBankChequeSeries(bank.chequeBookSeries || '');
+    setEditBankChequePages(bank.chequeBookPages || 50);
+  };
+
+  const handleSaveEditBank = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBank || !editingBank.id) return;
+    const updatedName = editBankName.trim() || editingBank.bankName;
+    await db.bankAccounts.update(editingBank.id, {
+      bankName: updatedName,
+      cardNumber: editBankCard.trim() || '----',
+      initialBalance: Math.round(Number(editBankInitBal) || 0),
+      currentBalance: Math.round(Number(editBankCurrBal) || 0),
+      hasPos: editBankHasPos,
+      hasChequeBook: editBankHasCheque,
+      chequeBookSeries: editBankChequeSeries.trim() || undefined,
+      chequeBookPages: Number(editBankChequePages) || 50,
+    });
+    setEditingBank(null);
+    showToast(`اطلاعات و موجودی «${updatedName}» با موفقیت ویرایش شد.`);
+  };
+
+  const handleDeleteBank = async (bank: BankAccount) => {
+    if (!bank.id) return;
+    if (!window.confirm(`آیا از حذف حساب بانکی «${bank.bankName}» اطمینان دارید؟`)) return;
+    await db.bankAccounts.delete(bank.id);
+    showToast(`حساب بانکی «${bank.bankName}» حذف شد.`);
+  };
+
+  const openEditVoucherModalByNumber = (voucherNumber: number) => {
+    const v = vouchers.find((x) => x.voucherNumber === voucherNumber);
+    if (!v) return;
+    setEditingVoucher(v);
+    setEditVoucherAmount(v.totalAmount);
+    setEditVoucherDesc(v.description);
+  };
+
+  const handleSaveVoucherQuickEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingVoucher || !editingVoucher.id) return;
+    const newAmt = Math.max(1, Math.round(Number(editVoucherAmount) || 0));
+    const ratio = editingVoucher.totalAmount > 0 ? newAmt / editingVoucher.totalAmount : 1;
+
+    const updatedLines = editingVoucher.lines.map((l) => ({
+      ...l,
+      debit: l.debit > 0 ? (editingVoucher.lines.filter((x) => x.debit > 0).length === 1 ? newAmt : Math.round(l.debit * ratio)) : 0,
+      credit: l.credit > 0 ? (editingVoucher.lines.filter((x) => x.credit > 0).length === 1 ? newAmt : Math.round(l.credit * ratio)) : 0,
+    }));
+
+    await updateJournalVoucherAndSyncBanks(editingVoucher.id, {
+      description: editVoucherDesc.trim() || editingVoucher.description,
+      lines: updatedLines,
+    });
+    setEditingVoucher(null);
+    showToast(`سند شماره #${editingVoucher.voucherNumber} ویرایش شد و موجودی بانک اصلاح گردید.`);
+  };
+
+  const handleDeleteVoucherByNumber = async (voucherNumber: number) => {
+    const v = vouchers.find((x) => x.voucherNumber === voucherNumber);
+    if (!v || !v.id) return;
+    if (
+      !window.confirm(
+        `آیا از حذف این تراکنش (سند #${v.voucherNumber} - ${v.description}) اطمینان دارید؟ موجودی بانک به صورت خودکار اصلاح می‌شود.`
+      )
+    ) {
+      return;
+    }
+    await deleteJournalVoucherAndSyncBanks(v.id);
+    showToast(`تراکنش سند #${v.voucherNumber} حذف شد و موجودی اصلاح گردید.`);
+  };
+
   const handleRecordExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     const amount = Math.round(Number(expAmount) || 0);
@@ -102,8 +204,112 @@ export default function ExpensesAndBankPayTab({
     const selectedBank = banks.find((b) => b.id === Number(expBankId)) || banks[0];
     const person = persons.find((p) => p.id === Number(expPersonId));
 
+    if (expPayFrom === 'credit' && !person) {
+      alert('برای ثبت طلب (هزینه تعهدی بدون پرداخت آنی)، لطفاً شخص یا پرسنل مورد نظر را انتخاب کنید.');
+      return;
+    }
+
     const description =
       expDesc.trim() || `ثبت ${expAcc.name}${person ? ` (${person.name})` : ''}`;
+
+    if (expPayFrom === 'credit' && person) {
+      // Accrue expense and credit the person (ثبت طلب برای شخص / بستانکار شدن شخص)
+      await recordJournalVoucher({
+        date: new Date(),
+        description: `${description} - ثبت طلب در حساب ${person.name}`,
+        type: 'auto_expense',
+        referenceId: person.id,
+        lines: [
+          {
+            accountCode: expAcc.code,
+            accountName: expAcc.name,
+            debit: amount,
+            credit: 0,
+            description: `${description} (شناسایی هزینه)`,
+          },
+          {
+            accountCode: '201',
+            accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+            personId: person.id,
+            personName: person.name,
+            debit: 0,
+            credit: amount,
+            description: `ثبت طلب ${person.name} بابت ${expAcc.name}`,
+          },
+        ],
+      });
+      setExpAmount(0);
+      setExpDesc('');
+      showToast(
+        `مبلغ ${formatCurrency(amount)} به عنوان طلب (بستانکار) در حساب «${person.name}» و سرفصل «${expAcc.name}» ثبت شد.`
+      );
+      return;
+    }
+
+    // Check if this is a salary payment to a staff member who already has automatic monthly salary
+    const isStaffWithAutoSalary =
+      person && person.role === 'staff' && (person.monthlySalary || 0) > 0 && expAcc.code === '601';
+
+    // Determine lines based on whether person is selected and mode
+    const buildDebitLines = () => {
+      if (person && expPersonLedgerMode === 'both_accrue_and_pay') {
+        // Record both the expense credit AND the payment debit in person's ledger
+        return [
+          {
+            accountCode: expAcc.code,
+            accountName: expAcc.name,
+            debit: amount,
+            credit: 0,
+            description,
+          },
+          {
+            accountCode: '201',
+            accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+            personId: person.id,
+            personName: person.name,
+            debit: 0,
+            credit: amount,
+            description: `ثبت طلب بابت ${expAcc.name}`,
+          },
+          {
+            accountCode: '201',
+            accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+            personId: person.id,
+            personName: person.name,
+            debit: amount,
+            credit: 0,
+            description: `پرداخت وجه بابت ${expAcc.name}`,
+          },
+        ];
+      }
+
+      if (isStaffWithAutoSalary) {
+        // Staff member already has 601 debited via automatic monthly salary voucher; debit 201 to settle their salary credit
+        return [
+          {
+            accountCode: '201',
+            accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+            personId: person.id,
+            personName: person.name,
+            debit: amount,
+            credit: 0,
+            description: `${description} (تسویه حقوق / مساعده)`,
+          },
+        ];
+      }
+
+      return [
+        {
+          accountCode: expAcc.code,
+          accountName: expAcc.name,
+          personId: person?.id,
+          personName: person?.name,
+          debit: amount,
+          credit: 0,
+          description,
+        },
+      ];
+    };
 
     if (expPayFrom === 'bank' && selectedBank) {
       await recordJournalVoucher({
@@ -113,15 +319,7 @@ export default function ExpensesAndBankPayTab({
         bankId: selectedBank.id,
         bankName: selectedBank.bankName,
         lines: [
-          {
-            accountCode: expAcc.code,
-            accountName: expAcc.name,
-            personId: person?.id,
-            personName: person?.name,
-            debit: amount,
-            credit: 0,
-            description,
-          },
+          ...buildDebitLines(),
           {
             accountCode: '102',
             accountName: 'موجودی بانک‌ها و کارتخوان‌ها',
@@ -137,15 +335,7 @@ export default function ExpensesAndBankPayTab({
         description: `${description} - پرداخت نقدی از صندوق`,
         type: 'auto_expense',
         lines: [
-          {
-            accountCode: expAcc.code,
-            accountName: expAcc.name,
-            personId: person?.id,
-            personName: person?.name,
-            debit: amount,
-            credit: 0,
-            description,
-          },
+          ...buildDebitLines(),
           {
             accountCode: '101',
             accountName: 'صندوق نقدی رستوران',
@@ -586,7 +776,7 @@ export default function ExpensesAndBankPayTab({
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">محل پرداخت</label>
+                  <label className="block font-bold text-slate-700 mb-1">نحوه تسویه / ثبت طلب</label>
                   <select
                     value={expPayFrom}
                     onChange={(e) => setExpPayFrom(e.target.value as any)}
@@ -594,6 +784,7 @@ export default function ExpensesAndBankPayTab({
                   >
                     <option value="bank">پرداخت از بانک / کارتخوان</option>
                     <option value="cash">پرداخت نقدی از صندوق</option>
+                    <option value="credit">ثبت طلب برای شخص (بستانکار شدن بدون پرداخت آنی)</option>
                   </select>
                 </div>
               </div>
@@ -617,21 +808,42 @@ export default function ExpensesAndBankPayTab({
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  شخص مرتبط (مثلاً نام پرسنل در پرداخت حقوق - اختیاری)
+                  شخص مرتبط (پرسنل یا تأمین‌کننده) {expPayFrom === 'credit' ? '*' : '(اختیاری)'}
                 </label>
                 <select
                   value={expPersonId}
                   onChange={(e) => setExpPersonId(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white font-bold"
                 >
                   <option value={0}>بدون شخص خاص (هزینه عمومی)</option>
                   {persons.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name} ({p.role === 'staff' ? 'پرسنل' : p.role === 'supplier' ? 'تأمین‌کننده' : 'مشتری'})
+                      {p.monthlySalary ? ` - حقوق ماهیانه: ${formatCurrency(p.monthlySalary)}` : ''}
                     </option>
                   ))}
                 </select>
               </div>
+
+              {expPersonId > 0 && expPayFrom !== 'credit' && (
+                <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl space-y-1.5">
+                  <label className="block font-extrabold text-blue-900 text-[11px]">
+                    نحوه تأثیر این پرداخت بر مانده حساب شخص انتخاب‌شده:
+                  </label>
+                  <select
+                    value={expPersonLedgerMode}
+                    onChange={(e) => setExpPersonLedgerMode(e.target.value as any)}
+                    className="w-full px-2.5 py-1.5 border border-blue-300 rounded-lg bg-white font-bold text-slate-800 text-xs"
+                  >
+                    <option value="settle_credit">
+                      کسر از طلب قبلی / پرداخت حقوق ماهانه ثبت‌شده (بدهکار شدن شخص)
+                    </option>
+                    <option value="both_accrue_and_pay">
+                      ثبت همزمان طلب و تسویه آنی (بدهکار و بستانکار همزمان = مانده بی‌حساب)
+                    </option>
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">شرح هزینه / بابت</label>
@@ -906,6 +1118,7 @@ export default function ExpensesAndBankPayTab({
                   <th className="py-2.5 px-3">واریزی (+)</th>
                   <th className="py-2.5 px-3">برداشت (-)</th>
                   <th className="py-2.5 px-3">مانده موجودی</th>
+                  <th className="py-2.5 px-3 text-center">ویرایش / حذف</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -928,11 +1141,31 @@ export default function ExpensesAndBankPayTab({
                     <td className="py-2 px-3 font-mono font-black text-slate-900">
                       {formatCurrency(l.runningBalance)}
                     </td>
+                    <td className="py-2 px-3 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEditVoucherModalByNumber(l.voucherNumber)}
+                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                          title="ویرایش تراکنش بانکی"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteVoucherByNumber(l.voucherNumber)}
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          title="حذف تراکنش بانکی"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {bankStatementData.lines.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center text-slate-400 font-semibold">
+                    <td colSpan={8} className="py-8 text-center text-slate-400 font-semibold">
                       هیچ تراکنشی برای این حساب بانکی در این بازه ثبت نشده است.
                     </td>
                   </tr>
@@ -953,7 +1186,7 @@ export default function ExpensesAndBankPayTab({
                 <span>صورتحساب و تفکیک کلیه هزینه‌های رستوران</span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                گزارش ریز هزینه‌های عمومی، حقوق، اجاره، قبوض، تعمیرات و به تفکیک سرفصل
+                گزارش ریز هزینه‌های عمومی، حقوق، اجاره، قبوض، تعمیرات و به تفکیک سرفصل (با قابلیت ویرایش و حذف)
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1055,6 +1288,7 @@ export default function ExpensesAndBankPayTab({
                   <th className="py-2.5 px-3">شرح هزینه</th>
                   <th className="py-2.5 px-3">شخص مرتبط</th>
                   <th className="py-2.5 px-3">مبلغ هزینه</th>
+                  <th className="py-2.5 px-3 text-center">ویرایش / حذف</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1074,11 +1308,31 @@ export default function ExpensesAndBankPayTab({
                     <td className="py-2 px-3 font-mono font-black text-rose-700">
                       {formatCurrency(l.amount)}
                     </td>
+                    <td className="py-2 px-3 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEditVoucherModalByNumber(l.voucherNumber)}
+                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                          title="ویرایش هزینه"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteVoucherByNumber(l.voucherNumber)}
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          title="حذف هزینه"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {expenseStatementData.lines.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-slate-400 font-semibold">
+                    <td colSpan={7} className="py-8 text-center text-slate-400 font-semibold">
                       هیچ هزینه‌ای در این بازه زمانی ثبت نشده است.
                     </td>
                   </tr>
@@ -1094,7 +1348,7 @@ export default function ExpensesAndBankPayTab({
         <div className="bg-white p-4 md:p-5 rounded-2xl border border-slate-200 space-y-4 shadow-2xs">
           <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <Building2 className="text-slate-700" size={18} />
-            <span>حساب‌های بانکی، کارتخوان‌ها (POS) و دسته چک‌ها</span>
+            <span>حساب‌های بانکی، کارتخوان‌ها (POS) و دسته چک‌ها (با قابلیت ویرایش و حذف)</span>
           </h3>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1106,7 +1360,7 @@ export default function ExpensesAndBankPayTab({
                 <div>
                   <div className="font-extrabold text-slate-900 text-sm flex items-center justify-between">
                     <span>{b.bankName}</span>
-                    <div className="flex gap-1">
+                    <div className="flex items-center gap-1">
                       {b.hasPos !== false && (
                         <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-[10px] rounded font-bold">
                           دارای پوز
@@ -1117,6 +1371,22 @@ export default function ExpensesAndBankPayTab({
                           دسته چک
                         </span>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => openEditBankModal(b)}
+                        className="p-1 text-blue-600 hover:bg-blue-100 rounded-lg cursor-pointer"
+                        title="ویرایش حساب بانکی"
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteBank(b)}
+                        className="p-1 text-rose-600 hover:bg-rose-100 rounded-lg cursor-pointer"
+                        title="حذف حساب بانکی"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
                   <div className="text-xs text-slate-500 font-mono mt-1" dir="ltr">
@@ -1237,6 +1507,165 @@ export default function ExpensesAndBankPayTab({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* MODAL 1: EDIT BANK ACCOUNT */}
+      {editingBank && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                ویرایش حساب بانکی: {editingBank.bankName}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingBank(null)}
+                className="p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditBank} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">نام بانک</label>
+                <input
+                  type="text"
+                  required
+                  value={editBankName}
+                  onChange={(e) => setEditBankName(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">شماره کارت / حساب</label>
+                <input
+                  type="text"
+                  value={editBankCard}
+                  onChange={(e) => setEditBankCard(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-left"
+                  dir="ltr"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    موجودی اول دوره ({currencyLabel})
+                  </label>
+                  <FormattedNumberInput
+                    value={editBankInitBal || ''}
+                    onValueChange={(val) => setEditBankInitBal(val)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono text-left"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    موجودی فعلی ({currencyLabel})
+                  </label>
+                  <FormattedNumberInput
+                    value={editBankCurrBal || ''}
+                    onValueChange={(val) => setEditBankCurrBal(val)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono font-bold text-left"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-4 pt-1">
+                <label className="flex items-center gap-2 font-bold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editBankHasPos}
+                    onChange={(e) => setEditBankHasPos(e.target.checked)}
+                    className="w-4 h-4 rounded text-blue-600"
+                  />
+                  <span>دارای کارتخوان (POS)</span>
+                </label>
+                <label className="flex items-center gap-2 font-bold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editBankHasCheque}
+                    onChange={(e) => setEditBankHasCheque(e.target.checked)}
+                    className="w-4 h-4 rounded text-amber-600"
+                  />
+                  <span>دارای دسته چک</span>
+                </label>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Save size={15} />
+                  <span>ذخیره تغییرات بانک</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingBank(null)}
+                  className="px-4 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: QUICK EDIT EXPENSE / BANK VOUCHER */}
+      {editingVoucher && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                ویرایش سند #{editingVoucher.voucherNumber}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingVoucher(null)}
+                className="p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleSaveVoucherQuickEdit} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  مبلغ تراکنش / هزینه ({currencyLabel})
+                </label>
+                <FormattedNumberInput
+                  required
+                  value={editVoucherAmount || ''}
+                  onValueChange={(val) => setEditVoucherAmount(val)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono font-bold text-left"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">شرح تراکنش / هزینه</label>
+                <input
+                  type="text"
+                  required
+                  value={editVoucherDesc}
+                  onChange={(e) => setEditVoucherDesc(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Save size={15} />
+                  <span>ذخیره تغییرات و اصلاح موجودی</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingVoucher(null)}
+                  className="px-4 py-2.5 bg-slate-100 text-slate-700 font-bold rounded-xl cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

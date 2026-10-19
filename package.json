@@ -38,6 +38,7 @@
     "react-dom": "^19.0.1",
     "react-multi-date-picker": "^4.5.2",
     "react-to-print": "^3.3.0",
+    "vazirmatn": "^33.0.3",
     "vite": "^6.2.3"
   },
   "devDependencies": {

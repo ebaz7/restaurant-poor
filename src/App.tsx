@@ -37,6 +37,8 @@ import CustomersScreen from './components/Customers/CustomersScreen';
 import AccountingScreen from './components/Accounting/AccountingScreen';
 import FirstTimeAdminSetup from './components/Common/FirstTimeAdminSetup';
 import { PWAInstallButton } from './components/Common/PWAInstallButton';
+import { LicenseLockModal } from './components/Common/LicenseLockModal';
+import { getLicenseStatus } from './lib/licenseManager';
 import {
   db,
   initializeDefaultDatabase,
@@ -90,6 +92,21 @@ export default function App() {
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [hasCheckedStartLock, setHasCheckedStartLock] = useState<boolean>(false);
 
+  // Hardware License Lock State
+  const [isLicenseActivated, setIsLicenseActivated] = useState<boolean>(true);
+  const [showLicenseModal, setShowLicenseModal] = useState<boolean>(false);
+
+  useEffect(() => {
+    async function checkLicenseOnStart() {
+      const status = await getLicenseStatus();
+      setIsLicenseActivated(status.isActivated);
+      if (!status.isActivated) {
+        setShowLicenseModal(true);
+      }
+    }
+    checkLicenseOnStart();
+  }, []);
+
   // Network Sync State
   const [syncState, setSyncState] = useState<SyncState>({
     isOnline: true,
@@ -123,6 +140,31 @@ export default function App() {
   const [loginError, setLoginError] = useState<string>('');
 
   const [isInitialSyncPending, setIsInitialSyncPending] = useState<boolean>(true);
+
+  // Auto-purge stale Service Worker and webview caches when upgrading versions
+  useEffect(() => {
+    try {
+      const CURRENT_VERSION = '1.2.0';
+      const storedVersion = window.localStorage.getItem('arka_build_version');
+      if (storedVersion !== CURRENT_VERSION) {
+        window.localStorage.setItem('arka_build_version', CURRENT_VERSION);
+        if (storedVersion) {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then((regs) => {
+              regs.forEach((r) => r.unregister());
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then((keys) => {
+              keys.forEach((k) => caches.delete(k));
+            });
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   // Initialize central network synchronization and database on startup
   useEffect(() => {
@@ -551,6 +593,20 @@ export default function App() {
 
           <PWAInstallButton variant="compact" className="w-24 mt-1" />
 
+          <button
+            type="button"
+            onClick={() => setShowLicenseModal(true)}
+            title="وضعیت لایسنس سخت‌افزاری و کد دستگاه"
+            className={`w-24 px-1.5 py-1 mt-1 rounded-xl text-[9px] font-extrabold flex items-center justify-center gap-1 border transition cursor-pointer ${
+              isLicenseActivated
+                ? 'bg-teal-50 border-teal-300 text-teal-800'
+                : 'bg-rose-50 border-rose-300 text-rose-800 animate-pulse'
+            }`}
+          >
+            <ShieldCheck size={11} className={isLicenseActivated ? 'text-teal-600' : 'text-rose-600'} />
+            <span>{isLicenseActivated ? 'لایسنس: فعال' : 'قفل لایسنس'}</span>
+          </button>
+
           <div className="flex flex-col items-center gap-0.5 w-full mt-1">
             <NavButton
               tab="pos"
@@ -737,6 +793,14 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Hardware License Lock Modal */}
+      <LicenseLockModal
+        isOpen={showLicenseModal || !isLicenseActivated}
+        isMandatory={!isLicenseActivated}
+        onClose={() => setShowLicenseModal(false)}
+        onSuccess={() => setIsLicenseActivated(true)}
+      />
     </div>
   );
 }

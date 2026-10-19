@@ -261,6 +261,9 @@ export interface Person {
   address?: string;
   description?: string;
   initialBalance?: number; // positive = debit (بدهکار به ما), negative = credit (طلبکار از ما)
+  monthlySalary?: number; // مبلغ حقوق ماهیانه توافقی (ویژه پرسنل)
+  employmentStartDate?: Date; // تاریخ شروع به کار / روز اول کاری
+  accrueCurrentMonthImmediately?: boolean; // شناسایی خودکار طلب حقوق در ابتدای هر ماه کاری (پیش‌فرض: true)
   createdAt: Date;
 }
 
@@ -271,6 +274,7 @@ export interface JournalVoucher {
   description: string;
   type: 'auto_sale' | 'auto_expense' | 'auto_payment' | 'auto_purchase' | 'auto_cheque' | 'manual';
   referenceId?: number;
+  salaryPeriodKey?: string;
   bankId?: number;
   bankName?: string;
   lines: JournalLine[];
@@ -498,6 +502,7 @@ export async function recordJournalVoucher(params: {
   description: string;
   type: JournalVoucher['type'];
   referenceId?: number;
+  salaryPeriodKey?: string;
   bankId?: number;
   bankName?: string;
   lines: JournalLine[];
@@ -511,6 +516,7 @@ export async function recordJournalVoucher(params: {
     description: params.description,
     type: params.type,
     referenceId: params.referenceId,
+    salaryPeriodKey: params.salaryPeriodKey,
     bankId: params.bankId,
     bankName: params.bankName,
     lines: params.lines,
@@ -536,6 +542,323 @@ export async function recordJournalVoucher(params: {
   }
 
   return id as number;
+}
+
+/**
+ * Helper: Deletes a journal voucher and reverses its effect on the associated bank's currentBalance.
+ */
+export async function deleteJournalVoucherAndSyncBanks(voucherId: number): Promise<void> {
+  const v = await db.journalVouchers.get(voucherId);
+  if (!v) return;
+
+  if (v.bankId) {
+    const bank = await db.bankAccounts.get(v.bankId);
+    if (bank) {
+      let delta = 0;
+      for (const line of v.lines) {
+        if (line.accountCode === '102') {
+          delta += (Number(line.debit) || 0) - (Number(line.credit) || 0);
+        }
+      }
+      if (delta !== 0) {
+        await db.bankAccounts.update(v.bankId, {
+          currentBalance: Math.max(0, bank.currentBalance - delta),
+        });
+      }
+    }
+  }
+
+  await db.journalVouchers.delete(voucherId);
+}
+
+/**
+ * Helper: Updates an existing journal voucher and adjusts bank balances accurately.
+ */
+export async function updateJournalVoucherAndSyncBanks(
+  voucherId: number,
+  updates: {
+    description?: string;
+    date?: Date;
+    bankId?: number;
+    bankName?: string;
+    lines: JournalLine[];
+  }
+): Promise<void> {
+  const oldV = await db.journalVouchers.get(voucherId);
+  if (!oldV) return;
+
+  // 1. Reverse old bank impact
+  if (oldV.bankId) {
+    const oldBank = await db.bankAccounts.get(oldV.bankId);
+    if (oldBank) {
+      let oldDelta = 0;
+      for (const line of oldV.lines) {
+        if (line.accountCode === '102') {
+          oldDelta += (Number(line.debit) || 0) - (Number(line.credit) || 0);
+        }
+      }
+      if (oldDelta !== 0) {
+        await db.bankAccounts.update(oldV.bankId, {
+          currentBalance: oldBank.currentBalance - oldDelta,
+        });
+      }
+    }
+  }
+
+  const totalAmount = updates.lines.reduce((sum, l) => sum + (Number(l.debit) || 0), 0);
+  const newBankId = updates.bankId !== undefined ? updates.bankId : oldV.bankId;
+  const newBankName = updates.bankName !== undefined ? updates.bankName : oldV.bankName;
+
+  await db.journalVouchers.update(voucherId, {
+    description: updates.description !== undefined ? updates.description : oldV.description,
+    date: updates.date || oldV.date,
+    bankId: newBankId,
+    bankName: newBankName,
+    lines: updates.lines,
+    totalAmount,
+  });
+
+  // 2. Apply new bank impact
+  if (newBankId) {
+    const newBank = await db.bankAccounts.get(newBankId);
+    if (newBank) {
+      let newDelta = 0;
+      for (const line of updates.lines) {
+        if (line.accountCode === '102') {
+          newDelta += (Number(line.debit) || 0) - (Number(line.credit) || 0);
+        }
+      }
+      if (newDelta !== 0) {
+        await db.bankAccounts.update(newBankId, {
+          currentBalance: newBank.currentBalance + newDelta,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Helper: Recalculates running Kardex balances and weighted average cost for a raw material
+ * after any initial stock, purchase invoice, or outflow transaction is edited or deleted.
+ */
+export async function recalculateMaterialKardex(materialId: number): Promise<void> {
+  const mat = await db.rawMaterials.get(materialId);
+  if (!mat) return;
+
+  const txs = await db.inventoryTransactions
+    .where('materialId')
+    .equals(materialId)
+    .toArray();
+
+  // Sort chronologically
+  txs.sort((a, b) => {
+    const tDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+    if (tDiff !== 0) return tDiff;
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  if (txs.length === 0) {
+    return;
+  }
+
+  let runningQty = 0;
+  let runningAvgCost = mat.avgCost || 0;
+  let lastBuyPrice = mat.lastPurchasePrice || mat.avgCost || 0;
+
+  for (const tx of txs) {
+    const isIn = tx.type === 'in_initial' || tx.type === 'in_purchase';
+    if (isIn) {
+      const wAvg = calculateWeightedAveragePurchase({
+        currentQty: runningQty,
+        currentAvgCost: runningAvgCost,
+        purchaseQty: tx.quantity,
+        purchaseUnitPrice: tx.unitPrice,
+      });
+      runningQty = wAvg.newQuantity;
+      runningAvgCost = wAvg.newAverageCost;
+      lastBuyPrice = tx.unitPrice;
+      const totalPrice = Math.round(tx.quantity * tx.unitPrice);
+      if (tx.id) {
+        await db.inventoryTransactions.update(tx.id, {
+          materialName: mat.name,
+          unit: mat.unit,
+          totalPrice,
+          balanceQtyAfter: runningQty,
+          balanceValueAfter: wAvg.totalInventoryValue,
+        });
+      }
+    } else {
+      runningQty = Math.max(0, Number((runningQty - tx.quantity).toFixed(4)));
+      const unitPrice = tx.unitPrice || runningAvgCost;
+      const totalPrice = Math.round(tx.quantity * unitPrice);
+      const valAfter = Math.round(runningQty * runningAvgCost);
+      if (tx.id) {
+        await db.inventoryTransactions.update(tx.id, {
+          materialName: mat.name,
+          unit: mat.unit,
+          unitPrice,
+          totalPrice,
+          balanceQtyAfter: runningQty,
+          balanceValueAfter: valAfter,
+        });
+      }
+    }
+  }
+
+  await db.rawMaterials.update(materialId, {
+    currentQty: runningQty,
+    avgCost: runningAvgCost,
+    lastPurchasePrice: lastBuyPrice,
+    updatedAt: new Date(),
+  });
+}
+
+/**
+ * Helper: Computes the monthly salary periods that should be accrued for a staff member
+ * from their employmentStartDate (or createdAt) up to `now`.
+ */
+export function calculateStaffSalaryPeriods(
+  startDateInput: Date | string,
+  accrueAtMonthStart: boolean = true,
+  now: Date = new Date()
+): Array<{ periodNumber: number; periodStart: Date; periodEnd: Date }> {
+  const start = new Date(startDateInput);
+  if (isNaN(start.getTime())) return [];
+  start.setHours(0, 0, 0, 0);
+
+  const current = new Date(now);
+  current.setHours(23, 59, 59, 999);
+
+  if (start > current) return [];
+
+  const periods: Array<{ periodNumber: number; periodStart: Date; periodEnd: Date }> = [];
+  const MAX_PERIODS = 60; // Cap at 5 years (60 months) for safety
+
+  for (let k = 1; k <= MAX_PERIODS; k++) {
+    const pStart = new Date(start);
+    pStart.setMonth(pStart.getMonth() + (k - 1));
+
+    const pEnd = new Date(start);
+    pEnd.setMonth(pEnd.getMonth() + k);
+
+    if (accrueAtMonthStart) {
+      if (pStart <= current) {
+        periods.push({ periodNumber: k, periodStart: pStart, periodEnd: pEnd });
+      } else {
+        break;
+      }
+    } else {
+      if (pEnd <= current) {
+        periods.push({ periodNumber: k, periodStart: pStart, periodEnd: pEnd });
+      } else {
+        break;
+      }
+    }
+  }
+
+  return periods;
+}
+
+/**
+ * Helper: Automatically issues or updates monthly salary credit (طلب حقوق ماهانه) journal vouchers
+ * for all staff members who have `monthlySalary > 0`.
+ * Returns the number of newly issued salary vouchers.
+ */
+export async function syncStaffMonthlySalaries(): Promise<number> {
+  const allPersons = await db.persons.toArray();
+  const allVouchers = await db.journalVouchers.toArray();
+  let newlyCreatedCount = 0;
+
+  for (const person of allPersons) {
+    if (!person.id) continue;
+    const salary = Math.round(Number(person.monthlySalary) || 0);
+    const keyPrefix = `staff_salary_${person.id}_period_`;
+
+    // Find all existing auto salary vouchers for this person
+    const existingPersonSalaryVouchers = allVouchers.filter(
+      (v) =>
+        (v.salaryPeriodKey && v.salaryPeriodKey.startsWith(keyPrefix)) ||
+        (v.referenceId === person.id &&
+          v.type === 'auto_expense' &&
+          v.description.includes('شناسایی خودکار طلب حقوق ماهیانه'))
+    );
+
+    if (person.role !== 'staff' || salary <= 0) {
+      // If salary was disabled or set to 0, remove auto salary vouchers
+      for (const ev of existingPersonSalaryVouchers) {
+        if (ev.id) await db.journalVouchers.delete(ev.id);
+      }
+      continue;
+    }
+
+    const startDate = person.employmentStartDate || person.createdAt || new Date();
+    const accrueAtStart = person.accrueCurrentMonthImmediately !== false;
+    const duePeriods = calculateStaffSalaryPeriods(startDate, accrueAtStart, new Date());
+
+    const validKeys = new Set<string>();
+
+    for (const period of duePeriods) {
+      const periodKey = `${keyPrefix}${period.periodNumber}`;
+      validKeys.add(periodKey);
+
+      const existing = existingPersonSalaryVouchers.find(
+        (v) =>
+          v.salaryPeriodKey === periodKey ||
+          v.description.includes(`(دوره ${period.periodNumber})`)
+      );
+
+      const desc = `شناسایی خودکار طلب حقوق ماهیانه (دوره ${period.periodNumber}) - ${person.name}`;
+      const lines: JournalLine[] = [
+        {
+          accountCode: '601',
+          accountName: 'هزینه حقوق و دستمزد پرسنل',
+          debit: salary,
+          credit: 0,
+          description: `هزینه حقوق ماهیانه دوره ${period.periodNumber} (${person.name})`,
+        },
+        {
+          accountCode: '201',
+          accountName: 'حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)',
+          personId: person.id,
+          personName: person.name,
+          debit: 0,
+          credit: salary,
+          description: `ثبت طلب حقوق ماهیانه دوره ${period.periodNumber}`,
+        },
+      ];
+
+      if (!existing) {
+        await recordJournalVoucher({
+          date: period.periodStart,
+          description: desc,
+          type: 'auto_expense',
+          referenceId: person.id,
+          salaryPeriodKey: periodKey,
+          lines,
+        });
+        newlyCreatedCount++;
+      } else if (existing.id && (existing.totalAmount !== salary || existing.salaryPeriodKey !== periodKey)) {
+        // Update if salary amount or person name changed
+        await db.journalVouchers.update(existing.id, {
+          description: desc,
+          date: period.periodStart,
+          salaryPeriodKey: periodKey,
+          lines,
+          totalAmount: salary,
+        });
+      }
+    }
+
+    // Delete any excess periods if employmentStartDate was moved forward
+    for (const ev of existingPersonSalaryVouchers) {
+      const evKey = ev.salaryPeriodKey;
+      if (ev.id && evKey && !validKeys.has(evKey)) {
+        await db.journalVouchers.delete(ev.id);
+      }
+    }
+  }
+
+  return newlyCreatedCount;
 }
 
 /**

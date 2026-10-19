@@ -14,7 +14,14 @@ import {
   Save,
   ShieldAlert,
 } from 'lucide-react';
-import { db, Order, OrderItem, BankAccount } from '../../lib/db';
+import {
+  db,
+  Order,
+  OrderItem,
+  BankAccount,
+  deleteJournalVoucherAndSyncBanks,
+  updateJournalVoucherAndSyncBanks,
+} from '../../lib/db';
 import { formatCurrency } from '../../lib/utils';
 import { pushToCentralServer } from '../../lib/networkSync';
 
@@ -121,14 +128,15 @@ export default function InvoiceEditDeleteModal({
     setErrorMsg('');
 
     try {
-      const selectedBank = bankAccounts.find((b) => b.id === Number(selectedBankId));
+      const selectedBank =
+        bankAccounts.find((b) => b.id === Number(selectedBankId)) || bankAccounts[0];
 
       const updatedOrderFields: Partial<Order> = {
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         paymentMethod,
-        bankId: selectedBank?.id,
-        bankName: selectedBank?.bankName,
+        bankId: paymentMethod === 'card' ? selectedBank?.id : undefined,
+        bankName: paymentMethod === 'card' ? selectedBank?.bankName : undefined,
         discountType,
         discountValue,
         items,
@@ -141,6 +149,51 @@ export default function InvoiceEditDeleteModal({
       };
 
       await db.orders.update(order.id, updatedOrderFields);
+
+      // Update associated accounting journal voucher
+      const vouchers = await db.journalVouchers.toArray();
+      const saleVoucher = vouchers.find(
+        (v) =>
+          (v.referenceId === order.id && v.type === 'auto_sale') ||
+          (v.description && v.description.includes(`#${order.invoiceNumber}`))
+      );
+      if (saleVoucher && saleVoucher.id) {
+        const debitAccCode =
+          paymentMethod === 'cash' ? '101' : paymentMethod === 'credit' ? '103' : '102';
+        const debitAccName =
+          paymentMethod === 'cash'
+            ? 'صندوق نقدی رستوران'
+            : paymentMethod === 'credit'
+            ? 'حساب‌های دریافتنی (مشتریان و نسیه)'
+            : 'موجودی بانک‌ها و کارتخوان‌ها';
+        const revAccCode = order.invoiceMode === 'self_service' ? '402' : '401';
+        const revAccName =
+          order.invoiceMode === 'self_service'
+            ? 'درآمد فیش سلف سرویس و نوشابه'
+            : 'درآمد فروش غذا و منو';
+
+        await updateJournalVoucherAndSyncBanks(saleVoucher.id, {
+          description: `فروش فاکتور #${order.invoiceNumber} (${customerName.trim() || 'مشتری'}) - ویرایش شده`,
+          bankId: paymentMethod === 'card' ? selectedBank?.id : undefined,
+          bankName: paymentMethod === 'card' ? selectedBank?.bankName : undefined,
+          lines: [
+            {
+              accountCode: debitAccCode,
+              accountName: debitAccName,
+              debit: newTotal,
+              credit: 0,
+              description: `دریافت بابت فاکتور #${order.invoiceNumber}`,
+            },
+            {
+              accountCode: revAccCode,
+              accountName: revAccName,
+              debit: 0,
+              credit: newTotal,
+              description: `درآمد فروش فاکتور #${order.invoiceNumber}`,
+            },
+          ],
+        });
+      }
 
       // Also sync and trigger callback
       await pushToCentralServer(false);
@@ -168,11 +221,14 @@ export default function InvoiceEditDeleteModal({
       // Remove order from IndexedDB
       await db.orders.delete(order.id);
 
-      // Also cleanup associated journal voucher entries referencing invoice number
+      // Also cleanup associated journal voucher entries referencing invoice number and sync bank balances
       const vouchers = await db.journalVouchers.toArray();
       for (const v of vouchers) {
-        if (v.description && v.description.includes(`#${order.invoiceNumber}`)) {
-          if (v.id) await db.journalVouchers.delete(v.id);
+        if (
+          (v.referenceId === order.id && v.type === 'auto_sale') ||
+          (v.description && v.description.includes(`#${order.invoiceNumber}`))
+        ) {
+          if (v.id) await deleteJournalVoucherAndSyncBanks(v.id);
         }
       }
 
