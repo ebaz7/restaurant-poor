@@ -19,21 +19,82 @@ export interface LicenseInfo {
 }
 
 /**
- * Simple fast SHA256 string hasher using Web Crypto API or fallback
+ * Pure synchronous SHA-256 implementation so both HTTPS/Tauri and LAN HTTP generate identical hashes
  */
-async function sha256Hex(str: string): Promise<string> {
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    try {
-      const msgUint8 = new TextEncoder().encode(str);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-    } catch {
-      // fallback
+function sha256Pure(ascii: string): string {
+  function rightRotate(value: number, amount: number) {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  let i: number, j: number;
+  let result = '';
+  const words: number[] = [];
+  const asciiBitLength = ascii.length * 8;
+  let hash: number[] = [];
+  const k: number[] = [];
+  let primeCounter = 0;
+  const isComposite: Record<number, number> = {};
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isComposite[candidate]) {
+      for (i = 0; i < 313; i += candidate) {
+        isComposite[i] = candidate;
+      }
+      hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
     }
   }
+  ascii += '\x80';
+  while ((ascii.length % 64) - 56) ascii += '\x00';
+  for (i = 0; i < ascii.length; i++) {
+    j = ascii.charCodeAt(i);
+    if (j >> 8) return '';
+    words[i >> 2] |= j << (((3 - i) % 4) * 8);
+  }
+  words[words.length] = (asciiBitLength / maxWord) | 0;
+  words[words.length] = asciiBitLength;
+  for (j = 0; j < words.length; ) {
+    const w = words.slice(j, (j += 16));
+    const oldHash = hash;
+    hash = hash.slice(0, 8);
+    for (i = 0; i < 64; i++) {
+      const w15 = w[i - 15],
+        w2 = w[i - 2];
+      const a = hash[0],
+        e = hash[4];
+      const temp1 =
+        hash[7] +
+        (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+        ((e & hash[5]) ^ (~e & hash[6])) +
+        k[i] +
+        (w[i] =
+          i < 16
+            ? w[i]
+            : (w[i - 16] +
+                (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+                w[i - 7] +
+                (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) |
+              0);
+      const temp2 =
+        (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+        ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+      hash = [(temp1 + temp2) | 0].concat(hash);
+      hash[4] = (hash[4] + temp1) | 0;
+    }
+    for (i = 0; i < 8; i++) {
+      hash[i] = (hash[i] + oldHash[i]) | 0;
+    }
+  }
+  for (i = 0; i < 8; i++) {
+    for (j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += (b < 16 ? '0' : '') + b.toString(16);
+    }
+  }
+  return result;
+}
 
-  // Fallback FNV-1a hash generator if Web Crypto unavailable
+function fnvFallbackHex(str: string): string {
   let hash1 = 2166136261;
   let hash2 = 30503041;
   for (let i = 0; i < str.length; i++) {
@@ -46,6 +107,15 @@ async function sha256Hex(str: string): Promise<string> {
   const h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
   const h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
   return h1Hex + h2Hex + h1Hex + h2Hex;
+}
+
+/**
+ * Simple fast SHA256 string hasher using pure JS SHA-256
+ */
+async function sha256Hex(str: string): Promise<string> {
+  const pure = sha256Pure(str);
+  if (pure) return pure;
+  return fnvFallbackHex(str);
 }
 
 /**
@@ -110,7 +180,7 @@ export async function calculateLicenseKeyForSystemCode(systemCode: string): Prom
 }
 
 /**
- * Verifies if user entered key matches current System Code or Master Emergency Key
+ * Verifies if user entered key matches current System Code (SHA-256 or legacy FNV) or Master Emergency Key
  */
 export async function verifyLicenseKey(userKey: string, targetSystemCode?: string): Promise<{ valid: boolean; isEmergency?: boolean; message: string }> {
   const cleanKey = userKey.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -121,10 +191,13 @@ export async function verifyLicenseKey(userKey: string, targetSystemCode?: strin
   }
 
   const sysCode = targetSystemCode || (await getSystemCode());
-  const expectedKey = await calculateLicenseKeyForSystemCode(sysCode);
-  const cleanExpected = expectedKey.replace(/[^A-Z0-9]/g, '');
+  const cleanCode = sysCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const combined = `${cleanCode}_${MASTER_SECRET_SALT}`;
 
-  if (cleanKey === cleanExpected) {
+  const shaHash = sha256Pure(combined).substring(0, 16).toUpperCase();
+  const fnvHash = fnvFallbackHex(combined).substring(0, 16).toUpperCase();
+
+  if (cleanKey === shaHash || cleanKey === fnvHash) {
     return { valid: true, isEmergency: false, message: 'لایسنس نرم‌افزار با موفقیت تأیید شد.' };
   }
 

@@ -27,7 +27,7 @@
     }
     .header {
       text-align: center;
-      border-b: 1px solid #334155;
+      border-bottom: 1px solid #334155;
       padding-bottom: 16px;
       margin-bottom: 20px;
     }
@@ -90,6 +90,18 @@
       direction: ltr;
       margin: 10px 0;
       word-break: break-all;
+      user-select: all;
+      -webkit-user-select: all;
+    }
+    .sub-key {
+      font-size: 12px;
+      color: #fbbf24;
+      direction: ltr;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed #334155;
+      user-select: all;
+      -webkit-user-select: all;
     }
     .copy-btn {
       background: #166534;
@@ -113,72 +125,158 @@
 
     <div class="group">
       <label>کد دستگاه ارسال شده توسط مشتری (System Code):</label>
-      <input type="text" id="sysCodeInput" placeholder="مثلاً: ARKA-8F9A-4B2C-1E3D" autocomplete="off" spellcheck="false">
+      <input type="text" id="sysCodeInput" placeholder="مثلاً: ARKA-9815-B338-0D43" autocomplete="off" spellcheck="false" oninput="generateKey(true)">
     </div>
 
-    <button type="button" onclick="generateKey()">تولید کد فعال‌سازی اختصاصی</button>
+    <button type="button" id="genBtn" onclick="generateKey(false)">تولید کد فعال‌سازی اختصاصی</button>
 
     <div class="result-box" id="resultBox">
       <div style="font-size: 11px; color: #94a3b8;">کد فعال‌سازی اختصاصی (License Key):</div>
       <div class="key-display" id="keyOutput">---- ---- ---- ----</div>
       <button type="button" class="copy-btn" id="copyBtn" onclick="copyKey()">کپی کد جهت ارسال برای مشتری</button>
+      <div class="sub-key" id="altKeyOutput"></div>
     </div>
   </div>
 
   <script>
-    const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
+    var MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
 
-    async function sha256Hex(str) {
-      if (typeof crypto !== 'undefined' && crypto.subtle) {
-        try {
-          const msgUint8 = new TextEncoder().encode(str);
-          const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-          const hashArray = Array.from(new Uint8Array(hashBuffer));
-          return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        } catch (e) {}
+    // Pure synchronous JavaScript SHA-256 (works 100% offline in all browsers & file:// viewers)
+    function sha256Pure(ascii) {
+      function rightRotate(value, amount) {
+        return (value >>> amount) | (value << (32 - amount));
       }
-      let hash1 = 2166136261;
-      let hash2 = 30503041;
-      for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
+      var mathPow = Math.pow;
+      var maxWord = mathPow(2, 32);
+      var lengthProperty = 'length';
+      var i, j;
+      var result = '';
+      var words = [];
+      var asciiBitLength = ascii[lengthProperty] * 8;
+      var hash = sha256Pure.h = sha256Pure.h || [];
+      var k = sha256Pure.k = sha256Pure.k || [];
+      var primeCounter = k[lengthProperty];
+      var isComposite = {};
+      for (var candidate = 2; primeCounter < 64; candidate++) {
+        if (!isComposite[candidate]) {
+          for (i = 0; i < 313; i += candidate) {
+            isComposite[i] = candidate;
+          }
+          hash[primeCounter] = (mathPow(candidate, .5) * maxWord) | 0;
+          k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+        }
+      }
+      ascii += '\x80';
+      while (ascii[lengthProperty] % 64 - 56) ascii += '\x00';
+      for (i = 0; i < ascii[lengthProperty]; i++) {
+        j = ascii.charCodeAt(i);
+        if (j >> 8) return '';
+        words[i >> 2] |= j << ((3 - i) % 4) * 8;
+      }
+      words[words[lengthProperty]] = ((asciiBitLength / maxWord) | 0);
+      words[words[lengthProperty]] = (asciiBitLength);
+      for (j = 0; j < words[lengthProperty];) {
+        var w = words.slice(j, j += 16);
+        var oldHash = hash;
+        hash = hash.slice(0, 8);
+        for (i = 0; i < 64; i++) {
+          var i2 = i + j;
+          var w15 = w[i - 15], w2 = w[i - 2];
+          var a = hash[0], e = hash[4];
+          var temp1 = hash[7]
+            + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25))
+            + ((e & hash[5]) ^ ((~e) & hash[6]))
+            + k[i]
+            + (w[i] = (i < 16) ? w[i] : (
+                w[i - 16]
+                + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3))
+                + w[i - 7]
+                + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))
+              ) | 0
+            );
+          var temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22))
+            + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+          hash = [(temp1 + temp2) | 0].concat(hash);
+          hash[4] = (hash[4] + temp1) | 0;
+        }
+        for (i = 0; i < 8; i++) {
+          hash[i] = (hash[i] + oldHash[i]) | 0;
+        }
+      }
+      for (i = 0; i < 8; i++) {
+        for (j = 3; j + 1; j--) {
+          var b = (hash[i] >> (j * 8)) & 255;
+          result += ((b < 16) ? 0 : '') + b.toString(16);
+        }
+      }
+      return result;
+    }
+
+    function fnvFallbackHex(str) {
+      var hash1 = 2166136261;
+      var hash2 = 30503041;
+      for (var i = 0; i < str.length; i++) {
+        var char = str.charCodeAt(i);
         hash1 ^= char;
         hash1 = Math.imul(hash1, 16777619);
         hash2 ^= char;
         hash2 = Math.imul(hash2, 1099511628211 || 16777619);
       }
-      const h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
-      const h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
+      var h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
+      var h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
       return h1Hex + h2Hex + h1Hex + h2Hex;
     }
 
-    async function generateKey() {
-      const input = document.getElementById('sysCodeInput').value.trim();
+    function generateKey(silent) {
+      var inputEl = document.getElementById('sysCodeInput');
+      var input = (inputEl ? inputEl.value : '').trim();
       if (!input) {
-        alert('لطفاً کد دستگاه مشتری را وارد کنید.');
+        if (!silent) alert('لطفاً کد دستگاه مشتری را وارد کنید.');
         return;
       }
-      const cleanCode = input.toUpperCase().replace(/[^A-Z0-9]/g, '');
-      const combined = cleanCode + '_' + MASTER_SECRET_SALT;
-      const hash = await sha256Hex(combined);
+      var cleanCode = input.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (cleanCode.length < 4 && silent) return;
 
-      const k1 = hash.substring(0, 4).toUpperCase();
-      const k2 = hash.substring(4, 8).toUpperCase();
-      const k3 = hash.substring(8, 12).toUpperCase();
-      const k4 = hash.substring(12, 16).toUpperCase();
+      var combined = cleanCode + '_' + MASTER_SECRET_SALT;
+      var hash = sha256Pure(combined);
+      var fnvHash = fnvFallbackHex(combined);
 
-      const finalKey = `${k1}-${k2}-${k3}-${k4}`;
+      var k1 = hash.substring(0, 4).toUpperCase();
+      var k2 = hash.substring(4, 8).toUpperCase();
+      var k3 = hash.substring(8, 12).toUpperCase();
+      var k4 = hash.substring(12, 16).toUpperCase();
+      var finalKey = k1 + '-' + k2 + '-' + k3 + '-' + k4;
+
+      var f1 = fnvHash.substring(0, 4).toUpperCase();
+      var f2 = fnvHash.substring(4, 8).toUpperCase();
+      var f3 = fnvHash.substring(8, 12).toUpperCase();
+      var f4 = fnvHash.substring(12, 16).toUpperCase();
+      var altKey = f1 + '-' + f2 + '-' + f3 + '-' + f4;
 
       document.getElementById('keyOutput').innerText = finalKey;
+      document.getElementById('altKeyOutput').innerText = 'کد جایگزین شبکه محلی (HTTP): ' + altKey;
       document.getElementById('resultBox').classList.add('active');
     }
 
     function copyKey() {
-      const keyText = document.getElementById('keyOutput').innerText;
-      navigator.clipboard.writeText(keyText).then(() => {
-        const btn = document.getElementById('copyBtn');
+      var keyText = document.getElementById('keyOutput').innerText;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(keyText).then(function() {
+          var btn = document.getElementById('copyBtn');
+          btn.innerText = '✔ کپی شد!';
+          setTimeout(function() { btn.innerText = 'کپی کد جهت ارسال برای مشتری'; }, 2000);
+        });
+      } else {
+        var tempInput = document.createElement('input');
+        tempInput.value = keyText;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
+        var btn = document.getElementById('copyBtn');
         btn.innerText = '✔ کپی شد!';
-        setTimeout(() => { btn.innerText = 'کپی کد جهت ارسال برای مشتری'; }, 2000);
-      });
+        setTimeout(function() { btn.innerText = 'کپی کد جهت ارسال برای مشتری'; }, 2000);
+      }
     }
   </script>
 </body>
