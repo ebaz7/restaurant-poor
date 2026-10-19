@@ -96,17 +96,6 @@ export default function App() {
   const [isLicenseActivated, setIsLicenseActivated] = useState<boolean>(true);
   const [showLicenseModal, setShowLicenseModal] = useState<boolean>(false);
 
-  useEffect(() => {
-    async function checkLicenseOnStart() {
-      const status = await getLicenseStatus();
-      setIsLicenseActivated(status.isActivated);
-      if (!status.isActivated) {
-        setShowLicenseModal(true);
-      }
-    }
-    checkLicenseOnStart();
-  }, []);
-
   // Network Sync State
   const [syncState, setSyncState] = useState<SyncState>({
     isOnline: true,
@@ -122,15 +111,37 @@ export default function App() {
   const [customServerInput, setCustomServerInput] = useState<string>('');
 
   useEffect(() => {
+    async function verifyAndSyncLicense() {
+      const status = await getLicenseStatus();
+      setIsLicenseActivated(status.isActivated);
+      if (status.isActivated) {
+        setShowLicenseModal(false);
+      } else {
+        setShowLicenseModal(true);
+      }
+    }
+    verifyAndSyncLicense();
+  }, [
+    settings?.centralLicenseInfo?.isActivated,
+    syncState.serverUrl,
+    syncState.serverRevision,
+  ]);
+
+  useEffect(() => {
     if (syncState.serverUrl) {
       setCustomServerInput(syncState.serverUrl);
     }
   }, [syncState.serverUrl]);
 
-  const handleSaveServerUrl = () => {
+  const handleSaveServerUrl = async () => {
     if (!customServerInput.trim()) return;
     setServerUrl(customServerInput.trim());
     setManualSyncMessage('آدرس سرور جدید ذخیره شد و همگام‌سازی برقرار گردید.');
+    const status = await getLicenseStatus();
+    if (status.isActivated) {
+      setIsLicenseActivated(true);
+      setShowLicenseModal(false);
+    }
     setTimeout(() => setManualSyncMessage(null), 4000);
   };
 

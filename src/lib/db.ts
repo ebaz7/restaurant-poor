@@ -5,6 +5,7 @@ import {
   JournalLine,
   calculateRecipeCost,
   calculateWeightedAveragePurchase,
+  convertRecipeQtyToStockUnit,
 } from './accountingEngine';
 
 export interface Category {
@@ -107,6 +108,14 @@ export interface AppSettings {
   autoBackupBeforeUpdate?: boolean;
   // Kitchen Privacy: hide COGS / cost prices from chef
   hideCostPriceFromKitchen?: boolean;
+  // Central Server License shared across all LAN clients
+  centralLicenseInfo?: {
+    isActivated: boolean;
+    systemCode: string;
+    licenseKey: string;
+    activatedAt: string;
+    isEmergencyOverride?: boolean;
+  };
 }
 
 export type PermissionKey =
@@ -300,7 +309,8 @@ export interface Cheque {
 export interface RawMaterial {
   id?: number;
   name: string;
-  unit: 'کیلوگرم' | 'گرم' | 'عدد' | 'لیتر' | 'بسته';
+  unit: 'کیلوگرم' | 'گرم' | 'عدد' | 'لیتر' | 'بسته' | 'کارتن' | 'سی‌سی' | 'مثقال';
+  unitsPerPackage?: number; // ضریب تبدیل بسته/کارتن (مثلاً هر کارتن ۲۴ عدد یا ۱۰ کیلوگرم)
   currentQty: number;
   minQty: number;
   avgCost: number; // میانگین موزون قیمت واحد
@@ -328,11 +338,16 @@ export interface InventoryTransaction {
 }
 
 export interface ProductionRecipeItem {
-  materialId: number;
+  rowKey?: string; // کلید یکتای ردیف در فرمول تولید
+  materialId: number; // برای کالای متفرقه (خارج از انبار) منفی است (مثلاً -1)
   materialName: string;
-  unit: string;
-  quantity: number; // مصرف به ازای ۱ پرس محصول
+  unit: string; // واحد پایه انبار
+  recipeUnit?: string; // واحد انتخابی در فرمول تولید (گرم، کیلوگرم، کارتن، عدد، بسته، لیتر...)
+  unitsPerPackage?: number; // ضریب تبدیل کارتن/بسته به واحد مصرفی
+  quantity: number; // مصرف به ازای ۱ پرس محصول (بر حسب recipeUnit)
   wastePercent: number; // درصد پرت پخت
+  isMisc?: boolean; // کالای متفرقه (در انبار نمی‌آید و فی دستی دارد اما روی قیمت تمام شده محاسبه می‌شود)
+  customUnitPrice?: number; // فی دستی برای کالای متفرقه
 }
 
 export interface ProductionRecipe {
@@ -877,14 +892,19 @@ export async function computeMenuItemLiveCost(menuItemId: number): Promise<numbe
   const menuItem = await db.menuItems.get(menuItemId);
   const res = calculateRecipeCost({
     ingredients: recipe.ingredients.map((ing) => {
-      const m = matMap.get(ing.materialId);
+      const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
+      const m = isMisc ? undefined : matMap.get(ing.materialId);
+      const stockUnit = isMisc ? ing.recipeUnit || ing.unit || 'عدد' : m?.unit || ing.unit;
       return {
         materialId: ing.materialId,
-        materialName: m?.name || ing.materialName,
-        unit: m?.unit || ing.unit,
+        materialName: isMisc ? ing.materialName || 'کالای متفرقه' : m?.name || ing.materialName,
+        unit: stockUnit,
+        recipeUnit: ing.recipeUnit || stockUnit,
+        unitsPerPackage: ing.unitsPerPackage || m?.unitsPerPackage,
         quantity: ing.quantity,
-        unitCost: m?.avgCost || 0,
+        unitCost: isMisc ? Number(ing.customUnitPrice) || 0 : m?.avgCost || 0,
         wastePercent: ing.wastePercent || 0,
+        isMisc,
       };
     }),
     laborCost: recipe.laborCost,
@@ -949,11 +969,32 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
     if (!recipe) continue;
 
     for (const ing of recipe.ingredients) {
+      const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
+      const effectiveRecipeQty = ing.quantity * (1 + (ing.wastePercent || 0) / 100);
+
+      // Miscellaneous items (کالای متفرقه) do NOT deduct from warehouse inventory, but DO add to COGS!
+      if (isMisc) {
+        const miscUnitPrice = Math.max(0, Number(ing.customUnitPrice) || 0);
+        const miscLineCost = Math.round(effectiveRecipeQty * miscUnitPrice * item.quantity);
+        totalOrderCOGS += miscLineCost;
+        continue;
+      }
+
       const mat = matMap.get(ing.materialId);
       if (!mat || !mat.id) continue;
 
-      const effectivePerUnit = ing.quantity * (1 + (ing.wastePercent || 0) / 100);
-      const totalConsumed = Number((effectivePerUnit * item.quantity).toFixed(4));
+      const stockUnit = mat.unit || ing.unit || 'کیلوگرم';
+      const recipeUnit = ing.recipeUnit || stockUnit;
+
+      // Convert from recipeUnit (e.g., گرم) to warehouse stockUnit (e.g., کیلوگرم or کارتن)
+      const effectiveStockPerUnit = convertRecipeQtyToStockUnit({
+        quantity: effectiveRecipeQty,
+        recipeUnit,
+        stockUnit,
+        unitsPerPackage: ing.unitsPerPackage || mat.unitsPerPackage,
+      });
+
+      const totalConsumed = Number((effectiveStockPerUnit * item.quantity).toFixed(4));
       const lineCost = Math.round(totalConsumed * mat.avgCost);
       totalOrderCOGS += lineCost;
 

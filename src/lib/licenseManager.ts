@@ -7,6 +7,8 @@
  * 3. Client verifies key offline and persists activation.
  */
 
+import { db } from './db';
+
 const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
 const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
 
@@ -16,6 +18,8 @@ export interface LicenseInfo {
   licenseKey?: string;
   activatedAt?: string;
   isEmergencyOverride?: boolean;
+  serverHostname?: string;
+  isFromCentralServer?: boolean;
 }
 
 /**
@@ -102,7 +106,7 @@ function fnvFallbackHex(str: string): string {
     hash1 ^= char;
     hash1 = Math.imul(hash1, 16777619);
     hash2 ^= char;
-    hash2 = Math.imul(hash2, 1099511628211 || 16777619);
+    hash2 = Math.imul(hash2, 16777619);
   }
   const h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
   const h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
@@ -119,11 +123,68 @@ async function sha256Hex(str: string): Promise<string> {
 }
 
 /**
+ * Returns the active Central Server URL configured on this terminal or current browser origin
+ */
+export function getCentralServerBaseUrl(): string {
+  if (typeof window === 'undefined') return 'http://localhost:3000';
+  try {
+    const saved = window.localStorage.getItem('arka_server_url');
+    if (saved && saved.trim()) {
+      let url = saved.trim().replace(/\/+$/, '');
+      if (!/^https?:\/\//i.test(url)) {
+        url = `http://${url}`;
+      }
+      if (/^http:\/\/\d+\.\d+\.\d+\.\d+$/.test(url)) {
+        url = `${url}:3000`;
+      }
+      return url;
+    }
+  } catch {
+    // ignore
+  }
+  return window.location.origin;
+}
+
+/**
+ * Queries Central Server /api/license/status with a short timeout
+ */
+async function fetchCentralServerLicenseStatus(customBaseUrl?: string): Promise<{
+  ok: boolean;
+  isActivated: boolean;
+  systemCode?: string;
+  licenseKey?: string;
+  activatedAt?: string;
+  isEmergencyOverride?: boolean;
+  serverHostname?: string;
+} | null> {
+  if (typeof window === 'undefined') return null;
+  const baseUrl = (customBaseUrl || getCentralServerBaseUrl()).replace(/\/+$/, '');
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch(`${baseUrl}/api/license/status`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data && data.ok && data.systemCode) {
+      return data;
+    }
+  } catch {
+    // Server endpoint unreachable or offline standalone mode
+  }
+  return null;
+}
+
+/**
  * Gets or creates a persistent device seed stored in localStorage
  */
 function getPersistentDeviceSeed(): string {
   if (typeof window === 'undefined') return 'ARKA_SERVER_DEFAULT_SEED';
-  
+
   let seed = localStorage.getItem('arka_device_seed');
   if (!seed) {
     const randomBytes = Array.from({ length: 16 }, () =>
@@ -140,9 +201,9 @@ function getPersistentDeviceSeed(): string {
 }
 
 /**
- * Generates human-friendly 16-character Hardware System Code (e.g., ARKA-8F9A-4B2C-1E3D)
+ * Generates local fallback Hardware System Code (when no central server is reachable)
  */
-export async function getSystemCode(): Promise<string> {
+export async function getLocalHardwareCode(): Promise<string> {
   if (typeof window === 'undefined') return 'ARKA-0000-SERVER';
 
   const deviceSeed = getPersistentDeviceSeed();
@@ -163,6 +224,22 @@ export async function getSystemCode(): Promise<string> {
 }
 
 /**
+ * Returns the unified System Code:
+ * - If connected to the Central Server, returns the Central Server's System Code so only 1 activation is needed for the whole network.
+ * - Otherwise returns the local hardware System Code.
+ */
+export async function getSystemCode(): Promise<string> {
+  if (typeof window === 'undefined') return 'ARKA-0000-SERVER';
+
+  const centralStatus = await fetchCentralServerLicenseStatus();
+  if (centralStatus?.systemCode) {
+    return centralStatus.systemCode;
+  }
+
+  return getLocalHardwareCode();
+}
+
+/**
  * Generates matching License Key for a given System Code using Master Secret Salt.
  * THIS IS THE LOGIC USED BY THE ADMIN LICENSE GENERATOR.
  */
@@ -180,72 +257,194 @@ export async function calculateLicenseKeyForSystemCode(systemCode: string): Prom
 }
 
 /**
- * Verifies if user entered key matches current System Code (SHA-256 or legacy FNV) or Master Emergency Key
+ * Verifies if user entered key matches target System Code (SHA-256 or legacy FNV) or Master Emergency Key
  */
-export async function verifyLicenseKey(userKey: string, targetSystemCode?: string): Promise<{ valid: boolean; isEmergency?: boolean; message: string }> {
+export async function verifyLicenseKey(
+  userKey: string,
+  targetSystemCode?: string
+): Promise<{ valid: boolean; isEmergency?: boolean; matchedCode?: string; message: string }> {
   const cleanKey = userKey.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const cleanEmergency = MASTER_EMERGENCY_KEY.replace(/[^A-Z0-9]/g, '');
 
   if (cleanKey === cleanEmergency) {
-    return { valid: true, isEmergency: true, message: 'کد اضطراری پشتیبانی فعال شد.' };
+    const sysCode = targetSystemCode || (await getSystemCode());
+    return { valid: true, isEmergency: true, matchedCode: sysCode, message: 'کد اضطراری پشتیبانی فعال شد.' };
   }
 
-  const sysCode = targetSystemCode || (await getSystemCode());
-  const cleanCode = sysCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const combined = `${cleanCode}_${MASTER_SECRET_SALT}`;
+  const codesToTest: string[] = [];
+  if (targetSystemCode) {
+    codesToTest.push(targetSystemCode);
+  }
+  const sysCode = await getSystemCode();
+  if (!codesToTest.includes(sysCode)) codesToTest.push(sysCode);
+  const localCode = await getLocalHardwareCode();
+  if (!codesToTest.includes(localCode)) codesToTest.push(localCode);
 
-  const shaHash = sha256Pure(combined).substring(0, 16).toUpperCase();
-  const fnvHash = fnvFallbackHex(combined).substring(0, 16).toUpperCase();
+  for (const codeCandidate of codesToTest) {
+    const cleanCode = codeCandidate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const combined = `${cleanCode}_${MASTER_SECRET_SALT}`;
 
-  if (cleanKey === shaHash || cleanKey === fnvHash) {
-    return { valid: true, isEmergency: false, message: 'لایسنس نرم‌افزار با موفقیت تأیید شد.' };
+    const shaHash = sha256Pure(combined).substring(0, 16).toUpperCase();
+    const fnvHash = fnvFallbackHex(combined).substring(0, 16).toUpperCase();
+
+    if (cleanKey === shaHash || cleanKey === fnvHash) {
+      return {
+        valid: true,
+        isEmergency: false,
+        matchedCode: codeCandidate,
+        message: 'لایسنس نرم‌افزار با موفقیت تأیید شد.',
+      };
+    }
   }
 
-  return { valid: false, message: 'کد فعال‌سازی وارد شده مربوط به این سیستم نمی‌باشد.' };
+  return { valid: false, message: 'کد فعال‌سازی وارد شده مربوط به این سرور/سیستم نمی‌باشد.' };
 }
 
 /**
- * Gets current activation status from local storage
+ * Helper to persist license info into local Dexie settings so networkSync shares it with all terminals
+ */
+async function saveLicenseToSettingsDB(record: {
+  isActivated: boolean;
+  systemCode: string;
+  licenseKey: string;
+  activatedAt: string;
+  isEmergencyOverride?: boolean;
+}) {
+  try {
+    const first = await db.settings.toCollection().first();
+    if (first && first.id !== undefined) {
+      await db.settings.update(first.id, {
+        centralLicenseInfo: record,
+      });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Gets current activation status:
+ * 1. Checks Central Server (/api/license/status) — if activated on server, ALL LAN clients are automatically activated!
+ * 2. Checks synced Database Settings (db.settings.centralLicenseInfo) — if activated in synced DB, client is automatically activated!
+ * 3. Checks local localStorage ('arka_license_info') — if activated locally, also auto-registers on Central Server so other clients unlock too!
  */
 export async function getLicenseStatus(): Promise<LicenseInfo> {
-  const sysCode = await getSystemCode();
-
   if (typeof window === 'undefined') {
-    return { isActivated: true, systemCode: sysCode };
+    return { isActivated: true, systemCode: 'ARKA-0000-SERVER' };
   }
 
+  // 1. Check Central Server status
+  const centralStatus = await fetchCentralServerLicenseStatus();
+  if (centralStatus && centralStatus.isActivated) {
+    const serverRecord = {
+      systemCode: centralStatus.systemCode || 'ARKA-0000-SERVER',
+      licenseKey: centralStatus.licenseKey || 'CENTRAL-SERVER-ACTIVE',
+      activatedAt: centralStatus.activatedAt || new Date().toISOString(),
+      isEmergency: Boolean(centralStatus.isEmergencyOverride),
+    };
+    try {
+      localStorage.setItem('arka_license_info', JSON.stringify(serverRecord));
+    } catch {}
+    return {
+      isActivated: true,
+      systemCode: serverRecord.systemCode,
+      licenseKey: serverRecord.licenseKey,
+      activatedAt: serverRecord.activatedAt,
+      isEmergencyOverride: serverRecord.isEmergency,
+      serverHostname: centralStatus.serverHostname,
+      isFromCentralServer: true,
+    };
+  }
+
+  // 2. Check synced DB settings (centralLicenseInfo)
   try {
-    const rawData = localStorage.getItem('arka_license_info');
-    if (!rawData) {
-      return { isActivated: false, systemCode: sysCode };
-    }
-
-    const info = JSON.parse(rawData);
-    if (!info.licenseKey || info.systemCode !== sysCode) {
-      return { isActivated: false, systemCode: sysCode };
-    }
-
-    const check = await verifyLicenseKey(info.licenseKey, sysCode);
-    if (check.valid) {
-      return {
-        isActivated: true,
-        systemCode: sysCode,
-        licenseKey: info.licenseKey,
-        activatedAt: info.activatedAt,
-        isEmergencyOverride: check.isEmergency,
-      };
+    const firstSetting = await db.settings.toCollection().first();
+    const cli = firstSetting?.centralLicenseInfo;
+    if (cli?.isActivated && cli.licenseKey && cli.systemCode) {
+      const check = await verifyLicenseKey(cli.licenseKey, cli.systemCode);
+      if (check.valid) {
+        try {
+          localStorage.setItem(
+            'arka_license_info',
+            JSON.stringify({
+              systemCode: cli.systemCode,
+              licenseKey: cli.licenseKey,
+              activatedAt: cli.activatedAt,
+              isEmergency: check.isEmergency || false,
+            })
+          );
+        } catch {}
+        return {
+          isActivated: true,
+          systemCode: cli.systemCode,
+          licenseKey: cli.licenseKey,
+          activatedAt: cli.activatedAt,
+          isEmergencyOverride: check.isEmergency,
+          isFromCentralServer: true,
+        };
+      }
     }
   } catch {
     // ignore
   }
 
-  return { isActivated: false, systemCode: sysCode };
+  // 3. Check local storage (and if valid, push it to Central Server so all other clients become activated!)
+  const fallbackSysCode = centralStatus?.systemCode || (await getLocalHardwareCode());
+  try {
+    const rawData = localStorage.getItem('arka_license_info');
+    if (rawData) {
+      const info = JSON.parse(rawData);
+      if (info.licenseKey) {
+        const storedCode = info.systemCode || fallbackSysCode;
+        const check = await verifyLicenseKey(info.licenseKey, storedCode);
+        if (check.valid) {
+          const validCode = check.matchedCode || storedCode;
+          // Auto-sync this existing activation to Central Server & DB so LAN clients don't get asked
+          const baseUrl = getCentralServerBaseUrl();
+          fetch(`${baseUrl}/api/license/activate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              licenseKey: info.licenseKey,
+              clientSystemCode: validCode,
+            }),
+          }).catch(() => {});
+
+          saveLicenseToSettingsDB({
+            isActivated: true,
+            systemCode: validCode,
+            licenseKey: info.licenseKey,
+            activatedAt: info.activatedAt || new Date().toISOString(),
+            isEmergencyOverride: check.isEmergency,
+          });
+
+          return {
+            isActivated: true,
+            systemCode: validCode,
+            licenseKey: info.licenseKey,
+            activatedAt: info.activatedAt,
+            isEmergencyOverride: check.isEmergency,
+            serverHostname: centralStatus?.serverHostname,
+          };
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    isActivated: false,
+    systemCode: fallbackSysCode,
+    serverHostname: centralStatus?.serverHostname,
+  };
 }
 
 /**
- * Activates the application with the given user key
+ * Activates the application on the Central Server (and locally) so only 1 activation is needed for the entire network
  */
 export async function activateApplication(userKey: string): Promise<{ success: boolean; message: string }> {
+  const localCode = await getLocalHardwareCode();
   const sysCode = await getSystemCode();
   const check = await verifyLicenseKey(userKey, sysCode);
 
@@ -253,10 +452,14 @@ export async function activateApplication(userKey: string): Promise<{ success: b
     return { success: false, message: check.message };
   }
 
+  const finalCode = check.matchedCode || sysCode;
+  const cleanKeyFormatted = userKey.trim().toUpperCase();
+  const nowIso = new Date().toISOString();
+
   const licenseRecord = {
-    systemCode: sysCode,
-    licenseKey: userKey.trim().toUpperCase(),
-    activatedAt: new Date().toISOString(),
+    systemCode: finalCode,
+    licenseKey: cleanKeyFormatted,
+    activatedAt: nowIso,
     isEmergency: check.isEmergency || false,
   };
 
@@ -266,7 +469,34 @@ export async function activateApplication(userKey: string): Promise<{ success: b
     return { success: false, message: `خطا در ذخیره‌سازی لایسنس: ${e?.message}` };
   }
 
-  return { success: true, message: 'نرم‌افزار آرکا با موفقیت فعال گردید.' };
+  // Activate on Central Server so all connected LAN clients automatically activate
+  try {
+    const baseUrl = getCentralServerBaseUrl();
+    await fetch(`${baseUrl}/api/license/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        licenseKey: cleanKeyFormatted,
+        clientSystemCode: finalCode || localCode,
+      }),
+    });
+  } catch {
+    // ignore if offline standalone
+  }
+
+  // Also save in Dexie settings so DB sync shares activation with all clients
+  await saveLicenseToSettingsDB({
+    isActivated: true,
+    systemCode: finalCode,
+    licenseKey: cleanKeyFormatted,
+    activatedAt: nowIso,
+    isEmergencyOverride: check.isEmergency,
+  });
+
+  return {
+    success: true,
+    message: 'نرم‌افزار روی سرور مرکزی فعال شد؛ تمامی کلاینت‌های متصل در شبکه نیز به صورت خودکار فعال گردیدند.',
+  };
 }
 
 /**

@@ -575,8 +575,11 @@ export default function InventoryAndKardexTab({
                     <option value="کیلوگرم">کیلوگرم</option>
                     <option value="گرم">گرم</option>
                     <option value="عدد">عدد</option>
-                    <option value="لیتر">لیتر</option>
+                    <option value="کارتن">کارتن</option>
                     <option value="بسته">بسته</option>
+                    <option value="لیتر">لیتر</option>
+                    <option value="سی‌سی">سی‌سی</option>
+                    <option value="مثقال">مثقال</option>
                   </select>
                 </div>
                 <div>
@@ -1139,8 +1142,11 @@ export default function InventoryAndKardexTab({
                     <option value="کیلوگرم">کیلوگرم</option>
                     <option value="گرم">گرم</option>
                     <option value="عدد">عدد</option>
-                    <option value="لیتر">لیتر</option>
+                    <option value="کارتن">کارتن</option>
                     <option value="بسته">بسته</option>
+                    <option value="لیتر">لیتر</option>
+                    <option value="سی‌سی">سی‌سی</option>
+                    <option value="مثقال">مثقال</option>
                   </select>
                 </div>
                 <div>

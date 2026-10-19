@@ -1,0 +1,1259 @@
+{
+  "version": 8,
+  "exportedAt": "2026-10-19T17:28:33.333Z",
+  "categories": [
+    {
+      "name": "کباب و غذای ایرانی",
+      "id": 1
+    },
+    {
+      "name": "پیتزا و برگر",
+      "id": 2
+    },
+    {
+      "name": "نوشیدنی و پیش‌غذا",
+      "id": 3
+    }
+  ],
+  "menuItems": [
+    {
+      "categoryId": 1,
+      "name": "چلوکباب کوبیده مخصوص (دو سیخ)",
+      "price": 295000,
+      "isActive": true,
+      "image": "",
+      "id": 1
+    },
+    {
+      "categoryId": 1,
+      "name": "زرشک پلو با مرغ زعفرانی",
+      "price": 245000,
+      "isActive": true,
+      "image": "",
+      "id": 2
+    },
+    {
+      "categoryId": 2,
+      "name": "پیتزا مخصوص آرکا",
+      "price": 310000,
+      "isActive": true,
+      "image": "",
+      "id": 3
+    },
+    {
+      "categoryId": 3,
+      "name": "نوشابه قوطی مشکی",
+      "price": 35000,
+      "isActive": true,
+      "image": "",
+      "id": 4
+    },
+    {
+      "categoryId": 3,
+      "name": "دوغ سنتی محلی",
+      "price": 40000,
+      "isActive": true,
+      "image": "",
+      "id": 5
+    }
+  ],
+  "orders": [
+    {
+      "invoiceNumber": 1001,
+      "createdAt": "2026-10-17T16:56:39.154Z",
+      "customerPhone": "09123456789",
+      "customerName": "مهندس کریمی",
+      "items": [
+        {
+          "menuItemId": 1,
+          "name": "چلوکباب کوبیده مخصوص (دو سیخ)",
+          "price": 295000,
+          "quantity": 2
+        },
+        {
+          "menuItemId": 4,
+          "name": "نوشابه قوطی مشکی",
+          "price": 35000,
+          "quantity": 2
+        }
+      ],
+      "subtotal": 660000,
+      "discountType": "none",
+      "discountValue": 0,
+      "taxEnabled": false,
+      "taxPercentage": 9,
+      "taxAmount": 0,
+      "total": 660000,
+      "status": "paid",
+      "invoiceMode": "standard",
+      "paymentMethod": "card",
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "cogsAmount": 414000,
+      "id": 1
+    },
+    {
+      "invoiceNumber": 1002,
+      "createdAt": "2026-10-17T17:56:39.154Z",
+      "customerPhone": "",
+      "customerName": "مهمان حضوری سلف سرویس",
+      "items": [
+        {
+          "menuItemId": -1,
+          "name": "ورودی بار سلف سرویس + نوشابه (۳ نفر)",
+          "price": 220000,
+          "quantity": 3
+        }
+      ],
+      "subtotal": 660000,
+      "discountType": "none",
+      "discountValue": 0,
+      "taxEnabled": false,
+      "taxPercentage": 9,
+      "taxAmount": 0,
+      "total": 660000,
+      "status": "paid",
+      "invoiceMode": "self_service",
+      "selfServiceGuests": 3,
+      "selfServiceUnitPrice": 220000,
+      "selfServiceDrinkNote": "۳ عدد نوشابه قوطی + استفاده آزاد از بار سلف سرویس",
+      "paymentMethod": "card",
+      "bankId": 2,
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "cogsAmount": 295000,
+      "id": 2
+    },
+    {
+      "invoiceNumber": 1003,
+      "createdAt": "2026-10-17T20:17:29.736Z",
+      "customerPhone": "",
+      "customerName": "مهمان سلف سرویس",
+      "customerSubscriptionCode": "",
+      "customerAddress": "",
+      "items": [
+        {
+          "menuItemId": -1,
+          "name": "ورودی بار سلف سرویس + نوشابه (2 نفر)",
+          "price": 220000,
+          "quantity": 2
+        }
+      ],
+      "subtotal": 440000,
+      "discountType": "none",
+      "discountValue": 0,
+      "taxEnabled": false,
+      "taxPercentage": 10,
+      "taxAmount": 0,
+      "total": 440000,
+      "status": "paid",
+      "invoiceMode": "self_service",
+      "selfServiceGuests": 2,
+      "selfServiceUnitPrice": 220000,
+      "selfServiceDrinkNote": "نوشابه قوطی + استفاده از بار سلف سرویس",
+      "paymentMethod": "split",
+      "bankId": 2,
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "cashAmount": 0,
+      "cardAmount": 440000,
+      "cogsAmount": 226800,
+      "id": 3
+    },
+    {
+      "invoiceNumber": 1004,
+      "createdAt": "2026-10-17T20:19:58.826Z",
+      "customerPhone": "",
+      "customerName": "مهمان سلف سرویس",
+      "customerSubscriptionCode": "",
+      "customerAddress": "",
+      "items": [
+        {
+          "menuItemId": -1,
+          "name": "ورودی بار سلف سرویس + نوشابه (3 نفر)",
+          "price": 220000,
+          "quantity": 3
+        }
+      ],
+      "subtotal": 660000,
+      "discountType": "percent",
+      "discountValue": 25,
+      "taxEnabled": false,
+      "taxPercentage": 10,
+      "taxAmount": 0,
+      "total": 495000,
+      "status": "paid",
+      "invoiceMode": "self_service",
+      "selfServiceGuests": 3,
+      "selfServiceUnitPrice": 220000,
+      "selfServiceDrinkNote": "نوشابه قوطی + استفاده از بار سلف سرویس",
+      "paymentMethod": "card",
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "cashAmount": 0,
+      "cardAmount": 495000,
+      "cogsAmount": 340200,
+      "id": 4
+    }
+  ],
+  "settings": [
+    {
+      "restaurantName": "رستوران و سلف سرویس آرکا",
+      "phone": "021-88776655",
+      "address": "تهران، بلوار کشاورز، پلاک ۱۲۰",
+      "website": "www.arkarestaurant.ir",
+      "instagram": "@arka_restaurant",
+      "telegram": "@arka_pos",
+      "logoUrl": "",
+      "taxEnabled": false,
+      "taxPercentage": 10,
+      "requireCustomerPhone": false,
+      "selfServicePricePerPerson": 220000,
+      "selfServiceTitle": "ورودی بار سلف سرویس + نوشابه",
+      "autoBackupEnabled": false,
+      "autoBackupIntervalHours": 1,
+      "telegramBotToken": "",
+      "telegramChatId": "",
+      "baleBotToken": "",
+      "baleChatId": "",
+      "id": 1,
+      "currencyUnit": "rial",
+      "defaultInvoiceMode": "self_service",
+      "lockSelfServiceMode": true,
+      "autoBackupBeforeUpdate": true,
+      "hideCostPriceFromKitchen": false
+    },
+    {
+      "restaurantName": "رستوران و سلف سرویس آرکا",
+      "phone": "021-88776655",
+      "address": "تهران، بلوار کشاورز، پلاک ۱۲۰",
+      "website": "www.arkarestaurant.ir",
+      "instagram": "@arka_restaurant",
+      "telegram": "@arka_pos",
+      "logoUrl": "",
+      "taxEnabled": false,
+      "taxPercentage": 9,
+      "requireCustomerPhone": false,
+      "selfServicePricePerPerson": 220000,
+      "selfServiceTitle": "ورودی بار سلف سرویس + نوشابه",
+      "autoBackupEnabled": false,
+      "autoBackupIntervalHours": 1,
+      "telegramBotToken": "",
+      "telegramChatId": "",
+      "baleBotToken": "",
+      "baleChatId": "",
+      "id": 2
+    }
+  ],
+  "customers": [],
+  "accounts": [
+    {
+      "code": "101",
+      "name": "صندوق نقدی رستوران",
+      "type": "asset",
+      "isSystem": true,
+      "description": "موجودی وجه نقد در صندوق",
+      "id": 1
+    },
+    {
+      "code": "102",
+      "name": "موجودی بانک‌ها و کارتخوان‌ها",
+      "type": "asset",
+      "isSystem": true,
+      "description": "حساب‌های بانکی متصل به پوز و کارت",
+      "id": 2
+    },
+    {
+      "code": "103",
+      "name": "حساب‌های دریافتنی (مشتریان و نسیه)",
+      "type": "asset",
+      "isSystem": true,
+      "description": "مطالبات از مشتریان و مشترکین",
+      "id": 3
+    },
+    {
+      "code": "104",
+      "name": "اسناد دریافتنی (چک‌های مشتریان)",
+      "type": "asset",
+      "isSystem": true,
+      "description": "چک‌های دریافت شده در جریان وصول",
+      "id": 4
+    },
+    {
+      "code": "105",
+      "name": "موجودی مواد اولیه انبار",
+      "type": "asset",
+      "isSystem": true,
+      "description": "ارزش ریالی مواد غذایی و کالاهای انبار",
+      "id": 5
+    },
+    {
+      "code": "201",
+      "name": "حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)",
+      "type": "liability",
+      "isSystem": true,
+      "description": "بدهی به فروشندگان مواد و حقوق پرسنل",
+      "id": 6
+    },
+    {
+      "code": "202",
+      "name": "اسناد پرداختنی (چک‌های صادره)",
+      "type": "liability",
+      "isSystem": true,
+      "description": "چک‌های پرداختی پاس نشده به اشخاص",
+      "id": 7
+    },
+    {
+      "code": "203",
+      "name": "مالیات بر ارزش افزوده پرداختنی",
+      "type": "liability",
+      "isSystem": true,
+      "description": "مالیات دریافتی در فاکتورهای فروش",
+      "id": 8
+    },
+    {
+      "code": "301",
+      "name": "سرمایه اولیه و جاری شرکا",
+      "type": "equity",
+      "isSystem": true,
+      "description": "آورده نقدی و غیرنقدی صاحب رستوران",
+      "id": 9
+    },
+    {
+      "code": "401",
+      "name": "درآمد فروش غذا و منو",
+      "type": "revenue",
+      "isSystem": true,
+      "description": "فروش غذاهای اصلی، پیش‌غذا و نوشیدنی",
+      "id": 10
+    },
+    {
+      "code": "402",
+      "name": "درآمد فیش سلف سرویس و نوشابه",
+      "type": "revenue",
+      "isSystem": true,
+      "description": "فروش فیش‌های ورودی سلف سرویس (تا ۴ نفر)",
+      "id": 11
+    },
+    {
+      "code": "403",
+      "name": "تخفیفات نقدی فروش",
+      "type": "revenue",
+      "isSystem": true,
+      "description": "تخفیف‌های اعمال شده روی فاکتورها (کاهنده درآمد)",
+      "id": 12
+    },
+    {
+      "code": "501",
+      "name": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+      "type": "cogs",
+      "isSystem": true,
+      "description": "هزینه دقیق مواد اولیه و سربار مصرفی طبق فرمول تولید",
+      "id": 13
+    },
+    {
+      "code": "601",
+      "name": "هزینه حقوق و دستمزد پرسنل",
+      "type": "expense",
+      "isSystem": true,
+      "description": "حقوق آشپز، سالن‌دار، صندوقدار و بیمه",
+      "id": 14
+    },
+    {
+      "code": "602",
+      "name": "هزینه اجاره رستوران",
+      "type": "expense",
+      "isSystem": true,
+      "description": "اجاره ماهانه ملک رستوران و انبار",
+      "id": 15
+    },
+    {
+      "code": "603",
+      "name": "هزینه قبوض (آب، برق، گاز، تلفن و اینترنت)",
+      "type": "expense",
+      "isSystem": true,
+      "description": "قبوض مصرفی انرژی و مخابرات",
+      "id": 16
+    },
+    {
+      "code": "604",
+      "name": "هزینه پیک و ارسال بیرون‌بر",
+      "type": "expense",
+      "isSystem": true,
+      "description": "کرایه پیک موتوری و آژانس",
+      "id": 17
+    },
+    {
+      "code": "605",
+      "name": "هزینه ظروف یکبارمصرف و بسته‌بندی",
+      "type": "expense",
+      "isSystem": true,
+      "description": "ظروف آلومینیومی، پاکت، کیسه و ملزومات",
+      "id": 18
+    },
+    {
+      "code": "606",
+      "name": "هزینه تعمیرات و نگهداری تجهیزات",
+      "type": "expense",
+      "isSystem": true,
+      "description": "سرویس یخچال، فر، تهویه و تجهیزات آشپزخانه",
+      "id": 19
+    },
+    {
+      "code": "607",
+      "name": "هزینه تبلیغات و بازاریابی",
+      "type": "expense",
+      "isSystem": true,
+      "description": "چاپ تراکت، اینستاگرام و اسنپ‌فود",
+      "id": 20
+    },
+    {
+      "code": "608",
+      "name": "هزینه ضایعات و دورریز مواد غذایی",
+      "type": "expense",
+      "isSystem": true,
+      "description": "خرابی یا انقضای مواد اولیه انبار",
+      "id": 21
+    },
+    {
+      "code": "609",
+      "name": "سایر هزینه‌های عمومی و تنخواه",
+      "type": "expense",
+      "isSystem": true,
+      "description": "خریدهای جزئی روزانه، مواد شوینده و پذیرایی",
+      "id": 22
+    }
+  ],
+  "bankAccounts": [
+    {
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "accountNumber": "4589123456",
+      "cardNumber": "6104-3378-9012-3456",
+      "iban": "IR450120000000004589123456",
+      "posTerminalId": "POS-101",
+      "initialBalance": 85000000,
+      "currentBalance": 81655000,
+      "isDefaultPos": true,
+      "isActive": true,
+      "id": 1
+    },
+    {
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "accountNumber": "8210987654",
+      "cardNumber": "6219-8610-4455-6677",
+      "iban": "IR820560082180008210987654",
+      "posTerminalId": "POS-102",
+      "initialBalance": 42000000,
+      "currentBalance": 41250000,
+      "isDefaultPos": false,
+      "isActive": true,
+      "id": 2
+    },
+    {
+      "bankName": "بانک ملی (حساب چک و جاری)",
+      "accountNumber": "0109988776001",
+      "cardNumber": "6037-9975-1122-3344",
+      "iban": "IR110170000000109988776001",
+      "posTerminalId": "POS-103",
+      "initialBalance": 60000000,
+      "currentBalance": 47500000,
+      "isDefaultPos": false,
+      "isActive": true,
+      "id": 3
+    }
+  ],
+  "persons": [
+    {
+      "name": "پروتئین البرز (حاج رحیمی)",
+      "role": "supplier",
+      "phone": "09121112233",
+      "code": "SUP-101",
+      "address": "تهران، میدان بهمن، غرفه ۱۲",
+      "description": "تأمین‌کننده اصلی گوشت و مرغ رستوران",
+      "initialBalance": 0,
+      "createdAt": "2026-10-17T18:56:38.702Z",
+      "id": 1
+    },
+    {
+      "name": "بازرگانی برنج شمال (علوی)",
+      "role": "supplier",
+      "phone": "09112223344",
+      "code": "SUP-102",
+      "address": "فریدونکنار، بلوار ساحلی",
+      "description": "تأمین برنج طارم هاشمی سورتینگ",
+      "initialBalance": 0,
+      "createdAt": "2026-10-17T18:56:38.890Z",
+      "id": 2
+    },
+    {
+      "name": "استاد رضا کمالی (سرآشپز)",
+      "role": "staff",
+      "phone": "09123334455",
+      "code": "EMP-201",
+      "address": "تهران، صادقیه",
+      "description": "سرآشپز شیفت ظهر و شب",
+      "initialBalance": 0,
+      "createdAt": "2026-10-17T18:56:38.968Z",
+      "id": 3
+    },
+    {
+      "name": "شرکت مهندسی پارس (قرارداد ناهار)",
+      "role": "customer",
+      "phone": "02188990011",
+      "code": "CUS-301",
+      "address": "بلوار کشاورز، خیابان فلسطین، پلاک ۴۴",
+      "description": "مشتری سازمانی سفارش روزانه",
+      "initialBalance": 0,
+      "createdAt": "2026-10-17T18:56:39.052Z",
+      "id": 4
+    }
+  ],
+  "journalVouchers": [
+    {
+      "voucherNumber": 101,
+      "date": "2026-10-15T18:56:39.154Z",
+      "description": "خرید ۱۲۰ کیلو برنج هاشمی از بازرگانی برنج شمال و صدور چک",
+      "type": "auto_purchase",
+      "lines": [
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 16200000,
+          "credit": 0,
+          "description": "ورود ۱۲۰ کیلو برنج هاشمی به انبار"
+        },
+        {
+          "accountCode": "201",
+          "accountName": "حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)",
+          "personId": 2,
+          "personName": "بازرگانی برنج شمال (علوی)",
+          "debit": 0,
+          "credit": 16200000,
+          "description": "بستانکاری بازرگانی برنج شمال بابت فاکتور خرید"
+        }
+      ],
+      "totalAmount": 16200000,
+      "id": 1
+    },
+    {
+      "voucherNumber": 102,
+      "date": "2026-10-15T18:56:39.154Z",
+      "description": "تحویل چک صیادی ۱۴03089911223344 به بازرگانی برنج شمال",
+      "type": "auto_cheque",
+      "lines": [
+        {
+          "accountCode": "201",
+          "accountName": "حساب‌های پرداختنی (تأمین‌کنندگان و پرسنل)",
+          "personId": 2,
+          "personName": "بازرگانی برنج شمال (علوی)",
+          "debit": 16200000,
+          "credit": 0,
+          "description": "تحویل چک بابت تسویه فاکتور برنج"
+        },
+        {
+          "accountCode": "202",
+          "accountName": "اسناد پرداختنی (چک‌های صادره)",
+          "personId": 2,
+          "personName": "بازرگانی برنج شمال (علوی)",
+          "debit": 0,
+          "credit": 16200000,
+          "description": "چک سررسید امروز بانک ملی"
+        }
+      ],
+      "totalAmount": 16200000,
+      "id": 2
+    },
+    {
+      "voucherNumber": 103,
+      "date": "2026-10-16T18:56:39.154Z",
+      "description": "پرداخت علی‌الحساب حقوق استاد رضا کمالی (سرآشپز) از بانک ملت",
+      "type": "auto_expense",
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "lines": [
+        {
+          "accountCode": "601",
+          "accountName": "هزینه حقوق و دستمزد پرسنل",
+          "personId": 3,
+          "personName": "استاد رضا کمالی (سرآشپز)",
+          "debit": 4500000,
+          "credit": 0,
+          "description": "پرداخت مساعده و حقوق هفتگی سرآشپز"
+        },
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 0,
+          "credit": 4500000,
+          "description": "کسر از بانک ملت"
+        }
+      ],
+      "totalAmount": 4500000,
+      "id": 3
+    },
+    {
+      "voucherNumber": 104,
+      "date": "2026-10-16T18:56:39.154Z",
+      "description": "پرداخت قبض گاز و برق رستوران از بانک سامان",
+      "type": "auto_expense",
+      "bankId": 2,
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "lines": [
+        {
+          "accountCode": "603",
+          "accountName": "هزینه قبوض (آب، برق، گاز، تلفن و اینترنت)",
+          "debit": 1850000,
+          "credit": 0,
+          "description": "قبض برق صنعتی و گاز آشپزخانه"
+        },
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 0,
+          "credit": 1850000,
+          "description": "پرداخت از بانک سامان"
+        }
+      ],
+      "totalAmount": 1850000,
+      "id": 4
+    },
+    {
+      "voucherNumber": 105,
+      "date": "2026-10-17T16:56:39.154Z",
+      "description": "سند فروش اتوماتیک فاکتور #1001 (کارتخوان بانک ملت)",
+      "type": "auto_sale",
+      "referenceId": 1001,
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "lines": [
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 660000,
+          "credit": 0,
+          "description": "دریافت کارتخوان بانک ملت - فاکتور #1001"
+        },
+        {
+          "accountCode": "401",
+          "accountName": "درآمد فروش غذا و منو",
+          "debit": 0,
+          "credit": 660000,
+          "description": "فروش ۲ پرس کوبیده و نوشابه"
+        },
+        {
+          "accountCode": "501",
+          "accountName": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+          "debit": 414000,
+          "credit": 0,
+          "description": "بهای تمام شده طبق فرمول تولید فاکتور #1001"
+        },
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 0,
+          "credit": 414000,
+          "description": "کسر مواد اولیه مصرفی از انبار"
+        }
+      ],
+      "totalAmount": 1074000,
+      "id": 5
+    },
+    {
+      "voucherNumber": 106,
+      "date": "2026-10-17T17:56:39.154Z",
+      "description": "سند فروش اتوماتیک فیش سلف سرویس #1002 (۳ نفر - بانک سامان)",
+      "type": "auto_sale",
+      "referenceId": 1002,
+      "bankId": 2,
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "lines": [
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 660000,
+          "credit": 0,
+          "description": "دریافت کارتخوان بانک سامان - فیش سلف #1002"
+        },
+        {
+          "accountCode": "402",
+          "accountName": "درآمد فیش سلف سرویس و نوشابه",
+          "debit": 0,
+          "credit": 660000,
+          "description": "فیش سلف سرویس ۳ نفره به همراه نوشابه"
+        },
+        {
+          "accountCode": "501",
+          "accountName": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+          "debit": 295000,
+          "credit": 0,
+          "description": "بهای تمام شده مواد و نوشابه سلف سرویس #1002"
+        },
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 0,
+          "credit": 295000,
+          "description": "کسر نوشابه و مواد اولیه سلف از انبار"
+        }
+      ],
+      "totalAmount": 955000,
+      "id": 6
+    },
+    {
+      "voucherNumber": 107,
+      "date": "2026-10-17T19:45:04.077Z",
+      "description": "سند مصرف مواد اولیه تولید آشپزخانه پارت #101 (آماده‌سازی سلف سرویس): چلوکباب کوبیده مخصوص (دو سیخ) (3 پرس)، پیتزا مخصوص آرکا (1 پرس)",
+      "type": "auto_sale",
+      "referenceId": 101,
+      "lines": [
+        {
+          "accountCode": "501",
+          "accountName": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+          "debit": 587272,
+          "credit": 0,
+          "description": "بهای مواد مصرفی پارت تولید #101 (4 پرس)"
+        },
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 0,
+          "credit": 587272,
+          "description": "خروج مواد اولیه از انبار به آشپزخانه و خط سلف سرویس"
+        }
+      ],
+      "totalAmount": 587272,
+      "id": 7
+    },
+    {
+      "voucherNumber": 108,
+      "date": "2026-10-17T19:46:52.958Z",
+      "description": "پاس شدن چک پرداختی شماره 1403089955667788 در وجه پروتئین البرز (حاج رحیمی) از بانک ملی (حساب چک و جاری)",
+      "type": "auto_cheque",
+      "bankId": 3,
+      "bankName": "بانک ملی (حساب چک و جاری)",
+      "lines": [
+        {
+          "accountCode": "202",
+          "accountName": "اسناد پرداختنی (چک‌های صادره)",
+          "personId": 1,
+          "personName": "پروتئین البرز (حاج رحیمی)",
+          "debit": 12500000,
+          "credit": 0,
+          "description": "پاس شدن چک 1403089955667788"
+        },
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 0,
+          "credit": 12500000,
+          "description": "کسر مبلغ چک از بانک ملی (حساب چک و جاری)"
+        }
+      ],
+      "totalAmount": 12500000,
+      "id": 8
+    },
+    {
+      "voucherNumber": 109,
+      "date": "2026-10-17T20:17:29.862Z",
+      "description": "سند اتوماتیک فیش سلف سرویس #1003 (2 نفر)",
+      "type": "auto_sale",
+      "referenceId": 1003,
+      "bankId": 2,
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "lines": [
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 440000,
+          "credit": 0,
+          "description": "بخش کارتخوان (بانک سامان (کارتخوان ۲)) فاکتور #1003"
+        },
+        {
+          "accountCode": "402",
+          "accountName": "درآمد فیش سلف سرویس و نوشابه",
+          "debit": 0,
+          "credit": 440000,
+          "description": "فیش سلف سرویس (2 نفر) #1003"
+        },
+        {
+          "accountCode": "501",
+          "accountName": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+          "debit": 226800,
+          "credit": 0,
+          "description": "بهای تمام شده اتوماتیک فاکتور #1003"
+        },
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 0,
+          "credit": 226800,
+          "description": "خروج مواد اولیه مصرفی فاکتور #1003"
+        }
+      ],
+      "totalAmount": 666800,
+      "id": 9
+    },
+    {
+      "voucherNumber": 110,
+      "date": "2026-10-17T20:19:58.897Z",
+      "description": "سند اتوماتیک فیش سلف سرویس #1004 (3 نفر)",
+      "type": "auto_sale",
+      "referenceId": 1004,
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "lines": [
+        {
+          "accountCode": "102",
+          "accountName": "موجودی بانک‌ها و کارتخوان‌ها",
+          "debit": 495000,
+          "credit": 0,
+          "description": "دریافت کارتخوان (بانک ملت (کارتخوان ۱)) فاکتور #1004"
+        },
+        {
+          "accountCode": "403",
+          "accountName": "تخفیفات نقدی فروش",
+          "debit": 165000,
+          "credit": 0,
+          "description": "تخفیف فاکتور #1004"
+        },
+        {
+          "accountCode": "402",
+          "accountName": "درآمد فیش سلف سرویس و نوشابه",
+          "debit": 0,
+          "credit": 660000,
+          "description": "فیش سلف سرویس (3 نفر) #1004"
+        },
+        {
+          "accountCode": "501",
+          "accountName": "بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)",
+          "debit": 340200,
+          "credit": 0,
+          "description": "بهای تمام شده اتوماتیک فاکتور #1004"
+        },
+        {
+          "accountCode": "105",
+          "accountName": "موجودی مواد اولیه انبار",
+          "debit": 0,
+          "credit": 340200,
+          "description": "خروج مواد اولیه مصرفی فاکتور #1004"
+        }
+      ],
+      "totalAmount": 1000200,
+      "id": 10
+    }
+  ],
+  "cheques": [
+    {
+      "chequeNumber": "1403089911223344",
+      "type": "issued",
+      "amount": 16200000,
+      "issueDate": "2026-10-07T18:56:39.154Z",
+      "dueDate": "2026-10-17T18:56:39.154Z",
+      "bankId": 3,
+      "bankName": "بانک ملی (حساب چک و جاری)",
+      "personId": 2,
+      "personName": "بازرگانی برنج شمال (علوی)",
+      "description": "بابت خرید ۱۲۰ کیلوگرم برنج ایرانی طارم هاشمی",
+      "status": "pending",
+      "id": 1
+    },
+    {
+      "chequeNumber": "1403089955667788",
+      "type": "issued",
+      "amount": 12500000,
+      "issueDate": "2026-10-12T18:56:39.154Z",
+      "dueDate": "2026-10-20T18:56:39.154Z",
+      "bankId": 3,
+      "bankName": "بانک ملی (حساب چک و جاری)",
+      "personId": 1,
+      "personName": "پروتئین البرز (حاج رحیمی)",
+      "description": "تسویه پارت دوم خرید گوشت گوسفندی",
+      "status": "cleared",
+      "id": 2,
+      "clearedAt": "2026-10-17T19:46:52.907Z"
+    },
+    {
+      "chequeNumber": "1403091100229988",
+      "type": "received",
+      "amount": 18500000,
+      "issueDate": "2026-10-13T18:56:39.154Z",
+      "dueDate": "2026-10-17T18:56:39.154Z",
+      "bankId": 1,
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "personId": 4,
+      "personName": "شرکت مهندسی پارس (قرارداد ناهار)",
+      "description": "چک تسویه صورتحساب غذای پرسنل شرکت پارس",
+      "status": "pending",
+      "id": 3
+    }
+  ],
+  "rawMaterials": [
+    {
+      "name": "گوشت مخلوط گوسفندی و گوساله",
+      "unit": "کیلوگرم",
+      "currentQty": 34.203,
+      "minQty": 10,
+      "avgCost": 580000,
+      "lastPurchasePrice": 580000,
+      "updatedAt": "2026-10-17T19:45:04.077Z",
+      "id": 1
+    },
+    {
+      "name": "برنج ایرانی طارم هاشمی",
+      "unit": "کیلوگرم",
+      "currentQty": 119.5104,
+      "minQty": 30,
+      "avgCost": 135000,
+      "lastPurchasePrice": 135000,
+      "updatedAt": "2026-10-17T19:45:04.077Z",
+      "id": 2
+    },
+    {
+      "name": "ران و سینه مرغ تازه",
+      "unit": "کیلوگرم",
+      "currentQty": 45,
+      "minQty": 15,
+      "avgCost": 115000,
+      "lastPurchasePrice": 115000,
+      "updatedAt": "2026-10-17T18:56:39.480Z",
+      "id": 3
+    },
+    {
+      "name": "پنیر پیتزا موزارلا",
+      "unit": "کیلوگرم",
+      "currentQty": 24.7734,
+      "minQty": 8,
+      "avgCost": 260000,
+      "lastPurchasePrice": 260000,
+      "updatedAt": "2026-10-17T19:45:04.077Z",
+      "id": 4
+    },
+    {
+      "name": "نوشابه قوطی (پک انبار)",
+      "unit": "عدد",
+      "currentQty": 175,
+      "minQty": 48,
+      "avgCost": 21000,
+      "lastPurchasePrice": 21000,
+      "updatedAt": "2026-10-17T20:19:58.831Z",
+      "id": 5
+    }
+  ],
+  "inventoryTransactions": [
+    {
+      "materialId": 1,
+      "materialName": "گوشت مخلوط گوسفندی و گوساله",
+      "unit": "کیلوگرم",
+      "date": "2026-10-14T18:56:39.699Z",
+      "type": "in_initial",
+      "quantity": 35,
+      "unitPrice": 580000,
+      "totalPrice": 20300000,
+      "balanceQtyAfter": 35,
+      "balanceValueAfter": 20300000,
+      "personName": "پروتئین البرز (تأمین‌کننده)",
+      "paymentMethod": "bank",
+      "bankName": "بانک ملت (کارتخوان ۱)",
+      "description": "موجودی اول دوره و خرید گوشت تازه",
+      "id": 1
+    },
+    {
+      "materialId": 2,
+      "materialName": "برنج ایرانی طارم هاشمی",
+      "unit": "کیلوگرم",
+      "date": "2026-10-14T18:56:39.699Z",
+      "type": "in_initial",
+      "quantity": 120,
+      "unitPrice": 135000,
+      "totalPrice": 16200000,
+      "balanceQtyAfter": 120,
+      "balanceValueAfter": 16200000,
+      "personName": "بازرگانی برنج شمال",
+      "paymentMethod": "cheque",
+      "bankName": "بانک ملی (حساب چک و جاری)",
+      "description": "خرید محموله برنج هاشمی با چک",
+      "id": 2
+    },
+    {
+      "materialId": 3,
+      "materialName": "ران و سینه مرغ تازه",
+      "unit": "کیلوگرم",
+      "date": "2026-10-15T18:56:39.699Z",
+      "type": "in_initial",
+      "quantity": 45,
+      "unitPrice": 115000,
+      "totalPrice": 5175000,
+      "balanceQtyAfter": 45,
+      "balanceValueAfter": 5175000,
+      "personName": "پروتئین البرز (تأمین‌کننده)",
+      "paymentMethod": "bank",
+      "bankName": "بانک سامان (کارتخوان ۲)",
+      "description": "ورود مرغ کشتار روز به انبار",
+      "id": 3
+    },
+    {
+      "materialId": 5,
+      "materialName": "نوشابه قوطی (پک انبار)",
+      "unit": "عدد",
+      "date": "2026-10-15T18:56:39.699Z",
+      "type": "in_initial",
+      "quantity": 180,
+      "unitPrice": 21000,
+      "totalPrice": 3780000,
+      "balanceQtyAfter": 180,
+      "balanceValueAfter": 3780000,
+      "personName": "پخش نوشیدنی خوشگوار",
+      "paymentMethod": "cash",
+      "description": "خرید نقدی نوشابه قوطی جهت سلف سرویس و منو",
+      "id": 4
+    },
+    {
+      "materialId": 1,
+      "materialName": "گوشت مخلوط گوسفندی و گوساله",
+      "unit": "کیلوگرم",
+      "date": "2026-10-17T19:45:04.077Z",
+      "type": "out_sale_bom",
+      "quantity": 0.797,
+      "unitPrice": 580000,
+      "totalPrice": 462260,
+      "balanceQtyAfter": 34.203,
+      "balanceValueAfter": 19837740,
+      "description": "مصرف تولید آشپزخانه و سلف (پارت #101 - آماده‌سازی سلف سرویس)",
+      "id": 5
+    },
+    {
+      "materialId": 2,
+      "materialName": "برنج ایرانی طارم هاشمی",
+      "unit": "کیلوگرم",
+      "date": "2026-10-17T19:45:04.077Z",
+      "type": "out_sale_bom",
+      "quantity": 0.4896,
+      "unitPrice": 135000,
+      "totalPrice": 66096,
+      "balanceQtyAfter": 119.5104,
+      "balanceValueAfter": 16133904,
+      "description": "مصرف تولید آشپزخانه و سلف (پارت #101 - آماده‌سازی سلف سرویس)",
+      "id": 6
+    },
+    {
+      "materialId": 4,
+      "materialName": "پنیر پیتزا موزارلا",
+      "unit": "کیلوگرم",
+      "date": "2026-10-17T19:45:04.077Z",
+      "type": "out_sale_bom",
+      "quantity": 0.2266,
+      "unitPrice": 260000,
+      "totalPrice": 58916,
+      "balanceQtyAfter": 24.7734,
+      "balanceValueAfter": 6441084,
+      "description": "مصرف تولید آشپزخانه و سلف (پارت #101 - آماده‌سازی سلف سرویس)",
+      "id": 7
+    },
+    {
+      "materialId": 5,
+      "materialName": "نوشابه قوطی (پک انبار)",
+      "unit": "عدد",
+      "date": "2026-10-17T20:17:29.821Z",
+      "type": "out_sale_bom",
+      "quantity": 2,
+      "unitPrice": 21000,
+      "totalPrice": 42000,
+      "balanceQtyAfter": 178,
+      "balanceValueAfter": 3738000,
+      "description": "مصرف اتوماتیک فیش سلف سرویس #1003 (2 نفر)",
+      "id": 8
+    },
+    {
+      "materialId": 5,
+      "materialName": "نوشابه قوطی (پک انبار)",
+      "unit": "عدد",
+      "date": "2026-10-17T20:19:58.863Z",
+      "type": "out_sale_bom",
+      "quantity": 3,
+      "unitPrice": 21000,
+      "totalPrice": 63000,
+      "balanceQtyAfter": 175,
+      "balanceValueAfter": 3675000,
+      "description": "مصرف اتوماتیک فیش سلف سرویس #1004 (3 نفر)",
+      "id": 9
+    }
+  ],
+  "productionRecipes": [
+    {
+      "menuItemId": 1,
+      "menuItemName": "چلوکباب کوبیده مخصوص (دو سیخ)",
+      "ingredients": [
+        {
+          "materialId": 1,
+          "materialName": "گوشت مخلوط گوسفندی و گوساله",
+          "unit": "کیلوگرم",
+          "quantity": 0.22,
+          "wastePercent": 5
+        },
+        {
+          "materialId": 2,
+          "materialName": "برنج ایرانی طارم هاشمی",
+          "unit": "کیلوگرم",
+          "quantity": 0.16,
+          "wastePercent": 2
+        }
+      ],
+      "laborCost": 14000,
+      "overheadCost": 8000,
+      "packagingCost": 7000,
+      "notes": "فرمول استاندارد ۲ سیخ ۱۱۰ گرمی به همراه چلو کره زعفرانی و گوجه کبابی",
+      "updatedAt": "2026-10-17T18:56:39.709Z",
+      "id": 1
+    },
+    {
+      "menuItemId": 2,
+      "menuItemName": "زرشک پلو با مرغ زعفرانی",
+      "ingredients": [
+        {
+          "materialId": 3,
+          "materialName": "ران و سینه مرغ تازه",
+          "unit": "کیلوگرم",
+          "quantity": 0.35,
+          "wastePercent": 8
+        },
+        {
+          "materialId": 2,
+          "materialName": "برنج ایرانی طارم هاشمی",
+          "unit": "کیلوگرم",
+          "quantity": 0.16,
+          "wastePercent": 2
+        }
+      ],
+      "laborCost": 12000,
+      "overheadCost": 7500,
+      "packagingCost": 7000,
+      "notes": "ران مرغ کامل ۴۰۰ گرمی با سس زعفرانی و زرشک خلال پسته",
+      "updatedAt": "2026-10-17T18:56:39.709Z",
+      "id": 2
+    },
+    {
+      "menuItemId": 3,
+      "menuItemName": "پیتزا مخصوص آرکا",
+      "ingredients": [
+        {
+          "materialId": 4,
+          "materialName": "پنیر پیتزا موزارلا",
+          "unit": "کیلوگرم",
+          "quantity": 0.22,
+          "wastePercent": 3
+        },
+        {
+          "materialId": 1,
+          "materialName": "گوشت مخلوط گوسفندی و گوساله",
+          "unit": "کیلوگرم",
+          "quantity": 0.1,
+          "wastePercent": 4
+        }
+      ],
+      "laborCost": 15000,
+      "overheadCost": 9000,
+      "packagingCost": 8500,
+      "notes": "پیتزا ۲ نفره با خمیر دست‌ساز و پنیر موزارلا ویژه",
+      "updatedAt": "2026-10-17T18:56:39.709Z",
+      "id": 3
+    },
+    {
+      "menuItemId": 4,
+      "menuItemName": "نوشابه قوطی مشکی",
+      "ingredients": [
+        {
+          "materialId": 5,
+          "materialName": "نوشابه قوطی (پک انبار)",
+          "unit": "عدد",
+          "quantity": 1,
+          "wastePercent": 0
+        }
+      ],
+      "laborCost": 0,
+      "overheadCost": 500,
+      "packagingCost": 0,
+      "notes": "فروش مستقیم نوشابه قوطی از یخچال",
+      "updatedAt": "2026-10-17T18:56:39.709Z",
+      "id": 4
+    }
+  ],
+  "kitchenProductions": [
+    {
+      "batchNumber": 101,
+      "createdAt": "2026-10-17T19:45:04.077Z",
+      "shiftLabel": "آماده‌سازی سلف سرویس",
+      "chefName": "استاد رضا کمالی",
+      "items": [
+        {
+          "menuItemId": 1,
+          "menuItemName": "چلوکباب کوبیده مخصوص (دو سیخ)",
+          "quantityProduced": 3,
+          "unitCost": 185012,
+          "totalCost": 555036
+        },
+        {
+          "menuItemId": 3,
+          "menuItemName": "پیتزا مخصوص آرکا",
+          "quantityProduced": 1,
+          "unitCost": 151736,
+          "totalCost": 151736
+        }
+      ],
+      "materialConsumptions": [
+        {
+          "materialId": 1,
+          "materialName": "گوشت مخلوط گوسفندی و گوساله",
+          "unit": "کیلوگرم",
+          "grossQuantityConsumed": 0.797,
+          "unitCost": 580000,
+          "totalMaterialCost": 462260
+        },
+        {
+          "materialId": 2,
+          "materialName": "برنج ایرانی طارم هاشمی",
+          "unit": "کیلوگرم",
+          "grossQuantityConsumed": 0.4896,
+          "unitCost": 135000,
+          "totalMaterialCost": 66096
+        },
+        {
+          "materialId": 4,
+          "materialName": "پنیر پیتزا موزارلا",
+          "unit": "کیلوگرم",
+          "grossQuantityConsumed": 0.2266,
+          "unitCost": 260000,
+          "totalMaterialCost": 58916
+        }
+      ],
+      "totalPortions": 4,
+      "totalMaterialsCost": 587272,
+      "totalLaborAndOverheadCost": 119500,
+      "totalBatchCost": 706772,
+      "id": 1
+    }
+  ],
+  "cashClosures": [],
+  "appUsers": [
+    {
+      "username": "admin",
+      "fullName": "مدیر کل سیستم",
+      "pin": "1234",
+      "roleLabel": "مدیر کل",
+      "isAdmin": true,
+      "permissions": [
+        "pos",
+        "pos_discount",
+        "pos_cancel",
+        "pos_edit_invoice",
+        "pos_delete_invoice",
+        "kitchen",
+        "accounting",
+        "menu",
+        "reports",
+        "customers",
+        "settings"
+      ],
+      "isActive": true,
+      "createdAt": "2026-10-18T18:28:55.392Z",
+      "id": 1
+    }
+  ]
+}

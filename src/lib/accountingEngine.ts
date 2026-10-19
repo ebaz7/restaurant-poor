@@ -25,17 +25,117 @@ export interface JournalLine {
   description?: string;
 }
 
+export type MeasurementUnit =
+  | 'کیلوگرم'
+  | 'گرم'
+  | 'مثقال'
+  | 'عدد'
+  | 'کارتن'
+  | 'بسته'
+  | 'لیتر'
+  | 'سی‌سی'
+  | 'پیمانه'
+  | 'قاشق'
+  | 'پرس';
+
+export const ALL_MEASUREMENT_UNITS: MeasurementUnit[] = [
+  'گرم',
+  'کیلوگرم',
+  'عدد',
+  'کارتن',
+  'بسته',
+  'لیتر',
+  'سی‌سی',
+  'مثقال',
+  'پیمانه',
+  'قاشق',
+  'پرس',
+];
+
+/**
+ * Converts a recipe quantity expressed in `recipeUnit` into the equivalent quantity
+ * in the material's warehouse `stockUnit` (e.g., 150 گرم -> 0.15 کیلوگرم, or 2 عدد from a 24-count کارتن -> 2/24 کارتن).
+ */
+export function convertRecipeQtyToStockUnit(params: {
+  quantity: number;
+  recipeUnit: string;
+  stockUnit: string;
+  unitsPerPackage?: number;
+}): number {
+  const qty = Math.max(0, Number(params.quantity) || 0);
+  if (qty <= 0) return 0;
+
+  const rUnit = (params.recipeUnit || '').trim();
+  const sUnit = (params.stockUnit || '').trim();
+  if (!rUnit || !sUnit || rUnit === sUnit) return qty;
+
+  const packSize = Math.max(0.0001, Number(params.unitsPerPackage) || 0);
+
+  // Weight conversions
+  const weightToGrams: Record<string, number> = {
+    'گرم': 1,
+    'کیلوگرم': 1000,
+    'مثقال': 4.608,
+    'پیمانه': 150,
+    'قاشق': 15,
+  };
+
+  if (weightToGrams[rUnit] !== undefined && weightToGrams[sUnit] !== undefined) {
+    return (qty * weightToGrams[rUnit]) / weightToGrams[sUnit];
+  }
+
+  // Volume conversions
+  const volumeToMl: Record<string, number> = {
+    'سی‌سی': 1,
+    'لیتر': 1000,
+    'پیمانه': 240,
+    'قاشق': 15,
+  };
+
+  if (volumeToMl[rUnit] !== undefined && volumeToMl[sUnit] !== undefined) {
+    return (qty * volumeToMl[rUnit]) / volumeToMl[sUnit];
+  }
+
+  // Package / Carton <-> Count or Weight conversions using unitsPerPackage
+  const isStockPack = sUnit === 'کارتن' || sUnit === 'بسته';
+  const isRecipePack = rUnit === 'کارتن' || rUnit === 'بسته';
+
+  if (isStockPack && !isRecipePack) {
+    const divisor = packSize > 0 ? packSize : 1;
+    if (rUnit === 'گرم' && divisor <= 100) {
+      return qty / (divisor * 1000);
+    }
+    return qty / divisor;
+  }
+
+  if (isRecipePack && !isStockPack) {
+    const multiplier = packSize > 0 ? packSize : 1;
+    return qty * multiplier;
+  }
+
+  if (packSize > 0 && packSize !== 1) {
+    return qty / packSize;
+  }
+
+  return qty;
+}
+
 export interface BOMIngredientInput {
-  materialId: number;
+  materialId: number; // < 0 for Miscellaneous (متفرقه - خارج از انبار)
   materialName: string;
-  unit: string;
-  quantity: number; // Quantity consumed per 1 unit of menu item
-  unitCost: number; // Current cost per unit of material
+  unit: string; // Stock / base unit
+  recipeUnit?: string; // Unit chosen in BOM (گرم، کیلوگرم، کارتن، عدد...)
+  unitsPerPackage?: number; // Optional conversion ratio (e.g. تعداد/وزن در کارتن یا بسته)
+  quantity: number; // Quantity consumed per 1 unit of menu item (in recipeUnit)
+  unitCost: number; // Cost per 1 stockUnit (or manual unit price for miscellaneous items)
   wastePercent?: number; // e.g., 5 for 5% wastage during prep/cooking
+  isMisc?: boolean; // True if miscellaneous item (متفرقه - does not enter/deduct warehouse)
 }
 
 export interface BOMCostResult {
   ingredientsCost: number;
+  miscIngredientsCost: number;
+  warehouseIngredientsCost: number;
   overheadCost: number;
   laborCost: number;
   packagingCost: number;
@@ -48,9 +148,13 @@ export interface BOMCostResult {
   ingredientBreakdown: Array<{
     materialId: number;
     materialName: string;
+    recipeUnit: string;
+    stockUnit: string;
     effectiveQuantity: number;
+    stockEquivalentQuantity: number;
     lineCost: number;
     sharePercent: number;
+    isMisc: boolean;
   }>;
 }
 
@@ -209,21 +313,49 @@ export function calculateRecipeCost(params: {
   const packagingCost = Math.max(0, Math.round(Number(params.packagingCost) || 0));
   const sellingPrice = Math.max(0, Math.round(Number(params.sellingPrice) || 0));
 
+  let warehouseIngredientsCost = 0;
+  let miscIngredientsCost = 0;
+
   const rawBreakdown = (params.ingredients || []).map((ing) => {
     const qty = Math.max(0, Number(ing.quantity) || 0);
     const unitCost = Math.max(0, Number(ing.unitCost) || 0);
     const wastePct = Math.max(0, Math.min(100, Number(ing.wastePercent) || 0));
+    const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
+    const stockUnit = ing.unit || 'عدد';
+    const recipeUnit = ing.recipeUnit || stockUnit;
+
     const effectiveQuantity = Number((qty * (1 + wastePct / 100)).toFixed(4));
-    const lineCost = Math.round(effectiveQuantity * unitCost);
+    const stockEquivalentQuantity = isMisc
+      ? effectiveQuantity
+      : Number(
+          convertRecipeQtyToStockUnit({
+            quantity: effectiveQuantity,
+            recipeUnit,
+            stockUnit,
+            unitsPerPackage: ing.unitsPerPackage,
+          }).toFixed(6)
+        );
+
+    const lineCost = Math.round(stockEquivalentQuantity * unitCost);
+    if (isMisc) {
+      miscIngredientsCost += lineCost;
+    } else {
+      warehouseIngredientsCost += lineCost;
+    }
+
     return {
       materialId: ing.materialId,
       materialName: ing.materialName,
+      recipeUnit,
+      stockUnit,
       effectiveQuantity,
+      stockEquivalentQuantity,
       lineCost,
+      isMisc,
     };
   });
 
-  const ingredientsCost = rawBreakdown.reduce((sum, item) => sum + item.lineCost, 0);
+  const ingredientsCost = warehouseIngredientsCost + miscIngredientsCost;
   const totalUnitCost = ingredientsCost + overheadCost + laborCost + packagingCost;
   const netProfitPerUnit = sellingPrice - totalUnitCost;
 
@@ -245,6 +377,8 @@ export function calculateRecipeCost(params: {
 
   return {
     ingredientsCost,
+    miscIngredientsCost,
+    warehouseIngredientsCost,
     overheadCost,
     laborCost,
     packagingCost,
@@ -671,8 +805,12 @@ export interface KitchenRecipeSource {
     materialId: number;
     materialName: string;
     unit: string;
-    quantity: number; // per 1 portion
+    recipeUnit?: string;
+    unitsPerPackage?: number;
+    quantity: number; // per 1 portion (in recipeUnit)
     wastePercent: number;
+    isMisc?: boolean;
+    customUnitPrice?: number;
   }>;
   laborCost: number;
   overheadCost: number;
@@ -789,11 +927,30 @@ export function calculateKitchenBatchProduction(params: {
     }
 
     let unitMatCost = 0;
+    let unitMiscCost = 0;
     for (const ing of recipe.ingredients) {
-      const mat = materialById.get(ing.materialId);
-      const unitCost = Math.max(0, Number(mat?.avgCost) || 0);
-      const baseQtyPerUnit = Math.max(0, Number(ing.quantity) || 0);
+      const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
+      const baseQtyInRecipeUnit = Math.max(0, Number(ing.quantity) || 0);
       const wastePct = Math.max(0, Math.min(100, Number(ing.wastePercent) || 0));
+
+      if (isMisc) {
+        const miscUnitPrice = Math.max(0, Number(ing.customUnitPrice) || 0);
+        const grossMiscQty = baseQtyInRecipeUnit * (1 + wastePct / 100);
+        unitMiscCost += Math.round(grossMiscQty * miscUnitPrice);
+        continue;
+      }
+
+      const mat = materialById.get(ing.materialId);
+      const stockUnit = mat?.unit || ing.unit || 'کیلوگرم';
+      const recipeUnit = ing.recipeUnit || stockUnit;
+      const unitCost = Math.max(0, Number(mat?.avgCost) || 0);
+
+      const baseQtyPerUnit = convertRecipeQtyToStockUnit({
+        quantity: baseQtyInRecipeUnit,
+        recipeUnit,
+        stockUnit,
+        unitsPerPackage: ing.unitsPerPackage,
+      });
       const grossQtyPerUnit = baseQtyPerUnit * (1 + wastePct / 100);
       const wasteQtyPerUnit = grossQtyPerUnit - baseQtyPerUnit;
 
@@ -806,7 +963,7 @@ export function calculateKitchenBatchProduction(params: {
       const existing = consumptionMap.get(ing.materialId) || {
         materialId: ing.materialId,
         materialName: mat?.name || ing.materialName,
-        unit: mat?.unit || ing.unit,
+        unit: stockUnit,
         netQuantity: 0,
         wasteQuantity: 0,
         grossQuantityConsumed: 0,
@@ -819,7 +976,7 @@ export function calculateKitchenBatchProduction(params: {
     }
 
     const uLabor = Math.max(0, Math.round(Number(recipe.laborCost) || 0));
-    const uOverhead = Math.max(0, Math.round(Number(recipe.overheadCost) || 0));
+    const uOverhead = Math.max(0, Math.round(Number(recipe.overheadCost) || 0)) + unitMiscCost;
     const uPack = Math.max(0, Math.round(Number(recipe.packagingCost) || 0));
     const uTotal = unitMatCost + uLabor + uOverhead + uPack;
 
