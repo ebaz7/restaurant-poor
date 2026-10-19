@@ -119,9 +119,102 @@ const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'central_db.json');
+const LICENSE_FILE = path.join(DATA_DIR, 'server_license.json');
+const os = require('os');
+const crypto = require('crypto');
+
+const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
+const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function fnvFallbackHex(str) {
+  let hash1 = 2166136261;
+  let hash2 = 30503041;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash1 ^= char;
+    hash1 = Math.imul(hash1, 16777619);
+    hash2 ^= char;
+    hash2 = Math.imul(hash2, 16777619);
+  }
+  const h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
+  const h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
+  return h1Hex + h2Hex + h1Hex + h2Hex;
+}
+
+function isKeyValidForCode(userKey, sysCode) {
+  if (!userKey || !sysCode) return { valid: false, isEmergency: false };
+  const cleanKey = String(userKey).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const cleanEmergency = MASTER_EMERGENCY_KEY.replace(/[^A-Z0-9]/g, '');
+  if (cleanKey === cleanEmergency) {
+    return { valid: true, isEmergency: true };
+  }
+  const cleanCode = String(sysCode).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const combined = `${cleanCode}_${MASTER_SECRET_SALT}`;
+  const shaHash = crypto.createHash('sha256').update(combined, 'utf8').digest('hex').substring(0, 16).toUpperCase();
+  const fnvHash = fnvFallbackHex(combined).substring(0, 16).toUpperCase();
+  if (cleanKey === shaHash || cleanKey === fnvHash) {
+    return { valid: true, isEmergency: false };
+  }
+  return { valid: false, isEmergency: false };
+}
+
+function getOrCreateServerLicenseRecord() {
+  let record = null;
+  if (fs.existsSync(LICENSE_FILE)) {
+    try {
+      record = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
+    } catch (e) {}
+  }
+  if ((!record || !record.isActivated) && fs.existsSync(DB_FILE)) {
+    try {
+      const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      const firstSetting = Array.isArray(dbData?.settings) ? dbData.settings[0] : null;
+      if (firstSetting?.centralLicenseInfo?.isActivated && firstSetting.centralLicenseInfo.licenseKey) {
+        const cli = firstSetting.centralLicenseInfo;
+        const check = isKeyValidForCode(cli.licenseKey, cli.systemCode);
+        if (check.valid) {
+          record = {
+            systemCode: cli.systemCode,
+            licenseKey: cli.licenseKey,
+            activatedAt: cli.activatedAt || new Date().toISOString(),
+            isActivated: true,
+            isEmergencyOverride: check.isEmergency,
+          };
+          try {
+            fs.writeFileSync(LICENSE_FILE, JSON.stringify(record, null, 2), 'utf8');
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }
+  if (record && record.systemCode) {
+    if (record.licenseKey) {
+      const check = isKeyValidForCode(record.licenseKey, record.systemCode);
+      record.isActivated = check.valid;
+      record.isEmergencyOverride = check.isEmergency;
+    } else {
+      record.isActivated = false;
+    }
+    return record;
+  }
+  const cpuModel = (os.cpus() && os.cpus()[0] && os.cpus()[0].model) || 'CPU';
+  const rawHw = `ARKA_CENTRAL_SRV_${os.hostname()}_${os.platform()}_${os.arch()}_${cpuModel}`;
+  const hash = crypto.createHash('sha256').update(rawHw, 'utf8').digest('hex').toUpperCase();
+  const systemCode = `ARKA-${hash.substring(0, 4)}-${hash.substring(4, 8)}-${hash.substring(8, 12)}`;
+  const initialRecord = {
+    systemCode,
+    isActivated: false,
+    licenseKey: '',
+    activatedAt: null,
+  };
+  try {
+    fs.writeFileSync(LICENSE_FILE, JSON.stringify(initialRecord, null, 2), 'utf8');
+  } catch (e) {}
+  return initialRecord;
 }
 
 let currentRev = 1;
@@ -149,11 +242,109 @@ const MIME_TYPES = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
+  '.exe': 'application/vnd.microsoft.portable-executable',
+  '.msi': 'application/x-msi',
+  '.zip': 'application/zip',
+  '.bat': 'application/x-msdos-program',
 };
 
 const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   try {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    // Central Server License Status (Single activation for the entire LAN)
+    if (parsedUrl.pathname === '/api/license/status' && req.method === 'GET') {
+      const record = getOrCreateServerLicenseRecord();
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      });
+      res.end(JSON.stringify({
+        ok: true,
+        isActivated: Boolean(record.isActivated),
+        systemCode: record.systemCode,
+        licenseKey: record.isActivated ? record.licenseKey : undefined,
+        activatedAt: record.activatedAt || undefined,
+        isEmergencyOverride: Boolean(record.isEmergencyOverride),
+        serverHostname: os.hostname(),
+      }));
+      return;
+    }
+
+    if (parsedUrl.pathname === '/api/license/activate' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const userKey = String(payload.licenseKey || '').trim().toUpperCase();
+          const clientSystemCode = String(payload.clientSystemCode || '').trim().toUpperCase();
+          const record = getOrCreateServerLicenseRecord();
+
+          let targetCode = record.systemCode;
+          let check = isKeyValidForCode(userKey, record.systemCode);
+
+          if (!check.valid && clientSystemCode) {
+            const clientCheck = isKeyValidForCode(userKey, clientSystemCode);
+            if (clientCheck.valid) {
+              check = clientCheck;
+              targetCode = clientSystemCode;
+            }
+          }
+
+          if (!check.valid) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              ok: false,
+              message: 'کد فعال‌سازی وارد شده معتبر نمی‌باشد.',
+            }));
+            return;
+          }
+
+          const updatedRecord = {
+            systemCode: targetCode,
+            licenseKey: userKey,
+            activatedAt: new Date().toISOString(),
+            isActivated: true,
+            isEmergencyOverride: check.isEmergency,
+          };
+
+          fs.writeFileSync(LICENSE_FILE, JSON.stringify(updatedRecord, null, 2), 'utf8');
+
+          if (fs.existsSync(DB_FILE)) {
+            try {
+              const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+              if (Array.isArray(dbData?.settings) && dbData.settings.length > 0) {
+                dbData.settings[0].centralLicenseInfo = updatedRecord;
+                fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf8');
+                currentRev += 1;
+              }
+            } catch (e) {}
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({
+            ok: true,
+            ...updatedRecord,
+            message: 'لایسنس روی سرور مرکزی فعال شد و تمامی کلاینت‌های شبکه به صورت خودکار فعال گردیدند.',
+          }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, message: err.message }));
+        }
+      });
+      return;
+    }
 
     // Central Server REST API for Multi-Terminal Network Sync
     if (parsedUrl.pathname === '/api/db/version' && req.method === 'GET') {
@@ -1045,8 +1236,197 @@ remove_app() {
     fi
 }
 
+build_tauri_windows_on_linux() {
+    print_banner
+    echo "================================================================"
+    echo "   Build Windows Tauri Installer (.exe) on Linux (Cross-Compile)"
+    echo "   ساخت فایل نصبی ویندوز تائوری (.exe) مستقیماً داخل لینوکس"
+    echo "================================================================"
+
+    ensure_swap
+
+    # Determine project directory
+    local WORK_DIR="$INSTALL_DIR"
+    if [ -f "./package.json" ] && [ -d "./src-tauri" ]; then
+        WORK_DIR="$(pwd)"
+    elif [ ! -d "$INSTALL_DIR/src-tauri" ]; then
+        echo "[i] Preparing project source code in $INSTALL_DIR..."
+        apt-get update -y
+        apt-get install -y git curl ca-certificates || true
+        rm -rf "$INSTALL_DIR"
+        git clone "$REPO_URL" "$INSTALL_DIR" || {
+            echo "[!] Failed to clone repository from $REPO_URL."
+            return 1
+        }
+        WORK_DIR="$INSTALL_DIR"
+    fi
+
+    cd "$WORK_DIR" || return 1
+    echo "[+] Working directory: $WORK_DIR"
+
+    echo "[+] Step 1/5: Installing Linux Cross-Compilation Toolchain (NSIS, Clang/LLD, MinGW-w64)..."
+    apt-get update -y
+    apt-get install -y \
+        curl wget git zip unzip tar xz-utils ca-certificates \
+        build-essential pkg-config libssl-dev \
+        clang llvm lld nsis mingw-w64 || true
+
+    # Ensure Node.js 18+ & npm are installed
+    if ! command -v node &> /dev/null || [ "$(node -v | tr -d 'v' | cut -d. -f1)" -lt 18 ]; then
+        echo "[i] Installing Node.js 20 LTS..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>/dev/null || true
+        apt-get install -y nodejs npm || true
+    fi
+
+    echo "[+] Step 2/5: Installing Rust & Cargo Toolchain..."
+    export PATH="$HOME/.cargo/bin:$PATH"
+    if [ -f "$HOME/.cargo/env" ]; then
+        # shellcheck disable=SC1091
+        source "$HOME/.cargo/env" 2>/dev/null || true
+    fi
+
+    if ! command -v rustup &> /dev/null || ! command -v cargo &> /dev/null; then
+        echo "[i] Installing rustup and stable Rust compiler..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+        export PATH="$HOME/.cargo/bin:$PATH"
+        if [ -f "$HOME/.cargo/env" ]; then
+            # shellcheck disable=SC1091
+            source "$HOME/.cargo/env" 2>/dev/null || true
+        fi
+    fi
+
+    echo "[+] Step 3/5: Adding Windows Targets & Installing cargo-xwin..."
+    rustup target add x86_64-pc-windows-msvc || true
+    rustup target add x86_64-pc-windows-gnu || true
+
+    if ! command -v cargo-xwin &> /dev/null; then
+        echo "[i] Installing cargo-xwin (trying fast prebuilt binary first)..."
+        local ARCH
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+            local XWIN_URL="https://github.com/rust-cross/cargo-xwin/releases/latest/download/cargo-xwin-v0.18.4.x86_64-unknown-linux-musl.tar.gz"
+            local LATEST_URL
+            LATEST_URL=$(curl -s https://api.github.com/repos/rust-cross/cargo-xwin/releases/latest | grep "browser_download_url.*x86_64-unknown-linux-musl.tar.gz" | head -n1 | cut -d '"' -f 4)
+            if [ -n "$LATEST_URL" ]; then
+                XWIN_URL="$LATEST_URL"
+            fi
+            mkdir -p "$HOME/.cargo/bin"
+            if curl -fL "$XWIN_URL" -o /tmp/cargo-xwin.tar.gz 2>/dev/null; then
+                tar -xzf /tmp/cargo-xwin.tar.gz -C "$HOME/.cargo/bin" 2>/dev/null || true
+                chmod +x "$HOME/.cargo/bin/cargo-xwin" 2>/dev/null || true
+                rm -f /tmp/cargo-xwin.tar.gz
+            fi
+        fi
+
+        if ! command -v cargo-xwin &> /dev/null; then
+            echo "[i] Compiling cargo-xwin via cargo install..."
+            cargo install --locked cargo-xwin || true
+        fi
+    fi
+
+    echo "[+] Step 4/5: Installing Frontend Dependencies & Building Web Bundle..."
+    export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+    npm config set registry https://registry.npmmirror.com 2>/dev/null || true
+    npm install --no-audit --no-fund
+    node fix-ico.cjs 2>/dev/null || true
+    npx @tauri-apps/cli icon src/assets/images/arka_logo.png 2>/dev/null || true
+    npm run build
+
+    echo "[+] Step 5/5: Cross-Compiling Windows Tauri Installer (.exe) on Linux..."
+    local BUILD_SUCCESS=0
+    local TARGET_USED=""
+
+    if command -v cargo-xwin &> /dev/null; then
+        echo "[i] Building with cargo-xwin (target: x86_64-pc-windows-msvc, bundle: nsis)..."
+        if npx @tauri-apps/cli build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis; then
+            BUILD_SUCCESS=1
+            TARGET_USED="x86_64-pc-windows-msvc"
+        fi
+    fi
+
+    if [ "$BUILD_SUCCESS" -eq 0 ]; then
+        echo "[i] Fallback: Building with MinGW-w64 (target: x86_64-pc-windows-gnu, bundle: nsis)..."
+        if npx @tauri-apps/cli build --target x86_64-pc-windows-gnu --bundles nsis; then
+            BUILD_SUCCESS=1
+            TARGET_USED="x86_64-pc-windows-gnu"
+        fi
+    fi
+
+    if [ "$BUILD_SUCCESS" -eq 0 ]; then
+        echo "================================================================"
+        echo "[!] خطا در ساخت خروجی ویندوز تائوری در لینوکس."
+        echo "[i] لطفاً اتصال اینترنت سرور و نصب بودن پکیج‌های nsis و clang/lld را بررسی کنید."
+        echo "================================================================"
+        return 1
+    fi
+
+    local OUT_DIR="$WORK_DIR/windows-tauri-output"
+    mkdir -p "$OUT_DIR" "$WORK_DIR/dist"
+
+    local SETUP_EXE
+    SETUP_EXE=$(find "$WORK_DIR/src-tauri/target/$TARGET_USED/release/bundle/nsis" -maxdepth 1 -name "*-setup.exe" 2>/dev/null | head -n1)
+    local PORTABLE_EXE="$WORK_DIR/src-tauri/target/$TARGET_USED/release/arka-pos.exe"
+    if [ ! -f "$PORTABLE_EXE" ]; then
+        PORTABLE_EXE=$(find "$WORK_DIR/src-tauri/target/$TARGET_USED/release" -maxdepth 1 -iname "*.exe" 2>/dev/null | head -n1)
+    fi
+
+    if [ -n "$SETUP_EXE" ] && [ -f "$SETUP_EXE" ]; then
+        cp -f "$SETUP_EXE" "$OUT_DIR/Arka-POS-Windows-Setup.exe"
+        cp -f "$SETUP_EXE" "$WORK_DIR/dist/Arka-POS-Windows-Setup.exe"
+    fi
+
+    if [ -n "$PORTABLE_EXE" ] && [ -f "$PORTABLE_EXE" ]; then
+        cp -f "$PORTABLE_EXE" "$OUT_DIR/Arka-POS-Portable.exe"
+        cp -f "$PORTABLE_EXE" "$WORK_DIR/dist/Arka-POS-Portable.exe"
+    fi
+
+    if [ -f "$WORK_DIR/cleanup-old-tauri-installation.bat" ]; then
+        cp -f "$WORK_DIR/cleanup-old-tauri-installation.bat" "$OUT_DIR/cleanup-old-tauri-installation.bat"
+        cp -f "$WORK_DIR/cleanup-old-tauri-installation.bat" "$WORK_DIR/dist/cleanup-old-tauri-installation.bat"
+    fi
+
+    local ZIP_PATH="$OUT_DIR/Arka-Tauri-Windows.zip"
+    if command -v zip &> /dev/null; then
+        (cd "$OUT_DIR" && zip -9 -r "$ZIP_PATH" ./* >/dev/null 2>&1) || true
+        cp -f "$ZIP_PATH" "$WORK_DIR/dist/Arka-Tauri-Windows.zip" 2>/dev/null || true
+    fi
+
+    local SERVER_IP
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+
+    echo "================================================================"
+    echo "[v] SUCCESS! خروجی نصبی ویندوز تائوری با موفقیت در لینوکس ساخته شد!"
+    echo "----------------------------------------------------------------"
+    echo "[+] پوشه فایل‌های خروجی روی سرور لینوکس:"
+    echo "    $OUT_DIR"
+    if [ -f "$OUT_DIR/Arka-POS-Windows-Setup.exe" ]; then
+        echo "    1. فایل نصبی ویندوز (Setup Installer): $OUT_DIR/Arka-POS-Windows-Setup.exe"
+    fi
+    if [ -f "$OUT_DIR/Arka-POS-Portable.exe" ]; then
+        echo "    2. فایل پرتابل بدون نصب (Portable EXE): $OUT_DIR/Arka-POS-Portable.exe"
+    fi
+    if [ -f "$ZIP_PATH" ]; then
+        echo "    3. پکیج کامل فشرده (ZIP):              $ZIP_PATH"
+    fi
+    echo "----------------------------------------------------------------"
+    echo "[+] لینک دانلود مستقیم از طریق مرورگر (اگر سرور روی پورت 3000 فعال است):"
+    echo "    >>> http://${SERVER_IP}:3000/Arka-POS-Windows-Setup.exe <<<"
+    echo "    >>> http://${SERVER_IP}:3000/Arka-Tauri-Windows.zip <<<"
+    echo "================================================================"
+
+    # Also offer sending to configured Telegram / Bale bots if available
+    if [ -f "$ZIP_PATH" ]; then
+        send_backup_to_bots "$ZIP_PATH" "Windows Tauri Installer Build (.exe)"
+    fi
+    return 0
+}
+
 main_menu() {
     check_root
+    if [ "${1:-}" == "--build-tauri-win" ]; then
+        build_tauri_windows_on_linux
+        exit $?
+    fi
     while true; do
         print_banner
         echo "1) Install & Setup (Port, Domain, SSL & Iran Mirrors)"
@@ -1056,9 +1436,10 @@ main_menu() {
         echo "5) Configure Bale & Telegram Bot Tokens (CLI)"
         echo "6) Setup / Fix Official SSL Certificate (Let's Encrypt / Certbot)"
         echo "7) View Network Terminal & Central Database Status"
+        echo "8) Build Windows Tauri Installer (.exe) on Linux (ساخت نصبی ویندوز تائوری در لینوکس)"
         echo "0) Exit"
         echo "================================================================"
-        read -p "[-] Select an option (0-7): " CHOICE
+        read -p "[-] Select an option (0-8): " CHOICE
 
         case "$CHOICE" in
             1)
@@ -1091,16 +1472,20 @@ main_menu() {
                 show_network_sync_status
                 read -p "[-] Press Enter to return to menu..."
                 ;;
+            8)
+                build_tauri_windows_on_linux
+                read -p "[-] Press Enter to return to menu..."
+                ;;
             0)
                 echo "Exiting. Goodbye!"
                 exit 0
                 ;;
             *)
-                echo "Invalid option. Please enter a number between 0 and 7."
+                echo "Invalid option. Please enter a number between 0 and 8."
                 sleep 2
                 ;;
         esac
     done
 }
 
-main_menu
+main_menu "$@"

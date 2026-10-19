@@ -1,10 +1,27 @@
 import { db, AppSettings } from './db';
 import { formatNumberThreeDigits, parseThreeDigitNumber } from './accountingEngine';
 
-let activeCurrencyUnit: 'toman' | 'rial' = 'toman';
+let activeCurrencyUnit: 'toman' | 'rial' = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const saved = window.localStorage.getItem('arka_currency_unit');
+      if (saved === 'rial' || saved === 'toman') return saved;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'toman';
+})();
 
 export const setGlobalCurrencyUnit = (unit: 'toman' | 'rial') => {
   activeCurrencyUnit = unit === 'rial' ? 'rial' : 'toman';
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem('arka_currency_unit', activeCurrencyUnit);
+    }
+  } catch {
+    // ignore storage errors
+  }
 };
 
 export const getGlobalCurrencyUnit = (): 'toman' | 'rial' => activeCurrencyUnit;
@@ -128,6 +145,14 @@ export const importDB = async (jsonString: string): Promise<void> => {
       if (Array.isArray(data.appUsers) && data.appUsers.length > 0) {
         await db.appUsers.clear();
         await db.appUsers.bulkPut(data.appUsers);
+      }
+
+      // Immediately synchronize global currency unit from imported settings
+      if (Array.isArray(data.settings) && data.settings.length > 0) {
+        const importedUnit = data.settings[0]?.currencyUnit;
+        if (importedUnit === 'rial' || importedUnit === 'toman') {
+          setGlobalCurrencyUnit(importedUnit);
+        }
       }
     });
   } catch (err: any) {

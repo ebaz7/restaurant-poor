@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, syncStaffMonthlySalaries } from '../../lib/db';
 import { classifyChequeDueStatus } from '../../lib/accountingEngine';
+import { setGlobalCurrencyUnit } from '../../lib/utils';
 import PnLAndOverviewTab from './PnLAndOverviewTab';
 import CostingAndBOMTab from './CostingAndBOMTab';
 import InventoryAndKardexTab from './InventoryAndKardexTab';
@@ -27,6 +28,11 @@ export type AccountingSubTab =
 
 export default function AccountingScreen() {
   const [activeSubTab, setActiveSubTab] = useState<AccountingSubTab>('overview_pnl');
+
+  const settings = useLiveQuery(() => db.settings.toCollection().first());
+  if (settings?.currencyUnit) {
+    setGlobalCurrencyUnit(settings.currencyUnit);
+  }
 
   const accounts = useLiveQuery(() => db.accounts.toArray()) || [];
   const vouchers = useLiveQuery(() => db.journalVouchers.toArray()) || [];

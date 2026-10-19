@@ -6,7 +6,9 @@ import {
   calculateRecipeCost,
   calculateWeightedAveragePurchase,
   convertRecipeQtyToStockUnit,
+  scaleMonetaryAmountForCurrencySwitch,
 } from './accountingEngine';
+import { setGlobalCurrencyUnit } from './utils';
 
 export interface Category {
   id?: number;
@@ -125,6 +127,8 @@ export type PermissionKey =
   | 'pos_edit_invoice'
   | 'pos_delete_invoice'
   | 'kitchen'
+  | 'kitchen_edit_production'
+  | 'kitchen_delete_production'
   | 'accounting'
   | 'menu'
   | 'reports'
@@ -138,6 +142,8 @@ export const ALL_PERMISSIONS: PermissionKey[] = [
   'pos_edit_invoice',
   'pos_delete_invoice',
   'kitchen',
+  'kitchen_edit_production',
+  'kitchen_delete_production',
   'accounting',
   'menu',
   'reports',
@@ -186,6 +192,18 @@ export const PERMISSION_DEFINITIONS: Array<{
     title: 'منو آشپزخانه و ثبت تولید',
     description: 'دسترسی به بخش تولید روزانه آشپزخانه و فرمولاسیون پخت',
     category: 'module',
+  },
+  {
+    key: 'kitchen_edit_production',
+    title: 'ویرایش پارت‌های تولید آشپزخانه',
+    description: 'مجوز ویرایش تعداد پخت ثبت‌شده در آشپزخانه و اصلاح اتوماتیک مصرف انبار و سند',
+    category: 'action',
+  },
+  {
+    key: 'kitchen_delete_production',
+    title: 'حذف / ابطال پارت تولید آشپزخانه',
+    description: 'مجوز حذف یا ابطال پارت تولید ثبت‌شده و برگشت اتوماتیک مواد اولیه به انبار',
+    category: 'action',
   },
   {
     key: 'accounting',
@@ -1138,6 +1156,200 @@ export async function recordKitchenProductionBatch(params: {
   return id;
 }
 
+/**
+ * Deletes/cancels a recorded Kitchen Production Batch, reverses raw material deductions back into warehouse stock,
+ * removes its Kardex out movements, and deletes its associated accounting voucher.
+ */
+export async function deleteKitchenProductionBatch(batchId: number): Promise<void> {
+  const batch = await db.kitchenProductions.get(batchId);
+  if (!batch) return;
+
+  const now = new Date();
+
+  // 1. Reverse raw material consumption back into warehouse stock
+  if (Array.isArray(batch.materialConsumptions)) {
+    for (const mc of batch.materialConsumptions) {
+      if (!mc || mc.grossQuantityConsumed <= 0 || mc.materialId < 0) continue;
+      const mat = await db.rawMaterials.get(mc.materialId);
+      if (!mat || !mat.id) continue;
+
+      const restoredQty = Number((mat.currentQty + mc.grossQuantityConsumed).toFixed(4));
+      await db.rawMaterials.update(mat.id, {
+        currentQty: restoredQty,
+        updatedAt: now,
+      });
+    }
+  }
+
+  // 2. Remove Kardex inventory transactions created by this batch
+  const batchTag = `پارت #${batch.batchNumber}`;
+  const allTxs = await db.inventoryTransactions.toArray();
+  for (const tx of allTxs) {
+    if (tx.id && tx.type === 'out_sale_bom' && tx.description?.includes(batchTag)) {
+      await db.inventoryTransactions.delete(tx.id);
+    }
+  }
+
+  // 3. Remove accounting journal voucher created by this batch
+  const allVouchers = await db.journalVouchers.toArray();
+  for (const v of allVouchers) {
+    if (
+      v.id &&
+      (v.description?.includes(batchTag) ||
+        (v.referenceId === batch.batchNumber && v.description?.includes('تولید آشپزخانه')))
+    ) {
+      await db.journalVouchers.delete(v.id);
+    }
+  }
+
+  // 4. Delete the kitchen production batch record
+  await db.kitchenProductions.delete(batchId);
+}
+
+/**
+ * Updates an existing Kitchen Production Batch:
+ * Reverses previous material consumption & voucher, applies the new items/consumptions, and updates the record.
+ */
+export async function updateKitchenProductionBatch(
+  batchId: number,
+  params: {
+    shiftLabel: string;
+    chefName: string;
+    notes?: string;
+    items: Array<{
+      menuItemId: number;
+      menuItemName: string;
+      quantityProduced: number;
+      unitCost: number;
+      totalCost: number;
+    }>;
+    materialConsumptions: Array<{
+      materialId: number;
+      materialName: string;
+      unit: string;
+      grossQuantityConsumed: number;
+      unitCost: number;
+      totalMaterialCost: number;
+    }>;
+    totalPortions: number;
+    totalMaterialsCost: number;
+    totalLaborAndOverheadCost: number;
+    totalBatchCost: number;
+  }
+): Promise<void> {
+  const existingBatch = await db.kitchenProductions.get(batchId);
+  if (!existingBatch) return;
+
+  const batchNumber = existingBatch.batchNumber;
+  const batchDate = existingBatch.createdAt ? new Date(existingBatch.createdAt) : new Date();
+  const now = new Date();
+  const batchTag = `پارت #${batchNumber}`;
+
+  // 1. Restore old raw material consumption
+  if (Array.isArray(existingBatch.materialConsumptions)) {
+    for (const mc of existingBatch.materialConsumptions) {
+      if (!mc || mc.grossQuantityConsumed <= 0 || mc.materialId < 0) continue;
+      const mat = await db.rawMaterials.get(mc.materialId);
+      if (!mat || !mat.id) continue;
+
+      const restoredQty = Number((mat.currentQty + mc.grossQuantityConsumed).toFixed(4));
+      await db.rawMaterials.update(mat.id, {
+        currentQty: restoredQty,
+        updatedAt: now,
+      });
+    }
+  }
+
+  // 2. Delete old Kardex rows & old Journal Voucher for this batch
+  const allTxs = await db.inventoryTransactions.toArray();
+  for (const tx of allTxs) {
+    if (tx.id && tx.type === 'out_sale_bom' && tx.description?.includes(batchTag)) {
+      await db.inventoryTransactions.delete(tx.id);
+    }
+  }
+
+  const allVouchers = await db.journalVouchers.toArray();
+  for (const v of allVouchers) {
+    if (
+      v.id &&
+      (v.description?.includes(batchTag) ||
+        (v.referenceId === batchNumber && v.description?.includes('تولید آشپزخانه')))
+    ) {
+      await db.journalVouchers.delete(v.id);
+    }
+  }
+
+  // 3. Deduct new raw materials & record updated Kardex rows
+  for (const mc of params.materialConsumptions) {
+    if (mc.grossQuantityConsumed <= 0 || mc.materialId < 0) continue;
+    const mat = await db.rawMaterials.get(mc.materialId);
+    if (!mat || !mat.id) continue;
+
+    const newQty = Math.max(0, Number((mat.currentQty - mc.grossQuantityConsumed).toFixed(4)));
+    const newVal = Math.round(newQty * mat.avgCost);
+    await db.rawMaterials.update(mat.id, {
+      currentQty: newQty,
+      updatedAt: now,
+    });
+
+    await db.inventoryTransactions.add({
+      materialId: mat.id,
+      materialName: mat.name,
+      unit: mat.unit,
+      date: batchDate,
+      type: 'out_sale_bom',
+      quantity: mc.grossQuantityConsumed,
+      unitPrice: mat.avgCost,
+      totalPrice: mc.totalMaterialCost,
+      balanceQtyAfter: newQty,
+      balanceValueAfter: newVal,
+      description: `مصرف تولید آشپزخانه و سلف (پارت #${batchNumber} - ${params.shiftLabel} - ویرایش شده)`,
+    });
+  }
+
+  // 4. Record updated Double-Entry Journal Voucher
+  if (params.totalMaterialsCost > 0) {
+    const itemsSummary = params.items
+      .map((i) => `${i.menuItemName} (${i.quantityProduced} پرس)`)
+      .join('، ');
+    await recordJournalVoucher({
+      date: batchDate,
+      description: `سند مصرف مواد اولیه تولید آشپزخانه پارت #${batchNumber} (${params.shiftLabel}): ${itemsSummary}`,
+      type: 'auto_sale',
+      referenceId: batchNumber,
+      lines: [
+        {
+          accountCode: '501',
+          accountName: 'بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)',
+          debit: params.totalMaterialsCost,
+          credit: 0,
+          description: `بهای مواد مصرفی پارت تولید #${batchNumber} (${params.totalPortions} پرس)`,
+        },
+        {
+          accountCode: '105',
+          accountName: 'موجودی مواد اولیه انبار',
+          debit: 0,
+          credit: params.totalMaterialsCost,
+          description: `خروج مواد اولیه از انبار به آشپزخانه و خط سلف سرویس`,
+        },
+      ],
+    });
+  }
+
+  // 5. Update the kitchen production batch record
+  await db.kitchenProductions.update(batchId, {
+    shiftLabel: params.shiftLabel,
+    chefName: params.chefName || 'سرآشپز شیفت',
+    notes: params.notes,
+    items: params.items,
+    materialConsumptions: params.materialConsumptions,
+    totalPortions: params.totalPortions,
+    totalMaterialsCost: params.totalMaterialsCost,
+    totalLaborAndOverheadCost: params.totalLaborAndOverheadCost,
+    totalBatchCost: params.totalBatchCost,
+  });
+}
+
 let initDbPromise: Promise<void> | null = null;
 
 /**
@@ -1261,6 +1473,7 @@ async function runInitializeDefaultDatabase(): Promise<void> {
       if (!firstSetting.currencyUnit) {
         updates.currencyUnit = 'toman';
       }
+      setGlobalCurrencyUnit(firstSetting.currencyUnit || 'toman');
       if (!firstSetting.defaultInvoiceMode) {
         updates.defaultInvoiceMode = 'self_service';
         updates.lockSelfServiceMode = !isRawMode;
@@ -2134,4 +2347,229 @@ export async function resetDatabaseToRaw(): Promise<void> {
     // ignore
   }
 }
+
+/**
+ * Converts the entire database between 'toman' and 'rial':
+ * - Switching from 'rial' to 'toman' automatically removes one zero (divides by 10) across ALL existing records and settings.
+ * - Switching from 'toman' to 'rial' automatically adds one zero (multiplies by 10) across ALL existing records and settings.
+ */
+export async function convertDatabaseCurrencyUnit(
+  targetUnit: 'toman' | 'rial'
+): Promise<{ converted: boolean; fromUnit: 'toman' | 'rial'; toUnit: 'toman' | 'rial' }> {
+  const firstSetting = await db.settings.toCollection().first();
+  const fromUnit: 'toman' | 'rial' = firstSetting?.currencyUnit === 'rial' ? 'rial' : 'toman';
+
+  setGlobalCurrencyUnit(targetUnit);
+
+  if (fromUnit === targetUnit) {
+    if (firstSetting?.id) {
+      await db.settings.update(firstSetting.id, { currencyUnit: targetUnit });
+    }
+    return { converted: false, fromUnit, toUnit: targetUnit };
+  }
+
+  const scale = (val: number | undefined | null): number =>
+    scaleMonetaryAmountForCurrencySwitch(val, fromUnit, targetUnit);
+
+  await db.transaction(
+    'rw',
+    [
+      db.settings,
+      db.menuItems,
+      db.orders,
+      db.customers,
+      db.bankAccounts,
+      db.persons,
+      db.journalVouchers,
+      db.cheques,
+      db.rawMaterials,
+      db.inventoryTransactions,
+      db.productionRecipes,
+      db.kitchenProductions,
+      db.cashClosures,
+    ],
+    async () => {
+      // 1. Settings
+      const allSettings = await db.settings.toArray();
+      for (const s of allSettings) {
+        if (!s.id) continue;
+        const defaultSodaBefore = s.defaultSodaPrice ?? (fromUnit === 'rial' ? 150000 : 15000);
+        const defaultDoughBefore = s.defaultDoughPrice ?? (fromUnit === 'rial' ? 150000 : 15000);
+        const defaultWaterBefore = s.defaultWaterPrice ?? (fromUnit === 'rial' ? 100000 : 10000);
+        const defaultDelsterBefore = s.defaultDelsterPrice ?? (fromUnit === 'rial' ? 200000 : 20000);
+
+        await db.settings.update(s.id, {
+          currencyUnit: targetUnit,
+          selfServicePricePerPerson: scale(s.selfServicePricePerPerson),
+          defaultSodaPrice: scale(defaultSodaBefore),
+          defaultDoughPrice: scale(defaultDoughBefore),
+          defaultWaterPrice: scale(defaultWaterBefore),
+          defaultDelsterPrice: scale(defaultDelsterBefore),
+        });
+      }
+
+      // 2. Menu Items
+      const allMenuItems = await db.menuItems.toArray();
+      for (const m of allMenuItems) {
+        if (!m.id) continue;
+        await db.menuItems.update(m.id, {
+          price: scale(m.price),
+        });
+      }
+
+      // 3. Orders / Sales Invoices
+      const allOrders = await db.orders.toArray();
+      for (const o of allOrders) {
+        if (!o.id) continue;
+        await db.orders.update(o.id, {
+          items: (o.items || []).map((it) => ({
+            ...it,
+            price: scale(it.price),
+          })),
+          subtotal: scale(o.subtotal),
+          discountValue: o.discountType === 'amount' ? scale(o.discountValue) : o.discountValue,
+          taxAmount: scale(o.taxAmount),
+          total: scale(o.total),
+          selfServiceUnitPrice:
+            o.selfServiceUnitPrice !== undefined ? scale(o.selfServiceUnitPrice) : undefined,
+          cashAmount: o.cashAmount !== undefined ? scale(o.cashAmount) : undefined,
+          cardAmount: o.cardAmount !== undefined ? scale(o.cardAmount) : undefined,
+          cogsAmount: o.cogsAmount !== undefined ? scale(o.cogsAmount) : undefined,
+        });
+      }
+
+      // 4. Customers
+      const allCustomers = await db.customers.toArray();
+      for (const c of allCustomers) {
+        if (!c.id) continue;
+        await db.customers.update(c.id, {
+          totalSpent: scale(c.totalSpent),
+        });
+      }
+
+      // 5. Bank Accounts
+      const allBanks = await db.bankAccounts.toArray();
+      for (const b of allBanks) {
+        if (!b.id) continue;
+        await db.bankAccounts.update(b.id, {
+          initialBalance: scale(b.initialBalance),
+          currentBalance: scale(b.currentBalance),
+        });
+      }
+
+      // 6. Persons (Staff, Suppliers, Customers)
+      const allPersons = await db.persons.toArray();
+      for (const p of allPersons) {
+        if (!p.id) continue;
+        await db.persons.update(p.id, {
+          initialDebt: scale(p.initialDebt),
+          initialCredit: scale(p.initialCredit),
+          monthlySalary: p.monthlySalary !== undefined ? scale(p.monthlySalary) : undefined,
+        });
+      }
+
+      // 7. Journal Vouchers (Double-Entry Accounting)
+      const allVouchers = await db.journalVouchers.toArray();
+      for (const v of allVouchers) {
+        if (!v.id) continue;
+        await db.journalVouchers.update(v.id, {
+          totalAmount: scale(v.totalAmount),
+          lines: (v.lines || []).map((l) => ({
+            ...l,
+            debit: scale(l.debit),
+            credit: scale(l.credit),
+          })),
+        });
+      }
+
+      // 8. Cheques
+      const allCheques = await db.cheques.toArray();
+      for (const ch of allCheques) {
+        if (!ch.id) continue;
+        await db.cheques.update(ch.id, {
+          amount: scale(ch.amount),
+        });
+      }
+
+      // 9. Raw Materials (Warehouse)
+      const allMaterials = await db.rawMaterials.toArray();
+      for (const rm of allMaterials) {
+        if (!rm.id) continue;
+        await db.rawMaterials.update(rm.id, {
+          avgCost: scale(rm.avgCost),
+          lastPurchasePrice: scale(rm.lastPurchasePrice),
+        });
+      }
+
+      // 10. Inventory Transactions (Kardex)
+      const allTxs = await db.inventoryTransactions.toArray();
+      for (const tx of allTxs) {
+        if (!tx.id) continue;
+        await db.inventoryTransactions.update(tx.id, {
+          unitPrice: scale(tx.unitPrice),
+          totalPrice: scale(tx.totalPrice),
+          balanceValueAfter: scale(tx.balanceValueAfter),
+        });
+      }
+
+      // 11. Production Recipes (BOM)
+      const allRecipes = await db.productionRecipes.toArray();
+      for (const r of allRecipes) {
+        if (!r.id) continue;
+        await db.productionRecipes.update(r.id, {
+          laborCost: scale(r.laborCost),
+          overheadCost: scale(r.overheadCost),
+          packagingCost: scale(r.packagingCost),
+          ingredients: (r.ingredients || []).map((ing) => ({
+            ...ing,
+            customUnitPrice:
+              ing.customUnitPrice !== undefined ? scale(ing.customUnitPrice) : undefined,
+          })),
+        });
+      }
+
+      // 12. Kitchen Production Batches
+      const allProductions = await db.kitchenProductions.toArray();
+      for (const kp of allProductions) {
+        if (!kp.id) continue;
+        await db.kitchenProductions.update(kp.id, {
+          totalMaterialsCost: scale(kp.totalMaterialsCost),
+          totalLaborAndOverheadCost: scale(kp.totalLaborAndOverheadCost),
+          totalBatchCost: scale(kp.totalBatchCost),
+          items: (kp.items || []).map((it) => ({
+            ...it,
+            unitCost: scale(it.unitCost),
+            totalCost: scale(it.totalCost),
+          })),
+          materialConsumptions: (kp.materialConsumptions || []).map((mc) => ({
+            ...mc,
+            unitCost: scale(mc.unitCost),
+            totalMaterialCost: scale(mc.totalMaterialCost),
+          })),
+        });
+      }
+
+      // 13. Cash Closures
+      const allClosures = await db.cashClosures.toArray();
+      for (const cc of allClosures) {
+        if (!cc.id) continue;
+        await db.cashClosures.update(cc.id, {
+          totalSales: scale(cc.totalSales),
+          expectedCash: scale(cc.expectedCash),
+          actualCash: scale(cc.actualCash),
+          cashDiscrepancy: scale(cc.cashDiscrepancy),
+          totalCard: scale(cc.totalCard),
+          totalCredit: scale(cc.totalCredit),
+          bankBreakdown: (cc.bankBreakdown || []).map((bb) => ({
+            ...bb,
+            amount: scale(bb.amount),
+          })),
+        });
+      }
+    }
+  );
+
+  return { converted: true, fromUnit, toUnit: targetUnit };
+}
+
 

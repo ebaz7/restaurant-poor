@@ -11,7 +11,7 @@ import {
   convertRecipeQtyToStockUnit,
   ALL_MEASUREMENT_UNITS,
 } from '../../lib/accountingEngine';
-import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { formatCurrency, getCurrencyLabel, getGlobalCurrencyUnit } from '../../lib/utils';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import {
   Calculator,
@@ -31,15 +31,17 @@ interface Props {
 }
 
 export default function CostingAndBOMTab({ menuItems, materials, recipes }: Props) {
+  const currencyLabel = getCurrencyLabel();
+  const isRial = getGlobalCurrencyUnit() === 'rial';
+
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<number | null>(null);
   const [ingredients, setIngredients] = useState<ProductionRecipeItem[]>([]);
-  const [laborCost, setLaborCost] = useState<number>(12000);
-  const [overheadCost, setOverheadCost] = useState<number>(8000);
-  const [packagingCost, setPackagingCost] = useState<number>(6000);
+  const [laborCost, setLaborCost] = useState<number>(isRial ? 120000 : 12000);
+  const [overheadCost, setOverheadCost] = useState<number>(isRial ? 80000 : 8000);
+  const [packagingCost, setPackagingCost] = useState<number>(isRial ? 60000 : 6000);
   const [notes, setNotes] = useState<string>('');
   const [sellingPriceInput, setSellingPriceInput] = useState<number>(0);
   const [saveMessage, setSaveMessage] = useState<string>('');
-  const currencyLabel = getCurrencyLabel();
 
   // Add mode: 'warehouse' (کالای انبار با تبدیل خودکار واحد) or 'misc' (کالای متفرقه خارج از انبار با فی دستی)
   const [addMode, setAddMode] = useState<'warehouse' | 'misc'>('warehouse');
@@ -55,7 +57,7 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
   const [miscName, setMiscName] = useState<string>('کالای متفرقه (ادویه / دورچین)');
   const [miscUnit, setMiscUnit] = useState<string>('پرس');
   const [miscQty, setMiscQty] = useState<string>('1');
-  const [miscUnitPrice, setMiscUnitPrice] = useState<number>(5000);
+  const [miscUnitPrice, setMiscUnitPrice] = useState<number>(isRial ? 50000 : 5000);
   const [miscWaste, setMiscWaste] = useState<string>('0');
 
   useEffect(() => {
@@ -135,12 +137,12 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
       setNotes(existing.notes || '');
     } else {
       setIngredients([]);
-      setLaborCost(10000);
-      setOverheadCost(6000);
-      setPackagingCost(5000);
+      setLaborCost(isRial ? 100000 : 10000);
+      setOverheadCost(isRial ? 60000 : 6000);
+      setPackagingCost(isRial ? 50000 : 5000);
       setNotes('');
     }
-  }, [selectedMenuItemId, recipes, menuItems]);
+  }, [selectedMenuItemId, recipes, menuItems, isRial]);
 
   // Live BOM Cost Calculation
   const costResult = useMemo(() => {

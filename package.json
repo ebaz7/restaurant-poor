@@ -12,6 +12,8 @@
     "tauri:icon": "npx @tauri-apps/cli icon src/assets/images/arka_logo.png",
     "tauri:dev": "npx @tauri-apps/cli dev",
     "tauri:build": "npm run build && npx @tauri-apps/cli build",
+    "tauri:build:win-linux": "npm run build && npx @tauri-apps/cli build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis",
+    "tauri:build:win-gnu": "npm run build && npx @tauri-apps/cli build --target x86_64-pc-windows-gnu --bundles nsis",
     "build:win": "npm run build && npx @tauri-apps/cli build",
     "package-win": "npm run build && npm run obfuscate && electron-builder --win",
     "package:server-win": "npm run build && node package-server-windows.cjs",

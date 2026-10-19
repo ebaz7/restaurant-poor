@@ -71,8 +71,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Auto open browser after 2 seconds in background
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && start http://localhost:3000"
+:: Auto open browser after 2 seconds with silent kiosk-printing enabled for thermal receipt printers
+start "" /b cmd /c "timeout /t 2 /nobreak >nul && (where chrome >nul 2>nul && start chrome --kiosk-printing http://localhost:3000 || (where msedge >nul 2>nul && start msedge --kiosk-printing http://localhost:3000 || start http://localhost:3000))"
 
 :: Start production server
 echo [*] در حال راه‌اندازی سرور مرکزی روی پورت ۳۰۰۰...

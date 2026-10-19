@@ -1,6 +1,10 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
+// Enable silent instant printing to the default Windows printer without printer selection dialog
+app.commandLine.appendSwitch('kiosk-printing');
+app.commandLine.appendSwitch('disable-print-preview');
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,

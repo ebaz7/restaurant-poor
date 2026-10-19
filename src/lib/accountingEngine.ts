@@ -245,11 +245,11 @@ export interface CashierSettlementSummary {
   }>;
 }
 
-export const MAX_SELF_SERVICE_GUESTS = 4;
+export const MAX_SELF_SERVICE_GUESTS = 9999;
 export const MIN_SELF_SERVICE_GUESTS = 1;
 
 /**
- * Clamps self-service guest count strictly between 1 and 4.
+ * Clamps self-service guest count to a valid positive integer (1 or more).
  */
 export function clampSelfServiceGuests(guests: number): number {
   if (!Number.isFinite(guests) || isNaN(guests)) return MIN_SELF_SERVICE_GUESTS;
@@ -258,7 +258,26 @@ export function clampSelfServiceGuests(guests: number): number {
 }
 
 /**
- * Computes Self-Service ticket pricing (capped at 4 people) + optional extra items, discounts, and tax.
+ * Scales a monetary amount when switching system currency unit between Toman and Rial.
+ * - Switching from 'rial' to 'toman' removes one zero (divides by 10).
+ * - Switching from 'toman' to 'rial' adds one zero (multiplies by 10).
+ */
+export function scaleMonetaryAmountForCurrencySwitch(
+  amount: number | undefined | null,
+  fromUnit: 'toman' | 'rial',
+  toUnit: 'toman' | 'rial'
+): number {
+  const num = Number(amount);
+  if (amount === undefined || amount === null || isNaN(num) || num === 0) return 0;
+  if (fromUnit === toUnit) return Math.round(num);
+  if (fromUnit === 'toman' && toUnit === 'rial') {
+    return Math.round(num * 10);
+  }
+  return Math.round(num / 10);
+}
+
+/**
+ * Computes Self-Service ticket pricing (for 1 or more guests) + optional extra items, discounts, and tax.
  */
 export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfServiceCalcResult {
   const clampedGuests = clampSelfServiceGuests(input.guestCount);
@@ -474,12 +493,18 @@ export function validateDoubleEntryLines(lines: JournalLine[]): {
   }
 
   if (difference !== 0) {
+    const unitLabel =
+      typeof window !== 'undefined' &&
+      window.localStorage &&
+      window.localStorage.getItem('arka_currency_unit') === 'rial'
+        ? 'ریال'
+        : 'تومان';
     return {
       isValid: false,
       totalDebit,
       totalCredit,
       difference,
-      error: `سند تراز نیست! جمع بدهکار و بستانکار ${difference.toLocaleString('fa-IR')} تومان اختلاف دارد.`,
+      error: `سند تراز نیست! جمع بدهکار و بستانکار ${difference.toLocaleString('fa-IR')} ${unitLabel} اختلاف دارد.`,
     };
   }
 
@@ -691,7 +716,7 @@ export const DEFAULT_CHART_OF_ACCOUNTS: AccountNode[] = [
   { code: '301', name: 'سرمایه اولیه و جاری شرکا', type: 'equity', isSystem: true, description: 'آورده نقدی و غیرنقدی صاحب رستوران' },
   // 400 - درآمدها
   { code: '401', name: 'درآمد فروش غذا و منو', type: 'revenue', isSystem: true, description: 'فروش غذاهای اصلی، پیش‌غذا و نوشیدنی' },
-  { code: '402', name: 'درآمد فیش سلف سرویس و نوشابه', type: 'revenue', isSystem: true, description: 'فروش فیش‌های ورودی سلف سرویس (تا ۴ نفر)' },
+  { code: '402', name: 'درآمد فیش سلف سرویس و نوشابه', type: 'revenue', isSystem: true, description: 'فروش فیش‌های ورودی سلف سرویس' },
   { code: '403', name: 'تخفیفات نقدی فروش', type: 'revenue', isSystem: true, description: 'تخفیف‌های اعمال شده روی فاکتورها (کاهنده درآمد)' },
   // 500 - بهای تمام شده
   { code: '501', name: 'بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)', type: 'cogs', isSystem: true, description: 'هزینه دقیق مواد اولیه و سربار مصرفی طبق فرمول تولید' },

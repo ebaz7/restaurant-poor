@@ -15,7 +15,7 @@ import {
   summarizeCashierSettlements,
   JournalLine,
 } from '../../lib/accountingEngine';
-import { formatCurrency } from '../../lib/utils';
+import { formatCurrency, getCurrencyLabel, setGlobalCurrencyUnit } from '../../lib/utils';
 import {
   Search,
   Plus,
@@ -53,7 +53,7 @@ interface OpenTab {
   id: string;
   title: string;
   invoiceMode: 'standard' | 'self_service';
-  selfServiceGuests: number; // 1 to 4
+  selfServiceGuests: number; // 1, 2, 3, 4 or any custom higher count
   selfServiceUnitPrice: number;
   selfServiceDrinkNote: string;
   customerPhone: string;
@@ -73,6 +73,16 @@ export default function POSScreen() {
   const categories = useLiveQuery(() => db.categories.toArray());
   const allMenuItems = useLiveQuery(() => db.menuItems.toArray());
   const settings = useLiveQuery(() => db.settings.toCollection().first());
+  if (settings?.currencyUnit) {
+    setGlobalCurrencyUnit(settings.currencyUnit);
+  }
+  const currencyLabel = getCurrencyLabel(settings?.currencyUnit);
+  const isRial = settings?.currencyUnit === 'rial';
+  const defaultSodaPrice = settings?.defaultSodaPrice ?? (isRial ? 150000 : 15000);
+  const defaultDoughPrice = settings?.defaultDoughPrice ?? (isRial ? 150000 : 15000);
+  const defaultWaterPrice = settings?.defaultWaterPrice ?? (isRial ? 100000 : 10000);
+  const defaultDelsterPrice = settings?.defaultDelsterPrice ?? (isRial ? 200000 : 20000);
+
   const bankAccounts = useLiveQuery(() => db.bankAccounts.toArray()) || [];
   const allOrders = useLiveQuery(() => db.orders.toArray()) || [];
   const cashClosures = useLiveQuery(() => db.cashClosures.reverse().toArray()) || [];
@@ -126,6 +136,8 @@ export default function POSScreen() {
   const receiptRef = useRef<HTMLDivElement>(null);
   const [orderToPrint, setOrderToPrint] = useState<Order | null>(null);
   const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
+  const [lastPrintedOrder, setLastPrintedOrder] = useState<Order | null>(null);
+  const [autoPrintNotice, setAutoPrintNotice] = useState<string | null>(null);
 
   // Cashier Daily/Weekly/Monthly Report & Close Register Modal
   const [showCashierModal, setShowCashierModal] = useState(false);
@@ -475,9 +487,7 @@ export default function POSScreen() {
 
   const canCheckout =
     activeTab.invoiceMode === 'self_service'
-      ? activeTab.selfServiceGuests >= 1 &&
-        activeTab.selfServiceGuests <= 4 &&
-        activeTab.selfServiceUnitPrice > 0
+      ? activeTab.selfServiceGuests >= 1 && activeTab.selfServiceUnitPrice > 0
       : activeTab.items.length > 0;
 
   const handleCheckout = async () => {
@@ -728,9 +738,18 @@ export default function POSScreen() {
         lines: voucherLines,
       });
 
-      // Show immediate visual Receipt Preview modal (and let user trigger thermal print)
-      setPreviewOrder(savedOrder);
+      // Trigger instant automatic thermal printing without opening the preview modal
       setOrderToPrint(savedOrder);
+      setLastPrintedOrder(savedOrder);
+      setAutoPrintNotice(`فیش #${savedOrder.invoiceNumber} ثبت شد و به صورت خودکار به پرینتر ارسال گردید.`);
+      setTimeout(() => {
+        try {
+          handlePrint();
+        } catch (e) {
+          console.error('Auto print error:', e);
+        }
+      }, 60);
+      setTimeout(() => setAutoPrintNotice(null), 6000);
 
       // Reset tab
       updateActiveTab({
@@ -784,6 +803,44 @@ export default function POSScreen() {
       <div style={{ position: 'absolute', top: '-9999px', left: '-9999px' }} className="print:block">
         {orderToPrint && settings && <Receipt ref={receiptRef} order={orderToPrint} settings={settings} />}
       </div>
+
+      {/* Non-blocking Instant Print Confirmation Strip */}
+      {autoPrintNotice && lastPrintedOrder && (
+        <div className="bg-emerald-600 text-white px-4 py-2 flex items-center justify-between gap-3 text-xs font-bold shrink-0 z-20 shadow-sm">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="shrink-0" />
+            <span>{autoPrintNotice}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setOrderToPrint(lastPrintedOrder);
+                setTimeout(() => handlePrint(), 50);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center gap-1 cursor-pointer transition"
+            >
+              <Printer size={13} />
+              <span>چاپ مجدد</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreviewOrder(lastPrintedOrder)}
+              className="px-2.5 py-1 rounded-lg bg-white text-emerald-800 hover:bg-emerald-50 flex items-center gap-1 cursor-pointer transition"
+            >
+              <Eye size={13} />
+              <span>مشاهده فیش</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAutoPrintNotice(null)}
+              className="p-1 rounded-lg hover:bg-white/20 cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Top Bar: Open Order Tabs + Live Cashier Summary Strip */}
       <div className="bg-white border-b border-slate-200 flex flex-wrap items-center justify-between px-3 pt-2 pb-1.5 gap-2 shrink-0 shadow-xs z-10">
@@ -884,14 +941,14 @@ export default function POSScreen() {
                     </p>
                   </div>
 
-                  {/* 1 to 4 Person Buttons */}
-                  <div className="flex items-center gap-2 w-full md:w-auto">
+                  {/* 1 to 4 Person Buttons + Plus/Minus Option for More Guests */}
+                  <div className="flex flex-wrap items-stretch gap-2 w-full md:w-auto">
                     {[1, 2, 3, 4].map((num) => (
                       <button
                         key={num}
                         type="button"
                         onClick={() => updateActiveTab({ selfServiceGuests: num })}
-                        className={`flex-1 md:w-20 py-2.5 px-2 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center cursor-pointer ${
+                        className={`flex-1 sm:flex-initial min-w-[68px] md:w-20 py-2.5 px-2 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center cursor-pointer ${
                           activeTab.selfServiceGuests === num
                             ? 'bg-teal-600 text-white border-teal-700 shadow-sm scale-[1.02]'
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-teal-50 hover:border-teal-300'
@@ -901,6 +958,81 @@ export default function POSScreen() {
                         <span className="text-[10px] opacity-85">{num} سلف</span>
                       </button>
                     ))}
+
+                    {/* نفرات بیشتر با دکمه + و - و قابلیت وارد کردن هر تعداد دلخواه */}
+                    <div
+                      className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border transition-all ${
+                        activeTab.selfServiceGuests > 4
+                          ? 'bg-teal-600 text-white border-teal-700 shadow-sm scale-[1.01]'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-teal-300'
+                      }`}
+                    >
+                      <div className="flex flex-col items-start pl-1">
+                        <span
+                          className={`text-[10px] font-extrabold whitespace-nowrap ${
+                            activeTab.selfServiceGuests > 4 ? 'text-teal-100' : 'text-slate-500'
+                          }`}
+                        >
+                          نفرات بیشتر
+                        </span>
+                        <span className="text-xs font-black font-mono whitespace-nowrap">
+                          {activeTab.selfServiceGuests} نفر
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        title="کاهش تعداد نفرات (-)"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceGuests: Math.max(1, (activeTab.selfServiceGuests || 1) - 1),
+                          })
+                        }
+                        className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center transition cursor-pointer ${
+                          activeTab.selfServiceGuests > 4
+                            ? 'bg-white/20 hover:bg-white/30 text-white'
+                            : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                        }`}
+                      >
+                        <Minus size={15} />
+                      </button>
+
+                      <input
+                        type="number"
+                        min={1}
+                        aria-label="تعداد نفرات دلخواه سلف"
+                        value={activeTab.selfServiceGuests || 1}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          updateActiveTab({
+                            selfServiceGuests: Number.isFinite(val) && val >= 1 ? val : 1,
+                          });
+                        }}
+                        className={`w-12 h-8 text-center rounded-lg font-mono font-black text-sm outline-none border ${
+                          activeTab.selfServiceGuests > 4
+                            ? 'bg-white text-teal-900 border-white'
+                            : 'bg-white text-slate-900 border-slate-200 focus:border-teal-600'
+                        }`}
+                        dir="ltr"
+                      />
+
+                      <button
+                        type="button"
+                        title="افزایش تعداد نفرات (+)"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceGuests: (activeTab.selfServiceGuests || 0) + 1,
+                          })
+                        }
+                        className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center transition cursor-pointer ${
+                          activeTab.selfServiceGuests > 4
+                            ? 'bg-white text-teal-700 hover:bg-teal-50 shadow-xs'
+                            : 'bg-teal-600 hover:bg-teal-700 text-white shadow-xs'
+                        }`}
+                      >
+                        <Plus size={15} />
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -937,7 +1069,7 @@ export default function POSScreen() {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">
-                        قیمت سلف و نوشیدنی به ازای هر نفر (تومان)
+                        قیمت سلف و نوشیدنی به ازای هر نفر ({currencyLabel})
                       </label>
                       <input
                         type="number"
@@ -983,38 +1115,38 @@ export default function POSScreen() {
                   <div className="flex flex-wrap gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', settings?.defaultSodaPrice ?? 15000)}
+                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', defaultSodaPrice)}
                       className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ نوشابه ({formatCurrency(settings?.defaultSodaPrice ?? 15000)})</span>
+                      <span>۱+ نوشابه ({formatCurrency(defaultSodaPrice)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('دوغ اضافه', settings?.defaultDoughPrice ?? 15000)}
+                      onClick={() => handleAddQuickBeverage('دوغ اضافه', defaultDoughPrice)}
                       className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ دوغ ({formatCurrency(settings?.defaultDoughPrice ?? 15000)})</span>
+                      <span>۱+ دوغ ({formatCurrency(defaultDoughPrice)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', settings?.defaultWaterPrice ?? 10000)}
+                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', defaultWaterPrice)}
                       className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ آب معدنی ({formatCurrency(settings?.defaultWaterPrice ?? 10000)})</span>
+                      <span>۱+ آب معدنی ({formatCurrency(defaultWaterPrice)})</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleAddQuickBeverage('دلستر اضافه', settings?.defaultDelsterPrice ?? 20000)}
+                      onClick={() => handleAddQuickBeverage('دلستر اضافه', defaultDelsterPrice)}
                       className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>۱+ دلستر ({formatCurrency(settings?.defaultDelsterPrice ?? 20000)})</span>
+                      <span>۱+ دلستر ({formatCurrency(defaultDelsterPrice)})</span>
                     </button>
                   </div>
                 </div>
@@ -1373,21 +1505,21 @@ export default function POSScreen() {
               <div className="bg-teal-50/70 border border-teal-200 p-3 rounded-xl space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="font-extrabold text-teal-900 text-xs">
-                    فیش سلف سرویس و نوشابه (سقف ۴ نفر)
+                    فیش سلف سرویس و نوشابه
                   </span>
                   <span className="text-xs font-mono font-black text-teal-800">
                     {activeTab.selfServiceGuests} نفر
                   </span>
                 </div>
 
-                {/* Compact 1..4 selector inside cart too */}
+                {/* Compact 1..4 selector + Plus/Minus stepper inside cart too */}
                 <div className="grid grid-cols-4 gap-1">
                   {[1, 2, 3, 4].map((n) => (
                     <button
                       key={n}
                       type="button"
                       onClick={() => updateActiveTab({ selfServiceGuests: n })}
-                      className={`py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      className={`py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
                         activeTab.selfServiceGuests === n
                           ? 'bg-teal-600 text-white'
                           : 'bg-white text-slate-700 border border-teal-200 hover:bg-teal-100'
@@ -1396,6 +1528,50 @@ export default function POSScreen() {
                       {n} نفر
                     </button>
                   ))}
+                </div>
+
+                {/* نفرات بیشتر با + و - در ستون فاکتور */}
+                <div className="flex items-center justify-between gap-2 bg-white border border-teal-200 rounded-lg px-2.5 py-1.5">
+                  <span className="text-[11px] font-bold text-slate-700">
+                    نفرات بیشتر / دلخواه:
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActiveTab({
+                          selfServiceGuests: Math.max(1, (activeTab.selfServiceGuests || 1) - 1),
+                        })
+                      }
+                      className="w-6 h-6 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center font-bold cursor-pointer"
+                    >
+                      <Minus size={12} />
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      value={activeTab.selfServiceGuests || 1}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        updateActiveTab({
+                          selfServiceGuests: Number.isFinite(val) && val >= 1 ? val : 1,
+                        });
+                      }}
+                      className="w-11 text-center font-mono font-black text-xs text-teal-800 border border-slate-200 rounded py-0.5 outline-none focus:border-teal-600"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActiveTab({
+                          selfServiceGuests: (activeTab.selfServiceGuests || 0) + 1,
+                        })
+                      }
+                      className="w-6 h-6 rounded-md bg-teal-600 hover:bg-teal-700 text-white flex items-center justify-center font-bold cursor-pointer"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex justify-between items-center text-[11px] text-teal-800 pt-1 border-t border-teal-200/60">
@@ -1549,7 +1725,7 @@ export default function POSScreen() {
             {/* Split Cash input */}
             {activeTab.paymentMethod === 'split' && (
               <div className="flex items-center gap-2 text-xs">
-                <span className="text-slate-600 whitespace-nowrap">سهم نقد (تومان):</span>
+                <span className="text-slate-600 whitespace-nowrap">سهم نقد ({currencyLabel}):</span>
                 <input
                   type="number"
                   value={activeTab.cashAmount || ''}
@@ -1859,7 +2035,7 @@ export default function POSScreen() {
                   </div>
                   <div>
                     <label className="block font-bold text-slate-700 mb-1">
-                      موجودی نقد شمارش شده در کشو (تومان)
+                      موجودی نقد شمارش شده در کشو ({currencyLabel})
                     </label>
                     <input
                       type="number"

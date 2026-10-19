@@ -181,6 +181,10 @@ const MIME_TYPES = {
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
+  '.exe': 'application/vnd.microsoft.portable-executable',
+  '.msi': 'application/x-msi',
+  '.zip': 'application/zip',
+  '.bat': 'application/x-msdos-program',
 };
 
 const server = http.createServer((req, res) => {

@@ -14,21 +14,22 @@ import {
   parseThreeDigitNumber,
   filterAccountsForAutocomplete,
   calculateKitchenBatchProduction,
+  scaleMonetaryAmountForCurrencySwitch,
 } from './accountingEngine.ts';
 
-test('Self-service guest count is strictly clamped between 1 and 4', () => {
+test('Self-service guest count supports 1 to 4 and any higher number of guests', () => {
   assert.equal(clampSelfServiceGuests(0), 1);
   assert.equal(clampSelfServiceGuests(-3), 1);
   assert.equal(clampSelfServiceGuests(1), 1);
   assert.equal(clampSelfServiceGuests(3), 3);
   assert.equal(clampSelfServiceGuests(4), 4);
-  assert.equal(clampSelfServiceGuests(5), 4);
-  assert.equal(clampSelfServiceGuests(10), 4);
+  assert.equal(clampSelfServiceGuests(5), 5);
+  assert.equal(clampSelfServiceGuests(12), 12);
 });
 
-test('Self-service invoice calculates price, drink quota, discount, and tax accurately', () => {
+test('Self-service invoice calculates price, drink quota, discount, and tax accurately for any guest count', () => {
   const res = calculateSelfServiceInvoice({
-    guestCount: 5, // should clamp to 4
+    guestCount: 6,
     pricePerPerson: 180000,
     extraItemsSubtotal: 50000,
     discountType: 'percent',
@@ -37,14 +38,14 @@ test('Self-service invoice calculates price, drink quota, discount, and tax accu
     taxPercentage: 9,
   });
 
-  assert.equal(res.clampedGuests, 4);
-  assert.equal(res.drinkQuota, 4);
-  assert.equal(res.selfServiceTotal, 720000);
-  assert.equal(res.subtotal, 770000);
-  assert.equal(res.discountAmount, 77000);
-  assert.equal(res.taxableAmount, 693000);
-  assert.equal(res.taxAmount, 62370);
-  assert.equal(res.total, 755370);
+  assert.equal(res.clampedGuests, 6);
+  assert.equal(res.drinkQuota, 6);
+  assert.equal(res.selfServiceTotal, 1080000);
+  assert.equal(res.subtotal, 1130000);
+  assert.equal(res.discountAmount, 113000);
+  assert.equal(res.taxableAmount, 1017000);
+  assert.equal(res.taxAmount, 91530);
+  assert.equal(res.total, 1108530);
 });
 
 test('Production formula (BOM) calculates exact COGS, waste, profit per unit, and margins without bugs', () => {
@@ -298,4 +299,15 @@ test('Kitchen batch production calculates exact raw material consumption, waste,
   assert.equal(chickenRow.remainingStock, -1.3);
   assert.equal(chickenRow.isShortage, true);
 });
+
+test('Currency switch scaling removes one zero for Rial to Toman and adds one zero for Toman to Rial', () => {
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(2450000, 'rial', 'toman'), 245000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(100000000, 'rial', 'toman'), 10000000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(245000, 'toman', 'rial'), 2450000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(15000, 'toman', 'rial'), 150000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(245000, 'toman', 'toman'), 245000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(2450000, 'rial', 'rial'), 2450000);
+  assert.equal(scaleMonetaryAmountForCurrencySwitch(0, 'rial', 'toman'), 0);
+});
+
 

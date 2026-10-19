@@ -8,6 +8,7 @@ import {
   ALL_PERMISSIONS,
   PERMISSION_DEFINITIONS,
   resetDatabaseToRaw,
+  convertDatabaseCurrencyUnit,
 } from '../../lib/db';
 import {
   exportDB,
@@ -18,7 +19,7 @@ import {
   getCurrencyLabel,
   optimizeDatabaseStorage,
 } from '../../lib/utils';
-import { notifyRawResetToCentralServer } from '../../lib/networkSync';
+import { notifyRawResetToCentralServer, pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { PWAInstallButton } from '../Common/PWAInstallButton';
 import {
@@ -49,12 +50,6 @@ import {
   Smartphone,
   Store,
   Shield,
-  Server,
-  Terminal,
-  Cpu,
-  Wifi,
-  Layers,
-  Zap,
 } from 'lucide-react';
 
 const ROLE_PRESETS: Array<{
@@ -93,7 +88,7 @@ export default function SettingsScreen() {
   const settings = useLiveQuery(() => db.settings.toCollection().first());
   const appUsers = useLiveQuery(() => db.appUsers.toArray()) || [];
 
-  const [activeTab, setActiveTab] = useState<'general' | 'users' | 'backup' | 'win_server'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'users' | 'backup'>('general');
   const [formData, setFormData] = useState<Partial<AppSettings>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [isSendingBot, setIsSendingBot] = useState(false);
@@ -159,15 +154,32 @@ export default function SettingsScreen() {
 
   const handleCurrencyChange = async (unit: 'toman' | 'rial') => {
     setGlobalCurrencyUnit(unit);
-    const next = { ...formData, currencyUnit: unit };
-    setFormData(next);
-    if (settings?.id) {
-      await db.settings.update(settings.id, { currencyUnit: unit });
+    const res = await convertDatabaseCurrencyUnit(unit);
+    const updatedSettings = await db.settings.toCollection().first();
+    if (updatedSettings) {
+      setFormData(updatedSettings);
+      await syncBackupToServer(updatedSettings);
+    } else {
+      setFormData({ ...formData, currencyUnit: unit });
     }
-    showNotice(
-      'success',
-      `واحد پول کل سامانه به «${unit === 'rial' ? 'ریال' : 'تومان'}» تغییر یافت و تمام اعداد ۳ رقم ۳ رقم نمایش داده می‌شوند.`
-    );
+    try {
+      await pushToCentralServer(false);
+    } catch {
+      // ignore if offline
+    }
+    if (res.converted) {
+      showNotice(
+        'success',
+        unit === 'toman'
+          ? 'واحد پول کل سامانه به «تومان» تغییر یافت و به‌صورت اتوماتیک یک صفر از تمامی مبالغ، قیمت‌ها، فرمول‌های تولید، انبار و ثبت‌های قبلی کم شد (تبدیل ریال به تومان).'
+          : 'واحد پول کل سامانه به «ریال» تغییر یافت و به‌صورت اتوماتیک یک صفر به تمامی مبالغ، قیمت‌ها، فرمول‌های تولید، انبار و ثبت‌های قبلی اضافه شد (تبدیل تومان به ریال).'
+      );
+    } else {
+      showNotice(
+        'success',
+        `واحد پول کل سامانه بر روی «${unit === 'rial' ? 'ریال' : 'تومان'}» تنظیم و در تمام بخش‌های نرم‌افزار یکپارچه است.`
+      );
+    }
   };
 
   const handleSave = async () => {
@@ -493,18 +505,6 @@ export default function SettingsScreen() {
               <Bot size={14} />
               <span>۳. بات بله/تلگرام و بکاپ</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('win_server')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
-                activeTab === 'win_server'
-                  ? 'bg-white text-emerald-700 shadow-xs'
-                  : 'text-slate-600'
-              }`}
-            >
-              <Server size={14} />
-              <span>۴. سرور ویندوز و خروجی تائوری</span>
-            </button>
           </div>
         </div>
       </div>
@@ -743,7 +743,10 @@ export default function SettingsScreen() {
                           🥤 نوشابه قوطی اضافه:
                         </label>
                         <FormattedNumberInput
-                          value={formData.defaultSodaPrice ?? 15000}
+                          value={
+                            formData.defaultSodaPrice ??
+                            (formData.currencyUnit === 'rial' ? 150000 : 15000)
+                          }
                           onValueChange={(val) =>
                             setFormData({ ...formData, defaultSodaPrice: val })
                           }
@@ -756,7 +759,10 @@ export default function SettingsScreen() {
                           🥛 دوغ بطری/لیوانی:
                         </label>
                         <FormattedNumberInput
-                          value={formData.defaultDoughPrice ?? 15000}
+                          value={
+                            formData.defaultDoughPrice ??
+                            (formData.currencyUnit === 'rial' ? 150000 : 15000)
+                          }
                           onValueChange={(val) =>
                             setFormData({ ...formData, defaultDoughPrice: val })
                           }
@@ -769,7 +775,10 @@ export default function SettingsScreen() {
                           💧 آب معدنی:
                         </label>
                         <FormattedNumberInput
-                          value={formData.defaultWaterPrice ?? 10000}
+                          value={
+                            formData.defaultWaterPrice ??
+                            (formData.currencyUnit === 'rial' ? 100000 : 10000)
+                          }
                           onValueChange={(val) =>
                             setFormData({ ...formData, defaultWaterPrice: val })
                           }
@@ -782,7 +791,10 @@ export default function SettingsScreen() {
                           🍺 دلستر / ماءالشعیر:
                         </label>
                         <FormattedNumberInput
-                          value={formData.defaultDelsterPrice ?? 20000}
+                          value={
+                            formData.defaultDelsterPrice ??
+                            (formData.currencyUnit === 'rial' ? 200000 : 20000)
+                          }
                           onValueChange={(val) =>
                             setFormData({ ...formData, defaultDelsterPrice: val })
                           }
@@ -1492,214 +1504,6 @@ export default function SettingsScreen() {
                     </button>
                   </div>
                 )}
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: WINDOWS SERVER & TAURI LIGHTWEIGHT BUILD */}
-          {activeTab === 'win_server' && (
-            <div className="space-y-4">
-              {/* Windows Server Download & Info Banner */}
-              <div className="bg-gradient-to-br from-slate-900 via-teal-950 to-slate-900 text-white rounded-3xl p-5 md:p-6 shadow-xl space-y-4 border border-teal-800/40">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-teal-500/20 border border-teal-400/30 flex items-center justify-center text-teal-300">
-                      <Server size={26} />
-                    </div>
-                    <div>
-                      <h2 className="text-base md:text-lg font-extrabold text-white flex items-center gap-2">
-                        <span>پکیج مستقل سرور ویندوز (Windows Server Distribution)</span>
-                        <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
-                          بدون نیاز به دانلود پکیج در سرور (Zero NPM)
-                        </span>
-                      </h2>
-                      <p className="text-xs text-slate-300 mt-0.5">
-                        کدها کامپایل شده‌اند و سرور مرکزی بدون نیاز به npm install یا اینترنت، با ۱ کلیک اجرا می‌شود.
-                      </p>
-                    </div>
-                  </div>
-
-                  <a
-                    href="/Arka-Windows-Server.zip"
-                    download="Arka-Windows-Server.zip"
-                    className="px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-2xl font-black text-xs md:text-sm flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition cursor-pointer shrink-0"
-                  >
-                    <Download size={18} />
-                    <span>دانلود پکیج کامل سرور ویندوز (ZIP)</span>
-                  </a>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs">
-                  <div className="p-3 bg-white/5 rounded-2xl border border-white/10 space-y-1">
-                    <div className="font-extrabold text-teal-300 flex items-center gap-1.5">
-                      <Zap size={15} />
-                      <span>۱. عدم نیاز به دانلود پکیج</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      کدهای فرانت‌اند و سرور مرکزی با هسته درونی Node.js بسته‌بندی شده‌اند و هیچ دانلودی در سرور مقصد لازم نیست.
-                    </p>
-                  </div>
-
-                  <div className="p-3 bg-white/5 rounded-2xl border border-white/10 space-y-1">
-                    <div className="font-extrabold text-emerald-300 flex items-center gap-1.5">
-                      <Wifi size={15} />
-                      <span>۲. اشتراک خودکار شبکه</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      آی‌پی شبکه محلی (مثل <code className="text-emerald-200" dir="ltr">192.168.1.100:3000</code>) خودکار شناسایی شده و در Wi-Fi شیر می‌شود.
-                    </p>
-                  </div>
-
-                  <div className="p-3 bg-white/5 rounded-2xl border border-white/10 space-y-1">
-                    <div className="font-extrabold text-blue-300 flex items-center gap-1.5">
-                      <ShieldCheck size={15} />
-                      <span>۳. تنظیم خودکار فایروال</span>
-                    </div>
-                    <p className="text-[11px] text-slate-300">
-                      با اجرای یک‌باره <code className="text-blue-200">setup-firewall.bat</code> پورت ۳۰۰۰ ویندوز برای موبایل‌ها باز می‌شود.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Tauri Desktop Build Card */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4 shadow-sm">
-                <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
-                    <Cpu size={22} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm md:text-base font-extrabold text-slate-900 flex items-center gap-2">
-                      <span>خروجی سبک دسکتاپ به سبک تائوری (Tauri Desktop App)</span>
-                      <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-md font-bold">
-                        حجم: فقط ۵ تا ۸ مگابایت
-                      </span>
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      جایگزین فوق‌العاده سریع و سبک برای الکترون سنگین، با استفاده از موتور رسمی ویندوز (WebView2)
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                    <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
-                      <Terminal size={15} className="text-indigo-600" />
-                      <span>روش ساخت خروجی تائوری روی ویندوز:</span>
-                    </div>
-                    <p className="text-slate-600 leading-relaxed text-[11px]">
-                      ۱. دبل کلیک روی فایل <code className="bg-slate-200 px-1 py-0.5 rounded font-bold">build-tauri-win.bat</code> در پوشه پروژه
-                      <br />
-                      ۲. یا اجرای دستور زیر در ترمینال ویندوز:
-                    </p>
-                    <div className="bg-slate-900 text-emerald-400 p-2.5 rounded-lg font-mono text-[11px] font-bold" dir="ltr">
-                      npm run tauri:build
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                    <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
-                      <Layers size={15} className="text-teal-600" />
-                      <span>مسیر فایل‌های خروجی کامپایل شده:</span>
-                    </div>
-                    <div className="space-y-1.5 text-[11px] font-mono text-slate-800" dir="ltr">
-                      <div className="p-1.5 bg-white rounded border border-slate-200">
-                        <span className="text-slate-500 font-sans font-bold block text-[10px]">فایل پرتابل (.exe):</span>
-                        src-tauri/target/release/Arka-POS.exe
-                      </div>
-                      <div className="p-1.5 bg-white rounded border border-slate-200">
-                        <span className="text-slate-500 font-sans font-bold block text-[10px]">فایل نصبی ویندوز (.exe / .msi):</span>
-                        src-tauri/target/release/bundle/nsis/Arka-POS_1.2.0_x64-setup.exe
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* PURGE OLD TAURI INSTALLATIONS & CACHE CARD */}
-                <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-700 font-bold flex items-center justify-center shrink-0">
-                        <Trash2 size={20} />
-                      </div>
-                      <div>
-                        <h4 className="text-xs md:text-sm font-extrabold text-amber-900">
-                          حل مشکل بالا آمدن نسخه قدیمی تائوری هنگام نصب جدید
-                        </h4>
-                        <p className="text-[11px] text-amber-800">
-                          ویندوز و مرورگر WebView2 گاهی کدهای نسخه قبلی را در AppData ذخیره می‌کنند. برای پاکسازی ۱۰۰٪ کامل از این اسکریپت استفاده کنید:
-                        </p>
-                      </div>
-                    </div>
-
-                    <a
-                      href="/cleanup-old-tauri-installation.bat"
-                      download="cleanup-old-tauri-installation.bat"
-                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-extrabold text-xs flex items-center gap-1.5 transition shadow-sm shrink-0 cursor-pointer"
-                    >
-                      <Download size={15} />
-                      <span>دانلود اسکریپت پاکسازی نسخه قدیمی (.bat)</span>
-                    </a>
-                  </div>
-
-                  <div className="text-[11px] text-amber-950 bg-amber-100/60 p-2.5 rounded-xl space-y-1 font-medium">
-                    <div className="font-extrabold text-amber-900 flex items-center gap-1">
-                      <CheckCircle2 size={13} className="text-amber-700" />
-                      <span>عملکرد اسکریپت پاکسازی خودکار:</span>
-                    </div>
-                    <ul className="list-disc list-inside space-y-0.5 text-amber-900 pr-1">
-                      <li>بستن خودکار تمام پروسه‌های قدیمی تائوری (<code className="font-mono">arka-pos.exe</code> / <code className="font-mono">tauri.exe</code>)</li>
-                      <li>حذف آن‌اینستال نسخه قبلی و پاکسازی کامل پوشه‌های <code className="font-mono">%LOCALAPPDATA%\com.tauri.dev</code> و <code className="font-mono">%LOCALAPPDATA%\com.arkasystem.pos</code></li>
-                      <li>پاکسازی کش WebView2 و کلیدهای رجیستری ویندوز جهت نصب ۱۰۰٪ تمیز و بدون تداخل</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-
-              {/* Windows Server Step-by-Step Instructions */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3 shadow-sm">
-                <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                  <Server size={18} className="text-teal-600" />
-                  <span>راهنمای ۳ مرحله‌ای راه‌اندازی سرور روی سیستم یا سرور ویندوزی</span>
-                </h3>
-
-                <div className="space-y-2 text-xs text-slate-700 leading-relaxed">
-                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl">
-                    <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-extrabold text-[11px] flex items-center justify-center shrink-0 mt-0.5">
-                      ۱
-                    </span>
-                    <div>
-                      <span className="font-extrabold text-slate-900">انتقال پوشه یا فایل ZIP:</span>
-                      <p className="text-slate-500 text-[11px]">
-                        فایل <code className="font-bold text-teal-800">Arka-Windows-Server.zip</code> را دانلود کرده و روی کامپیوتر یا سرور ویندوزی اصلی رستوران آنزیپ کنید.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl">
-                    <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-extrabold text-[11px] flex items-center justify-center shrink-0 mt-0.5">
-                      ۲
-                    </span>
-                    <div>
-                      <span className="font-extrabold text-slate-900">باز کردن فایروال و اجرای سرور:</span>
-                      <p className="text-slate-500 text-[11px]">
-                        یک‌بار کلیک راست روی <code className="font-bold text-teal-800">setup-firewall.bat</code> و زدن Run as Administrator. سپس دوبار کلیک روی <code className="font-bold text-teal-800">run-server.bat</code>.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2.5 p-2.5 bg-slate-50 rounded-xl">
-                    <span className="w-5 h-5 rounded-full bg-teal-600 text-white font-extrabold text-[11px] flex items-center justify-center shrink-0 mt-0.5">
-                      ۳
-                    </span>
-                    <div>
-                      <span className="font-extrabold text-slate-900">اتصال سایر دستگاه‌ها در Wi-Fi:</span>
-                      <p className="text-slate-500 text-[11px]">
-                        آدرس آی‌پی محلی نمایش داده شده روی سرور (مثلاً <code className="font-mono font-bold text-teal-800" dir="ltr">http://192.168.1.100:3000</code>) را در مرورگر گوشی گارسون، تبلت یا کلاینت‌ها وارد کنید.
-                      </p>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           )}

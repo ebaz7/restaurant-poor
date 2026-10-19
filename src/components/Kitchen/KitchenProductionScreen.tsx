@@ -2,7 +2,10 @@ import React, { useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   db,
+  KitchenProductionBatch,
   recordKitchenProductionBatch,
+  updateKitchenProductionBatch,
+  deleteKitchenProductionBatch,
 } from '../../lib/db';
 import { calculateKitchenBatchProduction } from '../../lib/accountingEngine';
 import { formatCurrency, formatNumber } from '../../lib/utils';
@@ -21,11 +24,22 @@ import {
   Utensils,
   RotateCcw,
   EyeOff,
+  X,
+  Edit3,
+  Trash2,
 } from 'lucide-react';
 
 type MobileKitchenTab = 'input' | 'consumption' | 'history';
 
-export default function KitchenProductionScreen() {
+interface KitchenProductionScreenProps {
+  canEditProduction?: boolean;
+  canDeleteProduction?: boolean;
+}
+
+export default function KitchenProductionScreen({
+  canEditProduction = true,
+  canDeleteProduction = true,
+}: KitchenProductionScreenProps) {
   const settings = useLiveQuery(() => db.settings.toCollection().first());
   const hideCostPrice = settings?.hideCostPriceFromKitchen ?? false;
 
@@ -42,6 +56,8 @@ export default function KitchenProductionScreen() {
   const [chefName, setChefName] = useState<string>('استاد رضا کمالی');
   const [notes, setNotes] = useState<string>('');
   const [quantities, setQuantities] = useState<Record<number, number>>({});
+  const [editingBatch, setEditingBatch] = useState<KitchenProductionBatch | null>(null);
+  const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
   );
@@ -92,6 +108,7 @@ export default function KitchenProductionScreen() {
           id: m.id!,
           name: m.name,
           unit: m.unit,
+          unitsPerPackage: m.unitsPerPackage,
           currentQty: m.currentQty,
           avgCost: m.avgCost,
         })),
@@ -149,6 +166,63 @@ export default function KitchenProductionScreen() {
     setItemQty(menuItemId, cur + delta);
   };
 
+  const handleCancelSelectedProduction = () => {
+    setQuantities({});
+    setNotes('');
+    if (editingBatch) {
+      setEditingBatch(null);
+      showNotice('success', 'ویرایش پارت تولید لغو شد.');
+    } else {
+      showNotice('success', 'تولید انتخاب شده کنسل و پاک شد.');
+    }
+  };
+
+  const handleStartEditBatch = (batch: KitchenProductionBatch) => {
+    if (!canEditProduction) {
+      showNotice('error', 'شما مجوز ویرایش پارت‌های تولید آشپزخانه را ندارید.');
+      return;
+    }
+    const nextQuantities: Record<number, number> = {};
+    for (const it of batch.items) {
+      if (it.quantityProduced > 0) {
+        nextQuantities[it.menuItemId] = it.quantityProduced;
+      }
+    }
+    setQuantities(nextQuantities);
+    setShiftLabel(batch.shiftLabel || 'آماده‌سازی سلف سرویس');
+    setChefName(batch.chefName || 'سرآشپز شیفت');
+    setNotes(batch.notes || '');
+    setEditingBatch(batch);
+    setMobileTab('input');
+    showNotice(
+      'success',
+      `پارت تولید #${batch.batchNumber} جهت ویرایش بارگذاری شد. مقادیر را تغییر داده و ذخیره کنید.`
+    );
+  };
+
+  const handleDeleteBatch = async (batch: KitchenProductionBatch) => {
+    if (!canDeleteProduction || !batch.id) {
+      showNotice('error', 'شما مجوز حذف پارت تولید را ندارید.');
+      return;
+    }
+    try {
+      await deleteKitchenProductionBatch(batch.id);
+      if (editingBatch?.id === batch.id) {
+        setEditingBatch(null);
+        setQuantities({});
+        setNotes('');
+      }
+      setConfirmDeleteBatchId(null);
+      showNotice(
+        'success',
+        `پارت تولید #${batch.batchNumber} حذف و ابطال شد؛ مواد اولیه مصرفی به موجودی انبار برگشت داده شد و سند حسابداری آن حذف گردید.`
+      );
+    } catch (err) {
+      console.error(err);
+      showNotice('error', 'خطا در حذف پارت تولید.');
+    }
+  };
+
   const handleRecordProduction = async () => {
     if (batchSummary.totalPortionsProduced <= 0) {
       showNotice('error', 'لطفاً ابتدا تعداد تولید حداقل یکی از محصولات منو را وارد کنید.');
@@ -157,7 +231,7 @@ export default function KitchenProductionScreen() {
 
     setIsSubmitting(true);
     try {
-      await recordKitchenProductionBatch({
+      const payload = {
         shiftLabel,
         chefName: chefName.trim() || 'سرآشپز شیفت',
         notes: notes.trim() || undefined,
@@ -183,14 +257,29 @@ export default function KitchenProductionScreen() {
           batchSummary.totalOverheadCost +
           batchSummary.totalPackagingCost,
         totalBatchCost: batchSummary.totalBatchCost,
-      });
+      };
+
+      if (editingBatch && editingBatch.id) {
+        await updateKitchenProductionBatch(editingBatch.id, payload);
+        showNotice(
+          'success',
+          `ویرایش پارت تولید #${editingBatch.batchNumber} (${formatNumber(
+            batchSummary.totalPortionsProduced
+          )} پرس) با موفقیت ذخیره شد و موجودی انبار و سند حسابداری اصلاح گردید.`
+        );
+        setEditingBatch(null);
+      } else {
+        await recordKitchenProductionBatch(payload);
+        showNotice(
+          'success',
+          `تولید ${formatNumber(
+            batchSummary.totalPortionsProduced
+          )} پرس غذا ثبت شد؛ مواد اولیه طبق فرمول از انبار کسر و سند حسابداری صادر گردید.`
+        );
+      }
 
       setQuantities({});
       setNotes('');
-      showNotice(
-        'success',
-        `تولید ${formatNumber(batchSummary.totalPortionsProduced)} پرس غذا ثبت شد؛ مواد اولیه طبق فرمول از انبار کسر و سند حسابداری صادر گردید.`
-      );
       setMobileTab('history');
     } catch (err) {
       console.error(err);
@@ -299,6 +388,26 @@ export default function KitchenProductionScreen() {
         </div>
       )}
 
+      {/* Active Edit Mode Banner */}
+      {editingBatch && (
+        <div className="mx-3 md:mx-6 mt-2 p-2.5 rounded-xl bg-amber-50 border-2 border-amber-400 flex items-center justify-between gap-2 text-xs font-extrabold text-amber-950 shrink-0">
+          <div className="flex items-center gap-2">
+            <Edit3 size={16} className="text-amber-700 shrink-0" />
+            <span>
+              در حال ویرایش پارت تولید #{editingBatch.batchNumber} ({editingBatch.shiftLabel}) — مقادیر پخت را اصلاح کرده و دکمه ذخیره ویرایش را بزنید.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleCancelSelectedProduction}
+            className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+          >
+            <X size={13} />
+            <span>انصراف از ویرایش</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Content Grid — Zero Page Scroll on Mobile & Desktop */}
       <div className="flex-1 overflow-hidden p-2.5 md:p-5 max-w-7xl w-full mx-auto grid grid-cols-1 md:grid-cols-12 gap-4">
         {/* Panel 1: Menu Items Quantity Input (Left/Right 5 cols on desktop) */}
@@ -308,19 +417,21 @@ export default function KitchenProductionScreen() {
           }`}
         >
           <div className="p-3 border-b border-slate-100 bg-slate-50/70 space-y-2 shrink-0">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-xs md:text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
                 <Flame size={16} className="text-orange-600" />
-                ۱. انتخاب غذا و ثبت تعداد تولید آشپزخانه
+                {editingBatch
+                  ? `۱. ویرایش اقلام پارت تولید #${editingBatch.batchNumber}`
+                  : '۱. انتخاب غذا و ثبت تعداد تولید آشپزخانه'}
               </h2>
-              {batchSummary.totalPortionsProduced > 0 && (
+              {(batchSummary.totalPortionsProduced > 0 || editingBatch) && (
                 <button
                   type="button"
-                  onClick={() => setQuantities({})}
-                  className="text-[11px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1"
+                  onClick={handleCancelSelectedProduction}
+                  className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-[11px] font-bold text-rose-700 flex items-center gap-1 cursor-pointer transition"
                 >
                   <RotateCcw size={12} />
-                  صفر کردن
+                  <span>{editingBatch ? 'لغو ویرایش' : 'کنسل کردن تولید انتخابی'}</span>
                 </button>
               )}
             </div>
@@ -404,12 +515,23 @@ export default function KitchenProductionScreen() {
                     </div>
                   </div>
 
-                  {/* Quick Stepper + 3-digit Quantity Input */}
+                  {/* Quick Stepper + 3-digit Quantity Input + Cancel Item Button */}
                   <div className="flex items-center gap-1 shrink-0">
+                    {qty > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setItemQty(item.id!, 0)}
+                        className="px-1.5 py-1 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-[10px] font-bold flex items-center gap-0.5 transition cursor-pointer"
+                        title={`کنسل کردن تولید ${item.name}`}
+                      >
+                        <X size={12} />
+                        <span>کنسل</span>
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => adjustItemQty(item.id!, 10)}
-                      className="px-2 py-1 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-[11px] font-black transition"
+                      className="px-2 py-1 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 text-[11px] font-black transition cursor-pointer"
                       title="افزودن ۱۰ پرس"
                     >
                       +۱۰
@@ -417,7 +539,7 @@ export default function KitchenProductionScreen() {
                     <button
                       type="button"
                       onClick={() => adjustItemQty(item.id!, 1)}
-                      className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 flex items-center justify-center transition"
+                      className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 flex items-center justify-center transition cursor-pointer"
                     >
                       <Plus size={14} />
                     </button>
@@ -432,7 +554,7 @@ export default function KitchenProductionScreen() {
                       type="button"
                       onClick={() => adjustItemQty(item.id!, -1)}
                       disabled={qty <= 0}
-                      className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-800 flex items-center justify-center transition"
+                      className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-800 flex items-center justify-center transition cursor-pointer"
                     >
                       <Minus size={14} />
                     </button>
@@ -444,17 +566,26 @@ export default function KitchenProductionScreen() {
 
           {/* Mobile Quick Next Button */}
           {batchSummary.totalPortionsProduced > 0 && (
-            <div className="p-2.5 border-t border-slate-200 bg-orange-50 flex md:hidden items-center justify-between">
+            <div className="p-2.5 border-t border-slate-200 bg-orange-50 flex md:hidden items-center justify-between gap-2">
               <span className="text-xs font-extrabold text-orange-950">
                 جمع انتخابی: {formatNumber(batchSummary.totalPortionsProduced)} پرس
               </span>
-              <button
-                type="button"
-                onClick={() => setMobileTab('consumption')}
-                className="px-3.5 py-1.5 rounded-xl bg-orange-600 text-white text-xs font-bold"
-              >
-                مشاهده مصرف مواد و ثبت نهایی ←
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleCancelSelectedProduction}
+                  className="px-2.5 py-1.5 rounded-xl bg-rose-100 text-rose-700 text-xs font-bold"
+                >
+                  کنسل
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileTab('consumption')}
+                  className="px-3.5 py-1.5 rounded-xl bg-orange-600 text-white text-xs font-bold"
+                >
+                  مشاهده مصرف مواد و ثبت نهایی ←
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -486,27 +617,47 @@ export default function KitchenProductionScreen() {
               </div>
             ) : (
               <>
-                {/* Selected Products Summary */}
+                {/* Selected Products Summary with per-item cancel button */}
                 <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                  <div className="text-[11px] font-extrabold text-slate-700">
-                    خلاصه محصولات در حال تولید:
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-extrabold text-slate-700">
+                      خلاصه محصولات انتخاب شده برای پخت:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCancelSelectedProduction}
+                      className="text-[10px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <X size={12} />
+                      <span>کنسل همه</span>
+                    </button>
                   </div>
                   {batchSummary.productBreakdown.map((prod) => (
                     <div
                       key={prod.menuItemId}
-                      className="flex items-center justify-between text-xs border-b border-slate-200/60 last:border-0 pb-1 last:pb-0"
+                      className="flex items-center justify-between gap-2 text-xs border-b border-slate-200/60 last:border-0 pb-1.5 last:pb-0"
                     >
-                      <span className="font-bold text-slate-800">
+                      <span className="font-bold text-slate-800 truncate">
                         {prod.menuItemName}{' '}
                         <span className="text-orange-600 font-mono font-black">
                           × {formatNumber(prod.quantityProduced)} پرس
                         </span>
                       </span>
-                      {!hideCostPrice && (
-                        <span className="font-mono text-[11px] font-bold text-slate-700">
-                          {formatCurrency(prod.batchTotalCost)}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!hideCostPrice && (
+                          <span className="font-mono text-[11px] font-bold text-slate-700">
+                            {formatCurrency(prod.batchTotalCost)}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setItemQty(prod.menuItemId, 0)}
+                          className="p-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-600 transition cursor-pointer"
+                          title={`حذف ${prod.menuItemName} از لیست پخت`}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -568,7 +719,7 @@ export default function KitchenProductionScreen() {
             )}
           </div>
 
-          {/* Footer Cost Breakdown & Submit Button */}
+          {/* Footer Cost Breakdown & Submit / Cancel Buttons */}
           <div className="p-3 border-t border-slate-200 bg-slate-50 space-y-2 shrink-0">
             {hideCostPrice ? (
               <div className="p-2 rounded-xl bg-amber-50 border border-amber-200 text-center flex items-center justify-center gap-1.5 text-[11px] font-bold text-amber-900">
@@ -602,15 +753,36 @@ export default function KitchenProductionScreen() {
               </>
             )}
 
-            <button
-              type="button"
-              disabled={batchSummary.totalPortionsProduced === 0 || isSubmitting}
-              onClick={handleRecordProduction}
-              className="w-full py-2.5 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white rounded-xl font-bold text-xs md:text-sm shadow-xs transition flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <ChefHat size={17} />
-              <span>ثبت تولید آشپزخانه و کسر اتوماتیک مواد از انبار</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {(batchSummary.totalPortionsProduced > 0 || editingBatch) && (
+                <button
+                  type="button"
+                  onClick={handleCancelSelectedProduction}
+                  className="px-3 py-2.5 bg-rose-100 hover:bg-rose-200 text-rose-700 rounded-xl font-bold text-xs flex items-center justify-center gap-1 transition cursor-pointer shrink-0"
+                >
+                  <X size={15} />
+                  <span>{editingBatch ? 'انصراف' : 'کنسل تولید'}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={batchSummary.totalPortionsProduced === 0 || isSubmitting}
+                onClick={handleRecordProduction}
+                className={`flex-1 py-2.5 disabled:bg-slate-300 text-white rounded-xl font-bold text-xs md:text-sm shadow-xs transition flex items-center justify-center gap-2 cursor-pointer ${
+                  editingBatch
+                    ? 'bg-blue-600 hover:bg-blue-700'
+                    : 'bg-orange-600 hover:bg-orange-700'
+                }`}
+              >
+                <ChefHat size={17} />
+                <span>
+                  {editingBatch
+                    ? `ذخیره ویرایش پارت تولید #${editingBatch.batchNumber}`
+                    : 'ثبت تولید آشپزخانه و کسر اتوماتیک مواد از انبار'}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -665,9 +837,13 @@ export default function KitchenProductionScreen() {
                 productionLogs.map((log) => (
                   <div
                     key={log.id}
-                    className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 space-y-1.5 text-xs"
+                    className={`p-2.5 rounded-xl border space-y-1.5 text-xs transition ${
+                      editingBatch?.id === log.id
+                        ? 'border-blue-500 bg-blue-50/50 ring-2 ring-blue-500/20'
+                        : 'border-slate-200 bg-slate-50/60'
+                    }`}
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-1">
                       <span className="font-extrabold text-slate-900">
                         پارت #{log.batchNumber} · {log.shiftLabel}
                       </span>
@@ -697,6 +873,58 @@ export default function KitchenProductionScreen() {
                         <span className="font-mono font-black text-slate-900">
                           {formatCurrency(log.totalBatchCost)}
                         </span>
+                      </div>
+                    )}
+
+                    {/* Permission-gated Edit & Delete/Cancel buttons */}
+                    {(canEditProduction || canDeleteProduction) && (
+                      <div className="pt-1.5 border-t border-slate-200/80">
+                        {confirmDeleteBatchId === log.id ? (
+                          <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 space-y-1.5">
+                            <p className="text-[11px] font-bold text-rose-800">
+                              آیا پارت #{log.batchNumber} حذف شود و مواد مصرفی به انبار برگردد؟
+                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteBatch(log)}
+                                className="flex-1 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-[11px] font-bold cursor-pointer"
+                              >
+                                تأیید حذف و برگشت به انبار
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteBatchId(null)}
+                                className="px-2.5 py-1 bg-white border border-slate-300 text-slate-700 rounded-md text-[11px] font-bold cursor-pointer"
+                              >
+                                انصراف
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-end gap-1.5">
+                            {canEditProduction && (
+                              <button
+                                type="button"
+                                onClick={() => handleStartEditBatch(log)}
+                                className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <Edit3 size={12} />
+                                <span>ویرایش تولید</span>
+                              </button>
+                            )}
+                            {canDeleteProduction && (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteBatchId(log.id!)}
+                                className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                              >
+                                <Trash2 size={12} />
+                                <span>حذف / ابطال</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

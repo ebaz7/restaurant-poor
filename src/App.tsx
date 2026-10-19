@@ -46,7 +46,12 @@ import {
   PermissionKey,
   ALL_PERMISSIONS,
 } from './lib/db';
-import { sendBackupToMessengers, syncBackupToServer } from './lib/utils';
+import {
+  sendBackupToMessengers,
+  syncBackupToServer,
+  setGlobalCurrencyUnit,
+  getGlobalCurrencyUnit,
+} from './lib/utils';
 import {
   initNetworkSync,
   subscribeSyncState,
@@ -199,6 +204,11 @@ export default function App() {
       unsubscribe();
     };
   }, []);
+
+  // Immediately keep global currency unit synchronized with database settings across all tabs & LAN clients
+  if (settings?.currencyUnit && getGlobalCurrencyUnit() !== settings.currencyUnit) {
+    setGlobalCurrencyUnit(settings.currencyUnit);
+  }
 
   // Check if requireLoginOnStart is enabled when settings load
   useEffect(() => {
@@ -653,12 +663,28 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 min-w-0 max-w-full flex flex-col h-[calc(100vh-3.5rem)] md:h-full overflow-hidden">
-        {activeTab === 'pos' && hasPermission('pos') && <POSScreen />}
-        {activeTab === 'kitchen' && hasPermission('kitchen') && <KitchenProductionScreen />}
-        {activeTab === 'accounting' && hasPermission('accounting') && <AccountingScreen />}
-        {activeTab === 'menu' && hasPermission('menu') && <MenuManagerScreen />}
-        {activeTab === 'reports' && hasPermission('reports') && <ReportsScreen />}
-        {activeTab === 'customers' && hasPermission('customers') && <CustomersScreen />}
+        {activeTab === 'pos' && hasPermission('pos') && (
+          <POSScreen key={`pos-${settings?.currencyUnit || 'toman'}`} />
+        )}
+        {activeTab === 'kitchen' && hasPermission('kitchen') && (
+          <KitchenProductionScreen
+            key={`kitchen-${settings?.currencyUnit || 'toman'}`}
+            canEditProduction={hasPermission('kitchen_edit_production')}
+            canDeleteProduction={hasPermission('kitchen_delete_production')}
+          />
+        )}
+        {activeTab === 'accounting' && hasPermission('accounting') && (
+          <AccountingScreen key={`acc-${settings?.currencyUnit || 'toman'}`} />
+        )}
+        {activeTab === 'menu' && hasPermission('menu') && (
+          <MenuManagerScreen key={`menu-${settings?.currencyUnit || 'toman'}`} />
+        )}
+        {activeTab === 'reports' && hasPermission('reports') && (
+          <ReportsScreen key={`rep-${settings?.currencyUnit || 'toman'}`} />
+        )}
+        {activeTab === 'customers' && hasPermission('customers') && (
+          <CustomersScreen key={`cust-${settings?.currencyUnit || 'toman'}`} />
+        )}
         {activeTab === 'settings' && hasPermission('settings') && <SettingsScreen />}
       </main>
 
