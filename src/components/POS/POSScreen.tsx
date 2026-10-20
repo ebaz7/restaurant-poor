@@ -73,6 +73,7 @@ interface OpenTab {
 }
 
 interface POSScreenProps {
+  key?: React.Key;
   canEditInvoice?: boolean;
   canDeleteInvoice?: boolean;
 }
@@ -169,8 +170,10 @@ export default function POSScreen({
     const todayEnd = endOfDay(new Date());
     return allOrders
       .filter((o) => {
+        if (!o || !o.createdAt) return false;
         try {
           const d = new Date(o.createdAt);
+          if (isNaN(d.getTime())) return false;
           return isWithinInterval(d, { start: todayStart, end: todayEnd });
         } catch {
           return false;
@@ -281,29 +284,32 @@ export default function POSScreen({
   // Cashier Live Stats (Today / Week / Month)
   const cashierStats = useMemo(() => {
     const now = new Date();
+    const todayStart = startOfDay(now);
+    const todayEnd = endOfDay(now);
+    const weekStart = startOfWeek(now);
+    const weekEnd = endOfWeek(now);
+    const monthStart = startOfMonth(now);
+    const monthEnd = endOfMonth(now);
+
+    const isDateInInterval = (dateVal: any, start: Date, end: Date) => {
+      if (!dateVal) return false;
+      try {
+        const d = new Date(dateVal);
+        if (isNaN(d.getTime())) return false;
+        return isWithinInterval(d, { start, end });
+      } catch {
+        return false;
+      }
+    };
+
     const todayOrders = allOrders.filter(
-      (o) =>
-        o.status === 'paid' &&
-        isWithinInterval(new Date(o.createdAt), {
-          start: startOfDay(now),
-          end: endOfDay(now),
-        })
+      (o) => o && o.status === 'paid' && isDateInInterval(o.createdAt, todayStart, todayEnd)
     );
     const weekOrders = allOrders.filter(
-      (o) =>
-        o.status === 'paid' &&
-        isWithinInterval(new Date(o.createdAt), {
-          start: startOfWeek(now),
-          end: endOfWeek(now),
-        })
+      (o) => o && o.status === 'paid' && isDateInInterval(o.createdAt, weekStart, weekEnd)
     );
     const monthOrders = allOrders.filter(
-      (o) =>
-        o.status === 'paid' &&
-        isWithinInterval(new Date(o.createdAt), {
-          start: startOfMonth(now),
-          end: endOfMonth(now),
-        })
+      (o) => o && o.status === 'paid' && isDateInInterval(o.createdAt, monthStart, monthEnd)
     );
 
     return {
@@ -344,7 +350,13 @@ export default function POSScreen({
   const handlePrint = useReactToPrint({
     contentRef: receiptRef,
     documentTitle: 'Receipt',
-    onAfterPrint: () => setOrderToPrint(null),
+    onPrintError: (errorLocation, error) => {
+      console.warn('Receipt print notice:', errorLocation, error);
+    },
+    onAfterPrint: () => {
+      // Keep orderToPrint for a moment to prevent sudden unmount flicker
+      setTimeout(() => setOrderToPrint(null), 500);
+    },
     pageStyle: `
       @page {
         size: 80mm auto;
@@ -374,6 +386,31 @@ export default function POSScreen({
       }
     `,
   });
+
+  const triggerInstantPrint = (order: Order) => {
+    if (!order) return;
+    try {
+      setOrderToPrint(order);
+      setLastPrintedOrder(order);
+      setAutoPrintNotice(`فیش #${order.invoiceNumber || ''} در حال ارسال به پرینتر...`);
+
+      // Ensure the component has mounted in the hidden print wrapper
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          try {
+            handlePrint();
+            setAutoPrintNotice(`فیش #${order.invoiceNumber || ''} با موفقیت چاپ شد.`);
+            setTimeout(() => setAutoPrintNotice(null), 4000);
+          } catch (err) {
+            console.warn('Instant print trigger caught:', err);
+          }
+        }, 120);
+      });
+    } catch (err) {
+      console.error('Trigger print failed:', err);
+    }
+  };
+
 
   const displayedMenuItems = useMemo(() => {
     return (
@@ -798,17 +835,9 @@ export default function POSScreen({
       });
 
       // Trigger instant automatic thermal printing without opening the preview modal
-      setOrderToPrint(savedOrder);
-      setLastPrintedOrder(savedOrder);
-      setAutoPrintNotice(`فیش #${savedOrder.invoiceNumber} ثبت شد و به صورت خودکار به پرینتر ارسال گردید.`);
-      setTimeout(() => {
-        try {
-          handlePrint();
-        } catch (e) {
-          console.error('Auto print error:', e);
-        }
-      }, 60);
-      setTimeout(() => setAutoPrintNotice(null), 6000);
+      if (settings?.autoPrintReceipt !== false) {
+        triggerInstantPrint(savedOrder);
+      }
 
       // Reset tab
       updateActiveTab({
@@ -874,8 +903,7 @@ export default function POSScreen({
             <button
               type="button"
               onClick={() => {
-                setOrderToPrint(lastPrintedOrder);
-                setTimeout(() => handlePrint(), 50);
+                if (lastPrintedOrder) triggerInstantPrint(lastPrintedOrder);
               }}
               className="px-2.5 py-1 rounded-lg bg-white/20 hover:bg-white/30 text-white flex items-center gap-1 cursor-pointer transition"
             >
@@ -1927,10 +1955,9 @@ export default function POSScreen({
               <button
                 type="button"
                 onClick={() => {
-                  setOrderToPrint(previewOrder);
-                  setTimeout(() => handlePrint(), 100);
+                  if (previewOrder) triggerInstantPrint(previewOrder);
                 }}
-                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5"
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Printer size={16} />
                 <span>چاپ روی فیش‌پرینتر</span>
@@ -2287,12 +2314,29 @@ export default function POSScreen({
                 </div>
               ) : (
                 filteredRecentOrders.map((order) => {
+                  if (!order) return null;
                   const isSelf = order.invoiceMode === 'self_service';
-                  const orderDate = new Date(order.createdAt);
-                  const timeStr = format(orderDate, 'HH:mm:ss');
+                  let timeStr = '--:--';
+                  try {
+                    if (order.createdAt) {
+                      const d = new Date(order.createdAt);
+                      if (!isNaN(d.getTime())) {
+                        timeStr = format(d, 'HH:mm:ss');
+                      }
+                    }
+                  } catch {
+                    timeStr = '--:--';
+                  }
+
+                  const safeFinalAmount = Number.isFinite(order.finalAmount)
+                    ? order.finalAmount
+                    : Number.isFinite(order.total)
+                    ? order.total
+                    : 0;
+
                   return (
                     <div
-                      key={order.id || order.invoiceNumber}
+                      key={order.id || order.invoiceNumber || Math.random()}
                       className="p-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition"
                     >
                       {/* Left: Info */}
@@ -2305,7 +2349,7 @@ export default function POSScreen({
                           }`}
                         >
                           <span className="text-[10px] opacity-75">فیش</span>
-                          <span>#{order.invoiceNumber}</span>
+                          <span>#{order.invoiceNumber || '---'}</span>
                         </div>
 
                         <div className="min-w-0 flex-1">
@@ -2342,7 +2386,10 @@ export default function POSScreen({
                               <span className="font-bold ml-2">مشتری: {order.customerName} {order.customerPhone ? `(${order.customerPhone})` : ''}</span>
                             ) : null}
                             <span className="text-slate-500">
-                              {order.items.map((it) => `${it.menuItem.name} (${it.quantity})`).join('، ')}
+                              {(order.items || [])
+                                .filter(Boolean)
+                                .map((it) => `${it?.name || (it as any)?.menuItem?.name || 'کالا'} (${it?.quantity || 1})`)
+                                .join('، ')}
                             </span>
                           </div>
                         </div>
@@ -2353,7 +2400,7 @@ export default function POSScreen({
                         <div className="text-left font-mono">
                           <span className="text-[10px] text-slate-400 block">مبلغ فاکتور</span>
                           <span className="font-black text-sm text-slate-900 tabular-nums">
-                            {formatCurrency(order.finalAmount)}
+                            {formatCurrency(safeFinalAmount)}
                           </span>
                         </div>
 
@@ -2361,11 +2408,7 @@ export default function POSScreen({
                           {/* Instant Reprint Button */}
                           <button
                             type="button"
-                            onClick={() => {
-                              setOrderToPrint(order);
-                              setTimeout(() => handlePrint(), 50);
-                              setAutoPrintNotice(`فیش #${order.invoiceNumber} مجدداً درجا چاپ شد.`);
-                            }}
+                            onClick={() => triggerInstantPrint(order)}
                             className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold flex items-center gap-1 shadow-xs cursor-pointer transition"
                             title="چاپ آنی روی فیش‌پرینتر"
                           >

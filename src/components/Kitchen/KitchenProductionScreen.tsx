@@ -32,6 +32,7 @@ import {
 type MobileKitchenTab = 'input' | 'consumption' | 'history';
 
 interface KitchenProductionScreenProps {
+  key?: React.Key;
   canEditProduction?: boolean;
   canDeleteProduction?: boolean;
 }

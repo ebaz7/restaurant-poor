@@ -63,10 +63,18 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
       <div className="mb-2.5 text-[10.5px] border-b border-dashed border-black pb-2 space-y-1">
         <div className="flex justify-between items-center font-medium">
           <p>
-            شماره فیش: <span className="font-bold font-mono">#{order.invoiceNumber}</span>
+            شماره فیش: <span className="font-bold font-mono">#{order.invoiceNumber || '---'}</span>
           </p>
           <p dir="ltr" className="text-[10px] font-mono">
-            {format(new Date(order.createdAt), 'yyyy/MM/dd HH:mm')}
+            {(() => {
+              try {
+                if (!order.createdAt) return '--:--';
+                const d = new Date(order.createdAt);
+                return !isNaN(d.getTime()) ? format(d, 'yyyy/MM/dd HH:mm') : '--:--';
+              } catch {
+                return '--:--';
+              }
+            })()}
           </p>
         </div>
 
@@ -136,61 +144,63 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
       )}
 
       {/* Items */}
-      <div className="mb-2.5 border-b border-dashed border-black pb-2.5">
-        <table className="w-full table-fixed text-[11px] border-collapse">
-          <thead className="border-b border-black">
-            <tr>
-              <th className="text-right py-1 w-[48%] font-bold pr-0.5">شرح</th>
-              <th className="text-center py-1 w-[16%] font-bold">تعداد</th>
-              <th className="text-left py-1 w-[36%] font-bold pl-0.5">مبلغ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {order.items.map((item, index) => (
-              <tr key={index} className="border-b border-gray-200 border-dashed">
-                <td className="py-1.5 pr-0.5 text-right align-top break-words whitespace-normal w-[48%]">
-                  <div className="font-bold leading-tight text-[11px]">{item.name}</div>
-                  <div className="text-[9.5px] text-gray-600 mt-0.5 font-mono">
-                    فی: {new Intl.NumberFormat('fa-IR').format(item.price)}
-                  </div>
-                </td>
-                <td className="py-1.5 text-center align-top font-bold text-[11px] w-[16%] font-mono">
-                  {item.quantity}
-                </td>
-                <td className="py-1.5 pl-0.5 text-left align-top font-bold text-[11px] w-[36%] whitespace-nowrap font-mono">
-                  {new Intl.NumberFormat('fa-IR').format(item.price * item.quantity)}
-                </td>
+      {Array.isArray(order.items) && order.items.length > 0 && (
+        <div className="mb-2.5 border-b border-dashed border-black pb-2.5">
+          <table className="w-full table-fixed text-[11px] border-collapse">
+            <thead className="border-b border-black">
+              <tr>
+                <th className="text-right py-1 w-[48%] font-bold pr-0.5">شرح</th>
+                <th className="text-center py-1 w-[16%] font-bold">تعداد</th>
+                <th className="text-left py-1 w-[36%] font-bold pl-0.5">مبلغ</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {order.items.map((item, index) => (
+                <tr key={index} className="border-b border-gray-200 border-dashed">
+                  <td className="py-1.5 pr-0.5 text-right align-top break-words whitespace-normal w-[48%]">
+                    <div className="font-bold leading-tight text-[11px]">{item?.name || 'کالا'}</div>
+                    <div className="text-[9.5px] text-gray-600 mt-0.5 font-mono">
+                      فی: {new Intl.NumberFormat('fa-IR').format(item?.price || 0)}
+                    </div>
+                  </td>
+                  <td className="py-1.5 text-center align-top font-bold text-[11px] w-[16%] font-mono">
+                    {item?.quantity || 1}
+                  </td>
+                  <td className="py-1.5 pl-0.5 text-left align-top font-bold text-[11px] w-[36%] whitespace-nowrap font-mono">
+                    {new Intl.NumberFormat('fa-IR').format((item?.price || 0) * (item?.quantity || 1))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Totals */}
       <div className="mb-3 space-y-1 text-[11px] px-0.5">
         <div className="flex justify-between items-center">
           <span>جمع کل:</span>
-          <span className="font-semibold font-mono">{formatCurrency(order.subtotal || 0)}</span>
+          <span className="font-semibold font-mono">{formatCurrency(order.subtotal || order.total || 0)}</span>
         </div>
         {(order.discountValue || 0) > 0 && (
           <div className="flex justify-between items-center">
             <span>تخفیف {order.discountType === 'percent' ? `(${order.discountValue}%)` : ''}:</span>
             <span className="font-semibold font-mono">
               {order.discountType === 'percent'
-                ? formatCurrency((order.subtotal * order.discountValue) / 100)
-                : formatCurrency(order.discountValue)}
+                ? formatCurrency(((order.subtotal || order.total || 0) * order.discountValue) / 100)
+                : formatCurrency(order.discountValue || 0)}
             </span>
           </div>
         )}
         {(order.taxAmount || 0) > 0 && (
           <div className="flex justify-between items-center">
-            <span>مالیات ({order.taxPercentage}%):</span>
-            <span className="font-semibold font-mono">{formatCurrency(order.taxAmount)}</span>
+            <span>مالیات ({order.taxPercentage || 0}%):</span>
+            <span className="font-semibold font-mono">{formatCurrency(order.taxAmount || 0)}</span>
           </div>
         )}
         <div className="flex justify-between items-center font-bold text-[12.5px] border-t border-black pt-1.5 mt-1">
           <span>قابل پرداخت:</span>
-          <span className="font-mono">{formatCurrency(order.total)}</span>
+          <span className="font-mono">{formatCurrency(order.finalAmount || order.total || 0)}</span>
         </div>
       </div>
 

@@ -98,6 +98,9 @@ export interface AppSettings {
   autoPrintReceipt?: boolean;
   printerName?: string;
   printerPaperWidth?: '80mm' | '58mm';
+  // Terminal Role & Network Mode (Master Server vs Client Terminal)
+  terminalRole?: 'server' | 'client';
+  centralServerAddress?: string;
   // Auto Backup (Bale & Telegram Bot) settings
   autoBackupEnabled?: boolean;
   autoBackupIntervalHours?: number; // default 1 hour
@@ -410,6 +413,8 @@ export interface KitchenProductionLog {
   totalBatchCost: number;
   notes?: string;
 }
+
+export type KitchenProductionBatch = KitchenProductionLog;
 
 export interface CashClosure {
   id?: number;
@@ -2441,16 +2446,7 @@ export async function convertDatabaseCurrencyUnit(
         });
       }
 
-      // 4. Customers
-      const allCustomers = await db.customers.toArray();
-      for (const c of allCustomers) {
-        if (!c.id) continue;
-        await db.customers.update(c.id, {
-          totalSpent: scale(c.totalSpent),
-        });
-      }
-
-      // 5. Bank Accounts
+      // 4. Bank Accounts
       const allBanks = await db.bankAccounts.toArray();
       for (const b of allBanks) {
         if (!b.id) continue;
@@ -2460,13 +2456,12 @@ export async function convertDatabaseCurrencyUnit(
         });
       }
 
-      // 6. Persons (Staff, Suppliers, Customers)
+      // 5. Persons (Staff, Suppliers, Customers)
       const allPersons = await db.persons.toArray();
       for (const p of allPersons) {
         if (!p.id) continue;
         await db.persons.update(p.id, {
-          initialDebt: scale(p.initialDebt),
-          initialCredit: scale(p.initialCredit),
+          initialBalance: p.initialBalance !== undefined ? scale(p.initialBalance) : undefined,
           monthlySalary: p.monthlySalary !== undefined ? scale(p.monthlySalary) : undefined,
         });
       }

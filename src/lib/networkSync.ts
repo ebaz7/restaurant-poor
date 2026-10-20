@@ -352,6 +352,134 @@ export async function notifyRawResetToCentralServer(): Promise<boolean> {
 }
 
 /**
+ * Returns current terminal node role: 'server' (Master Server / Host) or 'client' (LAN terminal)
+ */
+export function getNodeRole(): 'server' | 'client' {
+  if (typeof window === 'undefined') return 'server';
+  try {
+    const saved = window.localStorage.getItem('arka_node_role');
+    if (saved === 'server' || saved === 'client') return saved;
+  } catch {
+    // ignore
+  }
+  return 'server';
+}
+
+/**
+ * Updates terminal node role in localStorage
+ */
+export function setNodeRole(role: 'server' | 'client') {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem('arka_node_role', role);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Fetches network info (IP, Port, Hostname) from the server
+ */
+export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
+  ok: boolean;
+  hostname?: string;
+  port?: number;
+  localIps?: string[];
+  primaryUrl?: string;
+  rev?: number;
+}> {
+  const target = (customUrl || currentSyncState.serverUrl || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '');
+  try {
+    const res = await fetch(`${target}/api/network/info`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {
+    // ignore
+  }
+  return { ok: false };
+}
+
+/**
+ * Tests connection to a potential server URL before committing a switch
+ */
+export async function testServerConnection(url: string): Promise<{ ok: boolean; rev?: number; error?: string }> {
+  const cleanUrl = url.trim().replace(/\/+$/, '');
+  if (!cleanUrl) {
+    return { ok: false, error: 'آدرس سرور وارد نشده است.' };
+  }
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`${cleanUrl}/api/db/version`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, rev: data.rev };
+    }
+    return { ok: false, error: `پاسخ ناموفق از سرور (کد خطا: ${res.status})` };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'امکان برقراری ارتباط با این آدرس وجود ندارد.' };
+  }
+}
+
+/**
+ * Protective Database Pre-Switch Snapshot
+ * Takes a full export of Dexie tables and stores it in localStorage & returns integrity stats
+ */
+export async function createSafetyBackupBeforeRoleSwitch(): Promise<{
+  ok: boolean;
+  timestamp: string;
+  counts: Record<string, number>;
+  backupJson: string;
+}> {
+  try {
+    const backupJson = await exportDB();
+    const parsed = JSON.parse(backupJson);
+    const counts = {
+      orders: Array.isArray(parsed.orders) ? parsed.orders.length : 0,
+      categories: Array.isArray(parsed.categories) ? parsed.categories.length : 0,
+      menuItems: Array.isArray(parsed.menuItems) ? parsed.menuItems.length : 0,
+      customers: Array.isArray(parsed.customers) ? parsed.customers.length : 0,
+      journalVouchers: Array.isArray(parsed.journalVouchers) ? parsed.journalVouchers.length : 0,
+    };
+
+    const timestamp = new Date().toISOString();
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('arka_pre_role_switch_backup', backupJson);
+        window.localStorage.setItem('arka_pre_role_switch_backup_time', timestamp);
+      } catch {
+        // ignore storage quota limit
+      }
+    }
+
+    return {
+      ok: true,
+      timestamp,
+      counts,
+      backupJson,
+    };
+  } catch (err: any) {
+    console.error('Safety backup failed:', err);
+    return {
+      ok: false,
+      timestamp: new Date().toISOString(),
+      counts: {},
+      backupJson: '',
+    };
+  }
+}
+
+/**
  * Hard cache refresh: unregisters service workers and clears caches so new software code is loaded immediately.
  */
 export async function clearCacheAndHardReload() {
@@ -373,3 +501,5 @@ export async function clearCacheAndHardReload() {
   }
   window.location.reload();
 }
+
+

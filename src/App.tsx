@@ -26,6 +26,7 @@ import {
   CheckCircle2,
   HardDriveDownload,
   X,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import POSScreen from './components/POS/POSScreen';
@@ -38,6 +39,7 @@ import AccountingScreen from './components/Accounting/AccountingScreen';
 import FirstTimeAdminSetup from './components/Common/FirstTimeAdminSetup';
 import { PWAInstallButton } from './components/Common/PWAInstallButton';
 import { LicenseLockModal } from './components/Common/LicenseLockModal';
+import { NodeRoleManagerModal } from './components/Network/NodeRoleManagerModal';
 import { getLicenseStatus } from './lib/licenseManager';
 import {
   db,
@@ -59,6 +61,7 @@ import {
   pushToCentralServer,
   clearCacheAndHardReload,
   setServerUrl,
+  getNodeRole,
   SyncState,
 } from './lib/networkSync';
 
@@ -112,8 +115,31 @@ export default function App() {
     lastError: null,
   });
   const [showNetworkModal, setShowNetworkModal] = useState<boolean>(false);
+  const [showNodeRoleModal, setShowNodeRoleModal] = useState<boolean>(false);
+  const [nodeRole, setNodeRoleState] = useState<'server' | 'client'>(getNodeRole());
   const [manualSyncMessage, setManualSyncMessage] = useState<string | null>(null);
   const [customServerInput, setCustomServerInput] = useState<string>('');
+
+  // Auto-detect and register ?printer= query parameter from desktop shortcut
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const printerParam = params.get('printer');
+        if (printerParam && printerParam.trim()) {
+          const pName = decodeURIComponent(printerParam.trim());
+          window.localStorage.setItem('arka_terminal_printer', pName);
+          db.settings.toCollection().first().then((current) => {
+            if (current?.id && current.printerName !== pName) {
+              db.settings.update(current.id, { printerName: pName });
+            }
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     async function verifyAndSyncLicense() {
@@ -612,6 +638,21 @@ export default function App() {
             )}
           </button>
 
+          {/* Node Role Indicator (Desktop) */}
+          <button
+            type="button"
+            onClick={() => setShowNodeRoleModal(true)}
+            title="نقش این کامپیوتر در شبکه (سرور مرکزی یا کلاینت)"
+            className={`w-24 px-1.5 py-1 mt-1 rounded-xl text-[9px] font-extrabold flex items-center justify-center gap-1 border transition cursor-pointer ${
+              nodeRole === 'server'
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                : 'bg-blue-50 border-blue-300 text-blue-800'
+            }`}
+          >
+            {nodeRole === 'server' ? <Server size={10} /> : <Radio size={10} />}
+            <span>{nodeRole === 'server' ? 'نقش: سرور' : 'نقش: کلاینت'}</span>
+          </button>
+
           <PWAInstallButton variant="compact" className="w-24 mt-1" />
 
           <button
@@ -811,6 +852,36 @@ export default function App() {
                 ) را باز کنند، مستقیماً به همین دیتابیس مرکزی متصل شده و تمامی فاکتورها، انبار و گزارش‌ها در لحظه بین همه همگام می‌شود.
               </p>
 
+              {/* Role Switcher Action */}
+              <div className="p-3.5 rounded-2xl bg-slate-100 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-slate-800 text-xs">نقش فعلی این سیستم:</span>
+                    <span
+                      className={`text-[10.5px] font-black px-2.5 py-0.5 rounded-full text-white ${
+                        nodeRole === 'server' ? 'bg-emerald-600' : 'bg-blue-600'
+                      }`}
+                    >
+                      {nodeRole === 'server' ? '🟢 سرور مرکزی (Host)' : '🔵 کلاینت فرعی'}
+                    </span>
+                  </div>
+                  <span className="text-[10.5px] text-slate-500 block mt-0.5">
+                    تعیین وضعیت سرور یا کلاینت با فرآیند حفاظت خودکار از دیتابیس
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNetworkModal(false);
+                    setShowNodeRoleModal(true);
+                  }}
+                  className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition shrink-0 shadow-xs"
+                >
+                  <ArrowRightLeft size={13} />
+                  <span>تغییر نقش سیستم</span>
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
                 <button
                   type="button"
@@ -841,6 +912,17 @@ export default function App() {
         isMandatory={!isLicenseActivated}
         onClose={() => setShowLicenseModal(false)}
         onSuccess={() => setIsLicenseActivated(true)}
+      />
+
+      {/* Node Role Manager Modal (Server vs Client with Database Protection) */}
+      <NodeRoleManagerModal
+        isOpen={showNodeRoleModal}
+        onClose={() => setShowNodeRoleModal(false)}
+        isAdmin={Boolean(!currentUser || currentUser.isAdmin)}
+        currentUserId={currentUserId}
+        onRoleChanged={(newRole) => {
+          setNodeRoleState(newRole);
+        }}
       />
     </div>
   );

@@ -51,7 +51,13 @@ import {
   Store,
   Shield,
   Printer,
+  Server,
+  Radio,
+  Wifi,
+  ArrowRightLeft,
 } from 'lucide-react';
+import { NodeRoleManagerModal } from '../Network/NodeRoleManagerModal';
+import { getNodeRole } from '../../lib/networkSync';
 
 const ROLE_PRESETS: Array<{
   label: string;
@@ -95,6 +101,12 @@ export default function SettingsScreen() {
   const [isSendingBot, setIsSendingBot] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
 
+  // Network Node Role & Printer Intelligence
+  const [showNodeRoleModal, setShowNodeRoleModal] = useState(false);
+  const [nodeRole, setNodeRoleState] = useState<'server' | 'client'>(getNodeRole());
+  const [detectedPrinters, setDetectedPrinters] = useState<string[]>([]);
+  const [isDetectingPrinters, setIsDetectingPrinters] = useState(false);
+
   const handleOptimizeDatabase = async () => {
     setIsOptimizing(true);
     try {
@@ -111,27 +123,88 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleDetectPrinters = async () => {
+    setIsDetectingPrinters(true);
+    try {
+      if (typeof window !== 'undefined' && 'queryLocalPrinters' in window) {
+        const printers = await (window as any).queryLocalPrinters();
+        if (Array.isArray(printers) && printers.length > 0) {
+          const names = printers.map((p: any) => p.name || p);
+          setDetectedPrinters(names);
+          if (names[0]) {
+            setFormData((prev) => ({ ...prev, printerName: names[0] }));
+            try {
+              window.localStorage.setItem('arka_terminal_printer', names[0]);
+            } catch {}
+          }
+          showNotice('success', `${names.length} پرینتر نصب شده روی سیستم شناسایی شد.`);
+          return;
+        }
+      }
+      // If Web Query API is not granted or supported, provide common thermal models
+      const common = ['XP-80C', 'POS-80', 'POS-58', 'EPSON TM-T20', 'BIXOLON SRP-330', 'Rongta RP80'];
+      setDetectedPrinters(common);
+      showNotice(
+        'success',
+        'مدل‌های متداول پرینتر حرارتی لود شدند. می‌توانید مدل پرینتر خود را انتخاب یا در کادر زیر وارد کنید.'
+      );
+    } catch {
+      setDetectedPrinters(['XP-80C', 'POS-80', 'POS-58', 'EPSON TM-T20', 'BIXOLON SRP-330']);
+    } finally {
+      setIsDetectingPrinters(false);
+    }
+  };
+
   const handleDownloadSilentPrintBat = () => {
-    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:4040';
     const pName = (formData.printerName || '').trim();
     const batContent = `@echo off
 chcp 65001 >nul
-title Arka POS - Silent Kiosk Printing Setup
+title Arka POS - Intelligent Silent Kiosk Printing & Thermal Printer Setup
+color 0B
+cls
 echo =================================================================
-echo   آرکا سیستم - راه اندازی چاپ آنی درجا و حذف پنجره پرینتر (Silent Print)
+echo   آرکا سیستم - راه اندازی خودکار چاپ درجا و تنظیم پرینتر پیش‌فرض
 echo =================================================================
 echo.
 set TARGET_URL=${currentOrigin}
 set PRINTER_NAME=${pName}
 
+echo [1/3] بررسی و استعلام پرینترهای متصل به ویندوز...
+powershell -NoProfile -Command "Get-CimInstance Win32_Printer | Select-Object Name, Default"
+
 if not "%PRINTER_NAME%"=="" (
-    echo [i] در حال تنظیم پرینتر پیش فرض ویندوز روی: %PRINTER_NAME%
+    echo.
+    echo [2/3] در حال تنظیم پرینتر پیش فرض ویندوز روی: %PRINTER_NAME%
+    powershell -NoProfile -Command "(New-Object -ComObject WScript.Network).SetDefaultPrinter('%PRINTER_NAME%')" 2>nul
     rundll32 printui.dll,PrintUIEntry /y /n "%PRINTER_NAME%" 2>nul
+) else (
+    echo.
+    echo [2/3] در حال شناسایی خودکار فیش‌پرینتر حرارتی (POS / Thermal)...
+    for /f "delims=" %%p in ('powershell -NoProfile -Command "$p = (Get-CimInstance Win32_Printer | Where-Object { $_.Name -match 'POS|XP|80|58|Thermal|Receipt|Bixolon|Epson|Rongta|Sewoo' } | Select-Object -First 1).Name; if ($p) { Write-Output $p }"') do set DETECTED_PRINTER=%%p
+    if not "%DETECTED_PRINTER%"=="" (
+        echo [✔] پرینتر حرارتی شناسایی گردید: %DETECTED_PRINTER%
+        set PRINTER_NAME=%DETECTED_PRINTER%
+        powershell -NoProfile -Command "(New-Object -ComObject WScript.Network).SetDefaultPrinter('%DETECTED_PRINTER%')" 2>nul
+        rundll32 printui.dll,PrintUIEntry /y /n "%DETECTED_PRINTER%" 2>nul
+    )
 )
 
-echo در حال اجرای مرورگر با قابلیت --kiosk-printing برای چاپ درجا بدون پاپ‌آپ...
-echo آدرس سرور: %TARGET_URL%
 echo.
+echo [3/3] ساخت شورت‌کات دسکتاپ با سوئیچ چاپ درجا (--kiosk-printing)...
+set FINAL_URL=%TARGET_URL%
+if not "%PRINTER_NAME%"=="" (
+    set FINAL_URL=%TARGET_URL%?printer=%PRINTER_NAME%
+)
+
+:: Create Desktop Shortcut pointing directly to Silent Kiosk mode
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $desktop = [System.Environment]::GetFolderPath('Desktop'); $s = $ws.CreateShortcut([System.IO.Path]::Combine($desktop, 'صندوق آرکا - چاپ درجا.lnk')); $chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'; if (-not (Test-Path $chrome)) { $chrome = 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe' }; if (-not (Test-Path $chrome)) { $chrome = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' }; if (-not (Test-Path $chrome)) { $chrome = 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe' }; $s.TargetPath = $chrome; $s.Arguments = '--kiosk-printing --app=\"' + '%FINAL_URL%' + '\"'; $s.IconLocation = $chrome + ',0'; $s.Save()"
+
+echo.
+echo [✔] شورت‌کات «صندوق آرکا - چاپ درجا» روی دسکتاپ ویندوز قرار گرفت!
+echo [✔] از این پس با باز کردن این میانبر، تمام فیش‌ها مستقیماً و بدون باز شدن دیالوگ چاپ خواهند شد.
+echo.
+echo در حال اجرای نرم‌افزار...
 
 set CHROME_PATH1="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 set CHROME_PATH2="C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
@@ -139,28 +212,24 @@ set EDGE_PATH1="C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.ex
 set EDGE_PATH2="C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
 
 if exist %CHROME_PATH1% (
-    echo [v] مرورگر کروم اصلی پیدا شد.
-    start "" %CHROME_PATH1% --kiosk-printing --app="%TARGET_URL%"
+    start "" %CHROME_PATH1% --kiosk-printing --app="%FINAL_URL%"
     exit
 )
 if exist %CHROME_PATH2% (
-    echo [v] مرورگر کروم پیدا شد.
-    start "" %CHROME_PATH2% --kiosk-printing --app="%TARGET_URL%"
+    start "" %CHROME_PATH2% --kiosk-printing --app="%FINAL_URL%"
     exit
 )
 if exist %EDGE_PATH1% (
-    echo [v] مرورگر Microsoft Edge پیدا شد.
-    start "" %EDGE_PATH1% --kiosk-printing --app="%TARGET_URL%"
+    start "" %EDGE_PATH1% --kiosk-printing --app="%FINAL_URL%"
     exit
 )
 if exist %EDGE_PATH2% (
-    echo [v] مرورگر Microsoft Edge پیدا شد.
-    start "" %EDGE_PATH2% --kiosk-printing --app="%TARGET_URL%"
+    start "" %EDGE_PATH2% --kiosk-printing --app="%FINAL_URL%"
     exit
 )
 
-echo [!] مرورگر کروم یا ایج یافت نشد. لطفاً سوئیچ --kiosk-printing را به انتهای آدرس شورت‌کات اضافه کنید.
-pause
+start "" "%FINAL_URL%"
+exit
 `;
     const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -910,6 +979,57 @@ pause
                   </div>
                 </div>
 
+                {/* Network Node Role Card (سرور مرکزی یا کلاینت) */}
+                <div className="border-t border-slate-200 pt-3">
+                  <div
+                    className={`p-4 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      nodeRole === 'server'
+                        ? 'bg-emerald-50/70 border-emerald-300'
+                        : 'bg-blue-50/70 border-blue-300'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                          nodeRole === 'server'
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-blue-600 text-white'
+                        }`}
+                      >
+                        {nodeRole === 'server' ? <Server size={20} /> : <Radio size={20} />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                            نقش این سیستم در شبکه:
+                          </span>
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-white font-black text-[10.5px] ${
+                              nodeRole === 'server' ? 'bg-emerald-600' : 'bg-blue-600'
+                            }`}
+                          >
+                            {nodeRole === 'server' ? '🟢 سرور مرکزی (Host)' : '🔵 کلاینت / صندوق فرعی'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">
+                          {nodeRole === 'server'
+                            ? 'این دستگاه به عنوان سرور اصلی شبکه فعال است و تمامی صندوق‌ها و تبلت‌ها به این سیستم متصل می‌شوند.'
+                            : 'این دستگاه به عنوان کلاینت به سرور مرکزی شبکه متصل است و اطلاعات را سینک می‌کند.'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowNodeRoleModal(true)}
+                      className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer shrink-0"
+                    >
+                      <ArrowRightLeft size={14} />
+                      <span>تغییر نقش سیستم (فقط مدیر)</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Silent Direct Printing Setup & Kiosk Shortcut */}
                 <div className="border-t border-slate-200 pt-3">
                   <div className="p-3.5 bg-blue-50/80 rounded-xl border border-blue-200 flex flex-col gap-2.5">
@@ -942,20 +1062,82 @@ pause
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2.5 border-t border-blue-200/60 text-xs">
                       <div>
-                        <label className="block font-bold text-blue-950 mb-1">
-                          نام دقیق فیش‌پرینتر در ویندوز/سیستم:
-                        </label>
-                        <input
-                          type="text"
-                          name="printerName"
-                          value={formData.printerName || ''}
-                          onChange={handleChange}
-                          placeholder="مثلاً: HP46AB63 یا POS-80 یا XP-80C"
-                          className="w-full px-3 py-2 rounded-xl border border-blue-300 bg-white font-mono text-left font-bold text-xs focus:outline-hidden focus:border-blue-500"
-                          dir="ltr"
-                        />
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block font-bold text-blue-950">
+                            نام دقیق فیش‌پرینتر در ویندوز/سیستم:
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handleDetectPrinters}
+                            disabled={isDetectingPrinters}
+                            className="text-[10px] text-blue-700 hover:text-blue-900 font-bold flex items-center gap-1 underline cursor-pointer"
+                          >
+                            {isDetectingPrinters ? 'در حال بررسی...' : 'استعلام پرینترهای ویندوز'}
+                          </button>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            name="printerName"
+                            value={formData.printerName || ''}
+                            onChange={(e) => {
+                              handleChange(e);
+                              try {
+                                window.localStorage.setItem('arka_terminal_printer', e.target.value);
+                              } catch {}
+                            }}
+                            placeholder="مثلاً: XP-80C یا POS-80 یا TM-T20"
+                            className="flex-1 px-3 py-2 rounded-xl border border-blue-300 bg-white font-mono text-left font-bold text-xs focus:outline-hidden focus:border-blue-500"
+                            dir="ltr"
+                          />
+                          <select
+                            onChange={(e) => {
+                              if (e.target.value) {
+                                setFormData((prev) => ({ ...prev, printerName: e.target.value }));
+                                try {
+                                  window.localStorage.setItem('arka_terminal_printer', e.target.value);
+                                } catch {}
+                              }
+                            }}
+                            className="px-2 py-2 rounded-xl border border-blue-300 bg-white text-xs font-bold text-blue-900"
+                            defaultValue=""
+                          >
+                            <option value="" disabled>مدل‌های آماده...</option>
+                            <option value="XP-80C">XP-80C (Xprinter)</option>
+                            <option value="POS-80">POS-80 (General)</option>
+                            <option value="POS-58">POS-58 (Small 58mm)</option>
+                            <option value="EPSON TM-T20">Epson TM-T20</option>
+                            <option value="EPSON TM-T88">Epson TM-T88</option>
+                            <option value="BIXOLON SRP-330">Bixolon SRP-330</option>
+                            <option value="Rongta RP80">Rongta RP80</option>
+                            <option value="Sewoo LK-T210">Sewoo LK-T210</option>
+                          </select>
+                        </div>
+
+                        {detectedPrinters.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                            <span className="text-[10px] text-blue-800 font-bold">پرینترهای یافت شده:</span>
+                            {detectedPrinters.map((p) => (
+                              <button
+                                key={p}
+                                type="button"
+                                onClick={() => {
+                                  setFormData((prev) => ({ ...prev, printerName: p }));
+                                  try {
+                                    window.localStorage.setItem('arka_terminal_printer', p);
+                                  } catch {}
+                                }}
+                                className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-900 font-mono text-[10px] cursor-pointer"
+                              >
+                                {p}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
                         <span className="text-[10px] text-blue-800 block mt-1">
-                          با وارد کردن نام پرینتر و دانلود شورت‌کات، این پرینتر خودکار به‌عنوان پرینتر پیش‌فرض تنظیم می‌شود.
+                          با انتخاب نام پرینتر و دانلود شورت‌کات، این پرینتر به‌صورت خودکار به‌عنوان پیش‌فرض ویندوز تنظیم می‌شود.
                         </span>
                       </div>
 
@@ -1660,6 +1842,17 @@ pause
           )}
         </div>
       </div>
+
+      {/* Node Role Manager Modal (Server vs Client with Database Protection) */}
+      <NodeRoleManagerModal
+        isOpen={showNodeRoleModal}
+        onClose={() => setShowNodeRoleModal(false)}
+        isAdmin={true}
+        onRoleChanged={(newRole) => {
+          setNodeRoleState(newRole);
+          setFormData((prev) => ({ ...prev, terminalRole: newRole }));
+        }}
+      />
     </div>
   );
 }
