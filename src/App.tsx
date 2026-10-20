@@ -664,7 +664,11 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 min-w-0 max-w-full flex flex-col h-[calc(100vh-3.5rem)] md:h-full overflow-hidden">
         {activeTab === 'pos' && hasPermission('pos') && (
-          <POSScreen key={`pos-${settings?.currencyUnit || 'toman'}`} />
+          <POSScreen
+            key={`pos-${settings?.currencyUnit || 'toman'}`}
+            canEditInvoice={hasPermission('pos_edit_invoice')}
+            canDeleteInvoice={hasPermission('pos_delete_invoice')}
+          />
         )}
         {activeTab === 'kitchen' && hasPermission('kitchen') && (
           <KitchenProductionScreen

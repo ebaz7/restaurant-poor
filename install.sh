@@ -1445,6 +1445,10 @@ build_tauri_windows_on_linux() {
     npm run build
 
     echo "[+] Step 5/5: Cross-Compiling Windows Tauri Installer (.exe) on Linux..."
+    local NUM_CORES
+    NUM_CORES=$(nproc 2>/dev/null || echo 2)
+    export CARGO_BUILD_JOBS="$NUM_CORES"
+    echo "[i] نکته: کامپایل کریت‌های سیستمی ویندوز (بخش ۲۵۰ به بعد نظیر windows v0.62) روی سرور لینوکس بین ۳ تا ۷ دقیقه طول می‌کشد؛ پروسس در حال پردازش است، لطفاً منتظر بمانید..."
     local BUILD_SUCCESS=0
     local TARGET_USED=""
 

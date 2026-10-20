@@ -50,6 +50,7 @@ import {
   Smartphone,
   Store,
   Shield,
+  Printer,
 } from 'lucide-react';
 
 const ROLE_PRESETS: Array<{
@@ -109,6 +110,69 @@ export default function SettingsScreen() {
       setIsOptimizing(false);
     }
   };
+
+  const handleDownloadSilentPrintBat = () => {
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const pName = (formData.printerName || '').trim();
+    const batContent = `@echo off
+chcp 65001 >nul
+title Arka POS - Silent Kiosk Printing Setup
+echo =================================================================
+echo   آرکا سیستم - راه اندازی چاپ آنی درجا و حذف پنجره پرینتر (Silent Print)
+echo =================================================================
+echo.
+set TARGET_URL=${currentOrigin}
+set PRINTER_NAME=${pName}
+
+if not "%PRINTER_NAME%"=="" (
+    echo [i] در حال تنظیم پرینتر پیش فرض ویندوز روی: %PRINTER_NAME%
+    rundll32 printui.dll,PrintUIEntry /y /n "%PRINTER_NAME%" 2>nul
+)
+
+echo در حال اجرای مرورگر با قابلیت --kiosk-printing برای چاپ درجا بدون پاپ‌آپ...
+echo آدرس سرور: %TARGET_URL%
+echo.
+
+set CHROME_PATH1="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+set CHROME_PATH2="C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+set EDGE_PATH1="C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+set EDGE_PATH2="C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+
+if exist %CHROME_PATH1% (
+    echo [v] مرورگر کروم اصلی پیدا شد.
+    start "" %CHROME_PATH1% --kiosk-printing --app="%TARGET_URL%"
+    exit
+)
+if exist %CHROME_PATH2% (
+    echo [v] مرورگر کروم پیدا شد.
+    start "" %CHROME_PATH2% --kiosk-printing --app="%TARGET_URL%"
+    exit
+)
+if exist %EDGE_PATH1% (
+    echo [v] مرورگر Microsoft Edge پیدا شد.
+    start "" %EDGE_PATH1% --kiosk-printing --app="%TARGET_URL%"
+    exit
+)
+if exist %EDGE_PATH2% (
+    echo [v] مرورگر Microsoft Edge پیدا شد.
+    start "" %EDGE_PATH2% --kiosk-printing --app="%TARGET_URL%"
+    exit
+)
+
+echo [!] مرورگر کروم یا ایج یافت نشد. لطفاً سوئیچ --kiosk-printing را به انتهای آدرس شورت‌کات اضافه کنید.
+pause
+`;
+    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Arka_POS_Silent_Print_Setup.bat';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const [confirmRawReset, setConfirmRawReset] = useState(false);
   const [isResettingRaw, setIsResettingRaw] = useState(false);
 
@@ -843,6 +907,93 @@ export default function SettingsScreen() {
                       />
                       <span>اجباری بودن شماره موبایل مشتری</span>
                     </label>
+                  </div>
+                </div>
+
+                {/* Silent Direct Printing Setup & Kiosk Shortcut */}
+                <div className="border-t border-slate-200 pt-3">
+                  <div className="p-3.5 bg-blue-50/80 rounded-xl border border-blue-200 flex flex-col gap-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5">
+                        <Printer size={20} className="text-blue-700 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-blue-950 text-xs">
+                              🖨️ تنظیم چاپ آنی درجا و حذف پنجره انتخاب پرینتر (Silent Kiosk Printing)
+                            </span>
+                            <span className="px-2 py-0.5 bg-blue-600 text-white font-bold text-[10px] rounded-full">
+                              توصیه شده صندوق
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-blue-900 leading-relaxed mt-1">
+                            برای اینکه پس از زدن دکمه «ثبت و صدور فیش»، فیش به‌صورت مستقیم و درجا روی پرینتر حرارتی چاپ شود و پنجره انتخاب پرینتر مرورگر (<code className="font-mono font-bold bg-blue-100 px-1 rounded">Print Preview</code>) اصلاً باز نشود، کافیست فایل شورت‌کات میانبر زیر را روی سیستم صندوق‌دار دانلود و اجرا نمایید.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleDownloadSilentPrintBat}
+                        className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold shrink-0 flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+                      >
+                        <Download size={14} />
+                        <span>دانلود شورت‌کات چاپ درجا (BAT)</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2.5 border-t border-blue-200/60 text-xs">
+                      <div>
+                        <label className="block font-bold text-blue-950 mb-1">
+                          نام دقیق فیش‌پرینتر در ویندوز/سیستم:
+                        </label>
+                        <input
+                          type="text"
+                          name="printerName"
+                          value={formData.printerName || ''}
+                          onChange={handleChange}
+                          placeholder="مثلاً: HP46AB63 یا POS-80 یا XP-80C"
+                          className="w-full px-3 py-2 rounded-xl border border-blue-300 bg-white font-mono text-left font-bold text-xs focus:outline-hidden focus:border-blue-500"
+                          dir="ltr"
+                        />
+                        <span className="text-[10px] text-blue-800 block mt-1">
+                          با وارد کردن نام پرینتر و دانلود شورت‌کات، این پرینتر خودکار به‌عنوان پرینتر پیش‌فرض تنظیم می‌شود.
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-blue-950 mb-1">
+                          عرض رول کاغذ فیش‌پرینتر:
+                        </label>
+                        <select
+                          name="printerPaperWidth"
+                          value={formData.printerPaperWidth || '80mm'}
+                          onChange={handleChange}
+                          className="w-full px-3 py-2 rounded-xl border border-blue-300 bg-white font-bold text-xs focus:outline-hidden focus:border-blue-500"
+                        >
+                          <option value="80mm">۸۰ میلی‌متر (رول استاندارد ۸ سانتی‌متری)</option>
+                          <option value="58mm">۵۸ میلی‌متر (رول کوچک ۵.۸ سانتی‌متری)</option>
+                        </select>
+                        <span className="text-[10px] text-blue-800 block mt-1">
+                          قالب‌بندی و سایز فونت فیش دقیقا طبق عرض کاغذ انتخابی بهینه‌سازی می‌شود.
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-blue-200/60 text-xs">
+                      <label className="flex items-center gap-2 cursor-pointer font-bold text-blue-950">
+                        <input
+                          type="checkbox"
+                          checked={formData.autoPrintReceipt !== false}
+                          onChange={(e) =>
+                            setFormData({ ...formData, autoPrintReceipt: e.target.checked })
+                          }
+                          className="w-4 h-4 accent-blue-600 rounded"
+                        />
+                        <span>چاپ خودکار فیش بلافاصله بعد از ثبت فاکتور</span>
+                      </label>
+                      <span className="text-[10px] text-blue-800 font-medium">
+                        نکته: با اجرای شورت‌کات فوق، مرورگر با سوئیچ <code className="font-mono bg-blue-100 px-1 font-bold">--kiosk-printing</code> اجرا شده و تمام فیش‌ها را بدون پرسش و درجا چاپ می‌کند.
+                      </span>
+                    </div>
                   </div>
                 </div>
 

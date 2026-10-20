@@ -20,12 +20,14 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
     return `کارتخوان (${order.bankName || 'پوز بانکی'})`;
   };
 
+  const is58mm = settings?.printerPaperWidth === '58mm';
+
   return (
     <div
       ref={ref}
-      className="receipt-print-wrapper w-full max-w-[66mm] mx-auto bg-white text-black font-sans box-border select-none"
+      className={`receipt-print-wrapper w-full ${is58mm ? 'max-w-[48mm]' : 'max-w-[66mm]'} mx-auto bg-white text-black font-sans box-border select-none`}
       dir="rtl"
-      style={{ fontSize: '11px', lineHeight: '1.4', padding: '2mm 1.5mm' }}
+      style={{ fontSize: is58mm ? '10px' : '11px', lineHeight: '1.4', padding: '2mm 1.5mm' }}
     >
       {/* Header */}
       <div className="text-center mb-2.5 border-b border-dashed border-black pb-2">

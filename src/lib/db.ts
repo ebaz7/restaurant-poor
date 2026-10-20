@@ -95,6 +95,9 @@ export interface AppSettings {
   // Default Invoice Mode ('self_service' | 'standard') and lock option
   defaultInvoiceMode?: 'self_service' | 'standard';
   lockSelfServiceMode?: boolean;
+  autoPrintReceipt?: boolean;
+  printerName?: string;
+  printerPaperWidth?: '80mm' | '58mm';
   // Auto Backup (Bale & Telegram Bot) settings
   autoBackupEnabled?: boolean;
   autoBackupIntervalHours?: number; // default 1 hour

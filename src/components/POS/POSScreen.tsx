@@ -35,9 +35,12 @@ import {
   Lock,
   CheckCircle2,
   Eye,
+  History,
+  FileText,
 } from 'lucide-react';
 import { useReactToPrint } from 'react-to-print';
 import { Receipt } from './Receipt';
+import InvoiceEditDeleteModal from '../Common/InvoiceEditDeleteModal';
 import {
   format,
   startOfDay,
@@ -69,7 +72,15 @@ interface OpenTab {
   cashAmount?: number;
 }
 
-export default function POSScreen() {
+interface POSScreenProps {
+  canEditInvoice?: boolean;
+  canDeleteInvoice?: boolean;
+}
+
+export default function POSScreen({
+  canEditInvoice = true,
+  canDeleteInvoice = true,
+}: POSScreenProps) {
   const categories = useLiveQuery(() => db.categories.toArray());
   const allMenuItems = useLiveQuery(() => db.menuItems.toArray());
   const settings = useLiveQuery(() => db.settings.toCollection().first());
@@ -146,6 +157,54 @@ export default function POSScreen() {
   const [cashierNameInput, setCashierNameInput] = useState<string>('صندوقدار شیفت');
   const [closureNotes, setClosureNotes] = useState<string>('');
   const [closureSuccessMsg, setClosureSuccessMsg] = useState<string>('');
+
+  // Recent Sales & Instant Reprint Modal State
+  const [showRecentOrdersModal, setShowRecentOrdersModal] = useState(false);
+  const [recentOrderSearch, setRecentOrderSearch] = useState('');
+  const [recentOrderTypeFilter, setRecentOrderTypeFilter] = useState<'all' | 'self_service' | 'standard'>('all');
+  const [orderToEditDelete, setOrderToEditDelete] = useState<Order | null>(null);
+
+  const todayOrders = useMemo(() => {
+    const todayStart = startOfDay(new Date());
+    const todayEnd = endOfDay(new Date());
+    return allOrders
+      .filter((o) => {
+        try {
+          const d = new Date(o.createdAt);
+          return isWithinInterval(d, { start: todayStart, end: todayEnd });
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => (b.invoiceNumber || 0) - (a.invoiceNumber || 0));
+  }, [allOrders]);
+
+  const todaySalesTotal = useMemo(() => {
+    return todayOrders.reduce((sum, o) => sum + (o.finalAmount || 0), 0);
+  }, [todayOrders]);
+
+  const selfServiceOrdersCount = useMemo(() => {
+    return todayOrders.filter((o) => o.invoiceMode === 'self_service').length;
+  }, [todayOrders]);
+
+  const standardOrdersCount = useMemo(() => {
+    return todayOrders.filter((o) => o.invoiceMode !== 'self_service').length;
+  }, [todayOrders]);
+
+  const filteredRecentOrders = useMemo(() => {
+    return todayOrders.filter((o) => {
+      if (recentOrderTypeFilter === 'self_service' && o.invoiceMode !== 'self_service') return false;
+      if (recentOrderTypeFilter === 'standard' && o.invoiceMode === 'self_service') return false;
+      if (!recentOrderSearch.trim()) return true;
+      const q = recentOrderSearch.trim().toLowerCase();
+      const numMatch = String(o.invoiceNumber).includes(q);
+      const custMatch =
+        (o.customerName || '').toLowerCase().includes(q) ||
+        (o.customerPhone || '').includes(q) ||
+        (o.table || '').toLowerCase().includes(q);
+      return numMatch || custMatch;
+    });
+  }, [todayOrders, recentOrderTypeFilter, recentOrderSearch]);
 
   const activeTab = openTabs.find((t) => t.id === activeTabId) || openTabs[0];
 
@@ -904,6 +963,15 @@ export default function POSScreen() {
               </span>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setShowRecentOrdersModal(true)}
+            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shadow-xs cursor-pointer shrink-0"
+          >
+            <History size={14} />
+            <span>فروش‌های امروز و چاپ مجدد ({todayOrders.length})</span>
+          </button>
 
           <button
             type="button"
@@ -2117,6 +2185,249 @@ export default function POSScreen() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Recent Orders & Instant Reprint Modal */}
+      {showRecentOrdersModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden border border-slate-200">
+            {/* Modal Header */}
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400">
+                  <History size={20} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base flex items-center gap-2">
+                    <span>فروش‌های امروز و چاپ مجدد فیش</span>
+                    <span className="px-2 py-0.5 bg-emerald-600 text-white text-[11px] font-mono rounded-full">
+                      {todayOrders.length} فاکتور
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    جمع کل فروش امروز: <span className="font-bold font-mono text-emerald-400">{formatCurrency(todaySalesTotal)}</span>
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowRecentOrdersModal(false)}
+                className="p-1.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white cursor-pointer transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search size={15} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={recentOrderSearch}
+                  onChange={(e) => setRecentOrderSearch(e.target.value)}
+                  placeholder="جستجو با شماره فیش (#1004) یا نام و موبایل مشتری..."
+                  className="w-full pl-3 pr-9 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:border-emerald-500"
+                />
+                {recentOrderSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setRecentOrderSearch('')}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 bg-slate-200/80 p-1 rounded-xl text-xs font-bold shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setRecentOrderTypeFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                    recentOrderTypeFilter === 'all'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  همه ({todayOrders.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecentOrderTypeFilter('self_service')}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                    recentOrderTypeFilter === 'self_service'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  سلف سرویس ({selfServiceOrdersCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecentOrderTypeFilter('standard')}
+                  className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                    recentOrderTypeFilter === 'standard'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  سفارشات منو ({standardOrdersCount})
+                </button>
+              </div>
+            </div>
+
+            {/* Orders List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+              {filteredRecentOrders.length === 0 ? (
+                <div className="text-center py-12 text-slate-400">
+                  <FileText size={40} className="mx-auto mb-2 opacity-40 text-slate-400" />
+                  <p className="text-xs font-bold">هیچ فاکتوری با شرایط جستجو یافت نشد.</p>
+                </div>
+              ) : (
+                filteredRecentOrders.map((order) => {
+                  const isSelf = order.invoiceMode === 'self_service';
+                  const orderDate = new Date(order.createdAt);
+                  const timeStr = format(orderDate, 'HH:mm:ss');
+                  return (
+                    <div
+                      key={order.id || order.invoiceNumber}
+                      className="p-3 bg-white border border-slate-200 hover:border-slate-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition"
+                    >
+                      {/* Left: Info */}
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div
+                          className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center shrink-0 font-mono font-black text-xs ${
+                            isSelf
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-blue-50 text-blue-700 border border-blue-200'
+                          }`}
+                        >
+                          <span className="text-[10px] opacity-75">فیش</span>
+                          <span>#{order.invoiceNumber}</span>
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-extrabold text-xs text-slate-900">
+                              {isSelf ? `فیش سلف سرویس (${order.selfServiceGuests || 1} نفر)` : 'فاکتور سفارش غذا'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[10px] font-mono" dir="ltr">
+                              {timeStr}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                order.paymentMethod === 'card'
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : order.paymentMethod === 'cash'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : order.paymentMethod === 'split'
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : 'bg-rose-100 text-rose-800'
+                              }`}
+                            >
+                              {order.paymentMethod === 'card'
+                                ? `کارتخوان (${order.bankName || 'بانک'})`
+                                : order.paymentMethod === 'cash'
+                                ? 'نقدی'
+                                : order.paymentMethod === 'split'
+                                ? 'ترکیبی'
+                                : 'نسیه'}
+                            </span>
+                          </div>
+
+                          <div className="text-[11px] text-slate-600 mt-1 truncate">
+                            {order.customerName ? (
+                              <span className="font-bold ml-2">مشتری: {order.customerName} {order.customerPhone ? `(${order.customerPhone})` : ''}</span>
+                            ) : null}
+                            <span className="text-slate-500">
+                              {order.items.map((it) => `${it.menuItem.name} (${it.quantity})`).join('، ')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Amount & Actions */}
+                      <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                        <div className="text-left font-mono">
+                          <span className="text-[10px] text-slate-400 block">مبلغ فاکتور</span>
+                          <span className="font-black text-sm text-slate-900 tabular-nums">
+                            {formatCurrency(order.finalAmount)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          {/* Instant Reprint Button */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOrderToPrint(order);
+                              setTimeout(() => handlePrint(), 50);
+                              setAutoPrintNotice(`فیش #${order.invoiceNumber} مجدداً درجا چاپ شد.`);
+                            }}
+                            className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold flex items-center gap-1 shadow-xs cursor-pointer transition"
+                            title="چاپ آنی روی فیش‌پرینتر"
+                          >
+                            <Printer size={14} />
+                            <span>چاپ مجدد</span>
+                          </button>
+
+                          {/* Preview Receipt Button */}
+                          <button
+                            type="button"
+                            onClick={() => setPreviewOrder(order)}
+                            className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl cursor-pointer transition"
+                            title="مشاهده فیش"
+                          >
+                            <Eye size={15} />
+                          </button>
+
+                          {/* Edit / Delete Button (if permitted) */}
+                          {(canEditInvoice || canDeleteInvoice) && (
+                            <button
+                              type="button"
+                              onClick={() => setOrderToEditDelete(order)}
+                              className="p-2 bg-slate-100 hover:bg-amber-100 text-slate-700 hover:text-amber-800 rounded-xl cursor-pointer transition"
+                              title="ویرایش یا حذف فاکتور"
+                            >
+                              <Edit3 size={15} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs font-bold text-slate-600 shrink-0">
+              <span className="text-[11px] text-slate-500">
+                با کلیک بر روی دکمه «چاپ مجدد»، فیش درجا و بدون وقفه به پرینتر ارسال می‌شود.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowRecentOrdersModal(false)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl font-bold cursor-pointer transition"
+              >
+                بستن
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice Edit & Delete Modal */}
+      {orderToEditDelete && (
+        <InvoiceEditDeleteModal
+          order={orderToEditDelete}
+          canEdit={canEditInvoice}
+          canDelete={canDeleteInvoice}
+          onClose={() => setOrderToEditDelete(null)}
+          onOrderUpdated={() => setOrderToEditDelete(null)}
+        />
       )}
     </div>
   );
