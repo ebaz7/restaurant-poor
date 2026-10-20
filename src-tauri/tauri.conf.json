@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/tooling/cli/schema.json",
-  "productName": "Arka-POS",
-  "version": "1.2.0",
-  "identifier": "com.arkasystem.pos",
+  "productName": "Arka-POS-Enterprise-v2",
+  "version": "2.0.0",
+  "identifier": "com.arkasystem.pos.enterprise.v2",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "سامانه فروش و صندوقداری آرکا",
+        "title": "سامانه فروش و صندوقداری آرکا (نسخه اختصاصی انترپرایز v2.0)",
         "width": 1280,
         "height": 800,
         "minWidth": 960,

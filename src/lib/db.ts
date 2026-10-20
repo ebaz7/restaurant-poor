@@ -457,7 +457,7 @@ export class POSDatabase extends Dexie {
   appUsers!: Table<AppUser>;
 
   constructor() {
-    super('RestaurantPOSDB');
+    super('Arka_Enterprise_POS_DB_v2');
     this.version(1).stores({
       categories: '++id, name',
       menuItems: '++id, categoryId, name',

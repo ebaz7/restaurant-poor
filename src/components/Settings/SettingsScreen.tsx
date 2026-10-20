@@ -242,6 +242,60 @@ exit
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadCleanUninstallerBat = () => {
+    const batContent = `@echo off
+chcp 65001 >nul
+title ابزار پاکسازی نسخه‌های قدیمی و جداسازی کامل نصب - Arka Clean Setup
+color 0C
+cls
+echo ======================================================================
+echo    سامانه فروش و صندوقداری آرکا - پاکسازی نسخه قدیمی و جداسازی کامل
+echo ======================================================================
+echo.
+echo این اسکریپت تمام نسخه و آثار قبلی نرم‌افزار را از ویندوز پاک می‌کند
+echo تا نسخه جدید (Arka POS Enterprise v2) در مسیر کاملاً مجزا
+echo C:\\Program Files\\Arka-POS-Enterprise-v2 نصب شود.
+echo.
+echo ----------------------------------------------------------------------
+echo.
+set /p userConfirm="آیا برای پاکسازی نسخه قدیمی و جداسازی کامل اطمینان دارید؟ (Y/N): "
+if /i not "%userConfirm%"=="Y" (
+    echo [!] عملیات لغو شد.
+    pause
+    exit /b
+)
+echo.
+echo [*] ۱. بستن پروسه‌های قدیمی...
+taskkill /F /IM arka-pos.exe >nul 2>&1
+taskkill /F /IM Arka-POS.exe >nul 2>&1
+taskkill /F /IM tauri-app.exe >nul 2>&1
+echo [✔] پروسه‌های فعال بسته شدند.
+
+echo [*] ۲. پاکسازی پوشه‌های کش و AppData قدیمی...
+rmdir /S /Q "%LOCALAPPDATA%\\com.tauri.dev" >nul 2>&1
+rmdir /S /Q "%LOCALAPPDATA%\\com.arkasystem.pos" >nul 2>&1
+rmdir /S /Q "%LOCALAPPDATA%\\Arka-POS" >nul 2>&1
+rmdir /S /Q "%APPDATA%\\com.tauri.dev" >nul 2>&1
+rmdir /S /Q "%APPDATA%\\com.arkasystem.pos" >nul 2>&1
+rmdir /S /Q "%APPDATA%\\Arka-POS" >nul 2>&1
+echo [✔] آثار نسخه‌های قدیمی حذف گردید.
+
+echo ======================================================================
+echo    [✔] پاکسازی انجام شد!
+echo    اکنون می‌توانید فایل نصب جدید (Arka-POS-Enterprise-v2 Setup) را اجرا نمایید.
+echo ======================================================================
+echo.
+pause
+`;
+    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'cleanup-old-arka-pos.bat';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const [confirmRawReset, setConfirmRawReset] = useState(false);
   const [isResettingRaw, setIsResettingRaw] = useState(false);
 
@@ -1026,6 +1080,37 @@ exit
                     >
                       <ArrowRightLeft size={14} />
                       <span>تغییر نقش سیستم (فقط مدیر)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Independent App Installation & Isolation Setup */}
+                <div className="border-t border-slate-200 pt-3">
+                  <div className="p-3.5 bg-purple-50/80 rounded-xl border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <ShieldCheck size={20} className="text-purple-700 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-extrabold text-purple-950 text-xs">
+                            📦 نصب کاملاً مجزا و بدون تداخل با نسخه‌های قبلی سیستم (Arka POS Enterprise v2.0.0)
+                          </span>
+                          <span className="px-2 py-0.5 bg-purple-600 text-white font-bold text-[10px] rounded-full">
+                            ایزوله ۱۰۰٪
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-purple-900 leading-relaxed mt-1">
+                          این نسخه از نرم‌افزار به صورت کاملاً مستقل و در مسیر مجزای <code className="font-mono bg-purple-100 px-1 font-bold">C:\Program Files\Arka-POS-Enterprise-v2</code> و با دیتابیس اختصاصی <code className="font-mono bg-purple-100 px-1 font-bold">Arka_Enterprise_POS_DB_v2</code> نصب می‌گردد و با هیچ یک از نسخه‌های قدیمی و قبلی سیستم شما قاطی نخواهد شد.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadCleanUninstallerBat}
+                      className="px-3 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-extrabold shrink-0 flex items-center gap-1.5 shadow-xs cursor-pointer transition"
+                    >
+                      <Download size={14} />
+                      <span>دانلود اسکریپت پاکسازی نسخه قدیمی (BAT)</span>
                     </button>
                   </div>
                 </div>

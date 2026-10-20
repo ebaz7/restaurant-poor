@@ -54,9 +54,9 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ======================================================================
-echo    [✔] خروجی تائوری با موفقیت ساخته شد!
-echo    فایل نصب در مسیر زیر قرار گرفت:
-echo    src-tauri\target\release\bundle\nsis\Arka-POS_1.2.0_x64-setup.exe
+echo    [✔] خروجی انترپرایز v2 تائوری با موفقیت ساخته شد!
+echo    فایل نصب مستقل در مسیر زیر قرار گرفت:
+echo    src-tauri\target\release\bundle\nsis\Arka-POS-Enterprise-v2_2.0.0_x64-setup.exe
 echo ======================================================================
 echo.
 pause
