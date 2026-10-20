@@ -126,6 +126,28 @@ export default function SettingsScreen() {
   const handleDetectPrinters = async () => {
     setIsDetectingPrinters(true);
     try {
+      // 1. Try real Windows printers query API endpoint
+      try {
+        const res = await fetch('/api/printers/list');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ok && Array.isArray(data.printers) && data.printers.length > 0) {
+            setDetectedPrinters(data.printers);
+            if (data.printers[0]) {
+              setFormData((prev) => ({ ...prev, printerName: data.printers[0] }));
+              try {
+                window.localStorage.setItem('arka_terminal_printer', data.printers[0]);
+              } catch {}
+            }
+            showNotice('success', `${data.printers.length} پرینتر واقعی نصب‌شده روی ویندوز شناسایی گردید.`);
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2. Try Web Query API
       if (typeof window !== 'undefined' && 'queryLocalPrinters' in window) {
         const printers = await (window as any).queryLocalPrinters();
         if (Array.isArray(printers) && printers.length > 0) {
@@ -141,7 +163,7 @@ export default function SettingsScreen() {
           return;
         }
       }
-      // If Web Query API is not granted or supported, provide common thermal models
+      // 3. Fallback common thermal models
       const common = ['XP-80C', 'POS-80', 'POS-58', 'EPSON TM-T20', 'BIXOLON SRP-330', 'Rongta RP80'];
       setDetectedPrinters(common);
       showNotice(

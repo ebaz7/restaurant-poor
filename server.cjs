@@ -360,6 +360,64 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (parsedUrl.pathname === '/api/network/set-port' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const newPort = Number(payload.port);
+          if (newPort && newPort > 1000 && newPort < 65535) {
+            fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(newPort), 'utf8');
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: true, port: newPort, message: 'پورت سرور ذخیره گردید.' }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: 'شماره پورت نامعتبر است.' }));
+          }
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'خطا در ثبت پورت.' }));
+        }
+      });
+      return;
+    }
+
+    if (parsedUrl.pathname === '/api/printers/list' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store',
+      });
+      const { exec } = require('child_process');
+      if (os.platform() === 'win32') {
+        exec('powershell -NoProfile -Command "Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name"', { timeout: 4000 }, (err, stdout) => {
+          if (!err && stdout) {
+            const printers = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            res.end(JSON.stringify({ ok: true, printers }));
+          } else {
+            exec('wmic printer get name', { timeout: 3000 }, (err2, stdout2) => {
+              if (!err2 && stdout2) {
+                const printers = stdout2.split(/\r?\n/).map(s => s.trim()).filter(s => s && s !== 'Name');
+                res.end(JSON.stringify({ ok: true, printers }));
+              } else {
+                res.end(JSON.stringify({ ok: false, printers: [] }));
+              }
+            });
+          }
+        });
+      } else {
+        exec('lpstat -e', { timeout: 3000 }, (err, stdout) => {
+          if (!err && stdout) {
+            const printers = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            res.end(JSON.stringify({ ok: true, printers }));
+          } else {
+            res.end(JSON.stringify({ ok: false, printers: [] }));
+          }
+        });
+      }
+      return;
+    }
+
     if (parsedUrl.pathname === '/api/db/sync' && req.method === 'POST') {
       let body = '';
       req.on('data', (chunk) => { body += chunk.toString(); });

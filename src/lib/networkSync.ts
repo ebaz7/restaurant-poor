@@ -502,4 +502,26 @@ export async function clearCacheAndHardReload() {
   window.location.reload();
 }
 
+/**
+ * Sends request to server to save a custom port configuration
+ */
+export async function updateServerPort(port: number): Promise<{ ok: boolean; message?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/network/set-port', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, message: data.message || 'پورت ذخیره گردید.' };
+    }
+    const err = await res.json().catch(() => ({}));
+    return { ok: false, error: err.error || 'خطا در ثبت پورت.' };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || 'ارتباط با سرور امکان‌پذیر نیست.' };
+  }
+}
+
+
 

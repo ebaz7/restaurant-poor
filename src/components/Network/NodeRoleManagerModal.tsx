@@ -17,6 +17,9 @@ import {
   X,
   Radio,
   ExternalLink,
+  Globe,
+  Settings2,
+  Activity,
 } from 'lucide-react';
 import { db, AppSettings } from '../../lib/db';
 import {
@@ -28,6 +31,7 @@ import {
   setServerUrl,
   pullFromCentralServer,
   pushToCentralServer,
+  updateServerPort,
 } from '../../lib/networkSync';
 
 interface NodeRoleManagerModalProps {
@@ -56,8 +60,19 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
   const [isLoadingNetInfo, setIsLoadingNetInfo] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
+  // Server Custom Port State
+  const [serverCustomPort, setServerCustomPort] = useState<number | string>(4040);
+  const [isSavingPort, setIsSavingPort] = useState(false);
+  const [portNotice, setPortNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Client Host & Port Config State
+  const [hostType, setHostType] = useState<'ip' | 'domain'>('ip');
+  const [clientHostInput, setClientHostInput] = useState('192.168.1.100');
+  const [clientPortInput, setClientPortInput] = useState('4040');
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [testConnResult, setTestConnResult] = useState<{ ok: boolean; message: string; pingMs?: number } | null>(null);
+
   // Switch Workflow State
-  const [isSwitching, setIsSwitching] = useState(false);
   const [targetRole, setTargetRole] = useState<'server' | 'client'>(
     currentRole === 'server' ? 'client' : 'server'
   );
@@ -86,6 +101,8 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
       setStatusMessage(null);
       setAdminPin('');
       setAdminPinError('');
+      setPortNotice(null);
+      setTestConnResult(null);
 
       // Fetch network info
       setIsLoadingNetInfo(true);
@@ -93,7 +110,14 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
         .then((res) => {
           if (res.ok) {
             setNetworkInfo(res);
-            if (activeRole === 'client' && res.primaryUrl) {
+            if (res.port) {
+              setServerCustomPort(res.port);
+              setClientPortInput(String(res.port));
+            }
+            if (res.localIps && res.localIps.length > 0) {
+              setClientHostInput(res.localIps[0]);
+            }
+            if (res.primaryUrl) {
               setTargetServerUrl(res.primaryUrl);
             }
           }
@@ -111,6 +135,74 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
       setTimeout(() => setCopiedUrl(false), 2500);
     } catch {
       // fallback
+    }
+  };
+
+  const handleSaveCustomPort = async () => {
+    const portNum = Number(serverCustomPort);
+    if (!portNum || portNum < 1024 || portNum > 65535) {
+      setPortNotice({ type: 'error', text: 'لطفاً شماره پورت معتبر بین ۱۰۲۴ تا ۶۵۵۳۵ وارد فرمایید.' });
+      return;
+    }
+
+    setIsSavingPort(true);
+    setPortNotice(null);
+    try {
+      const res = await updateServerPort(portNum);
+      if (res.ok) {
+        setPortNotice({ type: 'success', text: `پورت سرور با موفقیت روی ${portNum} تنظیم گردید.` });
+        setNetworkInfo((prev) => ({
+          ...prev,
+          port: portNum,
+          primaryUrl: prev.localIps && prev.localIps.length > 0 ? `http://${prev.localIps[0]}:${portNum}` : `http://localhost:${portNum}`,
+        }));
+      } else {
+        setPortNotice({ type: 'error', text: res.error || 'خطا در ثبت پورت سرور.' });
+      }
+    } catch (e: any) {
+      setPortNotice({ type: 'error', text: e?.message || 'خطا در ذخیره پورت.' });
+    } finally {
+      setIsSavingPort(false);
+    }
+  };
+
+  const handleTestClientConnection = async () => {
+    let cleanHost = clientHostInput.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const cleanPort = clientPortInput.trim();
+    if (!cleanHost) {
+      setTestConnResult({ ok: false, message: 'لطفاً آدرس آی‌پی یا نام دامنه سرور را وارد فرمایید.' });
+      return;
+    }
+
+    const constructedUrl = cleanPort ? `http://${cleanHost}:${cleanPort}` : `http://${cleanHost}`;
+    setIsTestingConn(true);
+    setTestConnResult(null);
+
+    const startTime = performance.now();
+    try {
+      const res = await testServerConnection(constructedUrl);
+      const duration = Math.round(performance.now() - startTime);
+
+      if (res.ok) {
+        setTargetServerUrl(constructedUrl);
+        setTestConnResult({
+          ok: true,
+          message: `اتصال موفقیت‌آمیز به سرور برقرار شد (ویرایش دیتابیس: ${res.rev || 1})`,
+          pingMs: duration,
+        });
+      } else {
+        setTestConnResult({
+          ok: false,
+          message: res.error || 'عدم امکان برقراری ارتباط با سرور مقصد.',
+        });
+      }
+    } catch (e: any) {
+      setTestConnResult({
+        ok: false,
+        message: e?.message || 'خطا در شبکه یا پاسخ ندادن سرور.',
+      });
+    } finally {
+      setIsTestingConn(false);
     }
   };
 
@@ -203,7 +295,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
       if (targetRole === 'client') {
         const cleanTarget = targetServerUrl.trim().replace(/\/+$/, '');
         if (!cleanTarget) {
-          throw new Error('لطفاً آدرس IP سرور مرکزی مقصد را وارد فرمایید.');
+          throw new Error('لطفاً آدرس IP یا دامنه سرور مرکزی مقصد را وارد فرمایید.');
         }
 
         setStatusMessage('در حال سنجش ارتباط با سرور مرکزی مقصد...');
@@ -258,7 +350,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
       dir="rtl"
     >
-      <div className="bg-white rounded-3xl max-w-xl w-full p-5 md:p-6 shadow-2xl border border-slate-200 space-y-4">
+      <div className="bg-white rounded-3xl max-w-2xl w-full p-5 md:p-6 shadow-2xl border border-slate-200 space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2.5">
@@ -273,7 +365,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm sm:text-base font-black text-slate-900 flex items-center gap-2">
-                <span>مدیریت نقش سیستم در شبکه (سرور مرکزی یا کلاینت)</span>
+                <span>پیکربندی هوشمند شبکه، آی‌پی، پورت و نقش سیستم</span>
                 <span
                   className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
                     currentRole === 'server'
@@ -281,11 +373,11 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                       : 'bg-blue-600 text-white'
                   }`}
                 >
-                  {currentRole === 'server' ? 'سرور مرکزی (Host)' : 'کلاینت / صندوق فرعی'}
+                  {currentRole === 'server' ? '🟢 سرور مرکزی (Host)' : '🔵 کلاینت / صندوق فرعی'}
                 </span>
               </h2>
               <p className="text-[11px] text-slate-500">
-                تعیین وضعیت این کامپیوتر به عنوان میزبان اصلی دیتابیس یا پایانه متصل به شبکه
+                تشخیص خودکار IP شبکه، تنظیم پورت، اشتراک‌گذاری اتوماتیک و اتصال دستی کلاینت‌ها
               </p>
             </div>
           </div>
@@ -302,79 +394,132 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
         {switchStep === 'idle' && (
           <div className="space-y-4 text-xs">
             {currentRole === 'server' ? (
-              /* SERVER MODE BANNER */
-              <div className="p-4 rounded-2xl bg-emerald-50/80 border-2 border-emerald-200 space-y-3">
+              /* SERVER MODE BANNER & PORT SETUP */
+              <div className="p-4 rounded-2xl bg-emerald-50/80 border-2 border-emerald-200 space-y-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2 text-emerald-900 font-black text-sm">
                     <Radio size={18} className="animate-pulse text-emerald-600 shrink-0" />
-                    <span>این کامپیوتر در حال حاضر «سرور مرکزی رستوران» است</span>
+                    <span>این کامپیوتر «سرور مرکزی اصلی سیستم» است</span>
                   </div>
-                  <span className="px-2 py-0.5 bg-emerald-200/70 text-emerald-900 text-[10px] font-bold rounded-lg shrink-0">
-                    دیتابیس اصلی روی این دستگاه است
+                  <span className="px-2.5 py-0.5 bg-emerald-600 text-white text-[10px] font-bold rounded-lg shrink-0">
+                    پایگاه داده اصلی و توزیع‌کننده شبکه
                   </span>
                 </div>
 
                 <p className="text-slate-600 leading-relaxed text-[11px]">
-                  سایر کامپیوترهای صندوق، تبلت‌های سالن‌دار و گوشی‌های متصل به مودم Wi-Fi می‌توانند با باز کردن آدرس زیر در مرورگر به این سرور وصل شوند:
+                  نرم‌افزار به‌صورت اتوماتیک آدرس‌های IP این دستگاه در شبکه محلی را شناسایی کرده است. تمام صندوق‌ها، تبلت‌ها و گوشی‌ها می‌توانند با آدرس زیر به این سرور وصل شوند:
                 </p>
 
-                {/* LAN URL Box with 1-Click Copy */}
-                <div className="bg-white p-3 rounded-xl border border-emerald-300 flex items-center justify-between gap-2 shadow-2xs">
-                  <div className="font-mono text-xs sm:text-sm font-black text-emerald-950 truncate" dir="ltr">
-                    {effectiveServerUrl}
+                {/* Primary Detected Server Address */}
+                <div className="bg-white p-3 rounded-xl border border-emerald-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
+                  <div>
+                    <span className="text-[10px] text-emerald-800 font-bold block mb-0.5">آدرس اصلی اشتراک‌گذاری در شبکه:</span>
+                    <div className="font-mono text-xs sm:text-sm font-black text-emerald-950 truncate" dir="ltr">
+                      {effectiveServerUrl}
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleCopy(effectiveServerUrl)}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-xs flex items-center gap-1 shrink-0 transition cursor-pointer"
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer shadow-xs"
                   >
-                    {copiedUrl ? <Check size={13} /> : <Copy size={13} />}
+                    {copiedUrl ? <Check size={14} /> : <Copy size={14} />}
                     <span>{copiedUrl ? 'کپی شد!' : 'کپی آدرس شبکه'}</span>
                   </button>
                 </div>
 
-                {networkInfo.localIps && networkInfo.localIps.length > 1 && (
-                  <div className="text-[10.5px] text-emerald-800 space-y-1 pt-1 border-t border-emerald-200">
-                    <span className="font-bold">سایر کارت‌های شبکه/آی‌پی‌ها:</span>
-                    <div className="flex flex-wrap gap-1.5 mt-0.5">
-                      {networkInfo.localIps.map((ip) => (
-                        <button
-                          key={ip}
-                          type="button"
-                          onClick={() => handleCopy(`http://${ip}:${networkInfo.port || 4040}`)}
-                          className="px-2 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded font-mono text-[10px] cursor-pointer"
-                          dir="ltr"
-                        >
-                          http://{ip}:{networkInfo.port || 4040}
-                        </button>
-                      ))}
+                {/* Detected Local IP Addresses List */}
+                {networkInfo.localIps && networkInfo.localIps.length > 0 && (
+                  <div className="text-[11px] text-emerald-900 space-y-1.5 pt-2 border-t border-emerald-200/80">
+                    <span className="font-bold flex items-center gap-1">
+                      <Wifi size={13} className="text-emerald-700" />
+                      <span>آی‌پی‌های شناسایی‌شده روی کارت‌های شبکه این کامپیوتر:</span>
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {networkInfo.localIps.map((ip) => {
+                        const fullUrl = `http://${ip}:${networkInfo.port || 4040}`;
+                        return (
+                          <button
+                            key={ip}
+                            type="button"
+                            onClick={() => handleCopy(fullUrl)}
+                            className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-950 border border-emerald-300 rounded-lg font-mono text-xs font-bold cursor-pointer transition flex items-center gap-1"
+                            dir="ltr"
+                            title="برای کپی آدرس کلیک کنید"
+                          >
+                            <span>{ip}</span>
+                            <span className="text-[10px] text-emerald-600 font-sans">(:{networkInfo.port || 4040})</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
+
+                {/* Custom Port Configuration */}
+                <div className="p-3 bg-white rounded-xl border border-emerald-300 space-y-2 pt-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <label className="font-extrabold text-emerald-950 text-xs flex items-center gap-1.5">
+                      <Settings2 size={15} className="text-emerald-700" />
+                      <span>تنظیم پورت دلخواه سرور (Server Port):</span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={serverCustomPort}
+                        onChange={(e) => setServerCustomPort(e.target.value)}
+                        placeholder="4040"
+                        className="w-24 px-3 py-1.5 bg-emerald-50/50 border border-emerald-300 rounded-lg font-mono text-center font-bold text-xs text-emerald-950 focus:outline-hidden focus:border-emerald-600"
+                        dir="ltr"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveCustomPort}
+                        disabled={isSavingPort}
+                        className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs shrink-0 cursor-pointer transition flex items-center gap-1"
+                      >
+                        {isSavingPort ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
+                        <span>ذخیره پورت</span>
+                      </button>
+                    </div>
+                  </div>
+                  {portNotice && (
+                    <p className={`text-[10.5px] font-bold ${portNotice.type === 'success' ? 'text-emerald-700' : 'text-rose-600'}`}>
+                      {portNotice.text}
+                    </p>
+                  )}
+                  <span className="text-[10px] text-slate-500 block leading-relaxed">
+                    پورت پیش‌فرض نرم‌افزار ۴۰۴۰ یا ۳۰۰۰ است. در صورت تمایل می‌توانید پورت شبکه دلخواه خود را تنظیم فرمایید.
+                  </span>
+                </div>
               </div>
             ) : (
               /* CLIENT MODE BANNER */
-              <div className="p-4 rounded-2xl bg-blue-50/80 border-2 border-blue-200 space-y-3">
+              <div className="p-4 rounded-2xl bg-blue-50/80 border-2 border-blue-200 space-y-3.5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2 text-blue-900 font-black text-sm">
                     <Wifi size={18} className="text-blue-600 shrink-0" />
-                    <span>این کامپیوتر در حال حاضر «کلاینت / صندوق فرعی» است</span>
+                    <span>این کامپیوتر «کلاینت / صندوق فرعی» است</span>
                   </div>
-                  <span className="px-2 py-0.5 bg-blue-200/70 text-blue-900 text-[10px] font-bold rounded-lg shrink-0">
-                    همگام با سرور مرکزی
+                  <span className="px-2.5 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded-lg shrink-0">
+                    متصل به سرور مرکزی
                   </span>
                 </div>
 
                 <p className="text-slate-600 leading-relaxed text-[11px]">
-                  این پایانه تمامی فاکتورها، گزارش‌ها و اطلاعات را به صورت زنده با سرور مرکزی شبکه تبادل و همگام‌سازی می‌نماید.
+                  این سیستم تمام اطلاعات فروش، مشتریان و فاکتورها را به صورت زنده با آی‌پی/دامنه سرور مرکزی زیر همگام می‌کند:
                 </p>
 
                 <div className="bg-white p-3 rounded-xl border border-blue-300 flex items-center justify-between gap-2 shadow-2xs">
-                  <div className="font-mono text-xs sm:text-sm font-bold text-blue-950 truncate" dir="ltr">
-                    آدرس سرور مرکزی: {effectiveServerUrl}
+                  <div>
+                    <span className="text-[10px] text-blue-700 block font-bold">آدرس سرور مرکزی تنظیم‌شده:</span>
+                    <div className="font-mono text-xs sm:text-sm font-bold text-blue-950 truncate" dir="ltr">
+                      {effectiveServerUrl}
+                    </div>
                   </div>
-                  <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 font-bold text-[10px] rounded-lg">
-                    🟢 متصل
+                  <span className="px-3 py-1.5 bg-emerald-100 text-emerald-900 font-bold text-xs rounded-xl flex items-center gap-1 border border-emerald-200">
+                    <Activity size={13} className="text-emerald-600" />
+                    <span>🟢 متصل و سینک</span>
                   </span>
                 </div>
               </div>
@@ -382,33 +527,33 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
 
             {/* Role Switching Trigger Card */}
             <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h4 className="font-extrabold text-slate-900 flex items-center gap-1.5">
-                    <ArrowRightLeft size={15} className="text-slate-600" />
-                    <span>تغییر نقش این کامپیوتر در شبکه</span>
+                  <h4 className="font-extrabold text-slate-900 flex items-center gap-1.5 text-xs sm:text-sm">
+                    <ArrowRightLeft size={16} className="text-slate-700" />
+                    <span>تغییر وضعیت سرور / کلاینت (با احراز هویت مدیر)</span>
                   </h4>
                   <p className="text-[11px] text-slate-500 mt-0.5">
                     {currentRole === 'server'
-                      ? 'تبدیل این سیستم به کلاینت و اتصال به یک سرور مرکزی دیگر'
-                      : 'ارتقای این سیستم به عنوان سرور مرکزی اصلی شبکه'}
+                      ? 'تبدیل این دستگاه به کلاینت و اتصال به آی‌پی/دامنه یک سرور مرکزی دیگر'
+                      : 'ارتقای این دستگاه به عنوان سرور مرکزی اصلی شبکه'}
                   </p>
                 </div>
 
                 <button
                   type="button"
                   onClick={startSwitchWorkflow}
-                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer shrink-0"
+                  className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
                 >
                   <Lock size={13} />
-                  <span>تغییر نقش (نیاز به تایید مدیر)</span>
+                  <span>تغییر نقش سیستم</span>
                 </button>
               </div>
 
               <div className="flex items-center gap-2 text-[11px] text-amber-800 bg-amber-50 p-2.5 rounded-xl border border-amber-200">
                 <ShieldCheck size={16} className="text-amber-600 shrink-0" />
                 <span>
-                  <strong>پروتکل محافظتی فعال:</strong> پیش از هرگونه تغییر، به طور خودکار از کل داده‌های فاکتورها و حسابداری نسخه پشتیبان مستقل گرفته می‌شود تا دیتابیس دچار تداخل نشود.
+                  <strong>محافظت از دیتابیس:</strong> قبل از تغییر نقش، یک نسخه پشتیبان محافظتی کامل تهیه می‌شود تا اطلاعات سیستم به هیچ عنوان دستخوش تغییر یا نابودی نشود.
                 </span>
               </div>
             </div>
@@ -423,7 +568,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 <Lock size={16} />
                 <span>احراز هویت مدیر سیستم</span>
               </div>
-              <p className="text-[11px] text-amber-800">
+              <p className="text-[11px] text-amber-800 leading-relaxed">
                 تغییر نقش سیستم در شبکه بر روند ذخیره‌سازی داده‌های رستوران اثر مستقیم دارد و تنها توسط مدیر مجاز است.
               </p>
             </div>
@@ -500,7 +645,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-sm"
               >
                 {isProcessing ? <RefreshCw size={14} className="animate-spin" /> : <HardDrive size={14} />}
-                <span>ایجاد پشتیبان ایمنی و ورود به مرحله تغییر نقش</span>
+                <span>ایجاد پشتیبان ایمنی و ورود به مرحله تنظیمات</span>
               </button>
               <button
                 type="button"
@@ -553,7 +698,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
               </div>
             )}
 
-            {/* Target Role Options */}
+            {/* Target Role Selection */}
             <div className="space-y-3 pt-1">
               <label className="block font-black text-slate-900 text-xs">
                 نقش جدید مورد نظر برای این سیستم:
@@ -572,12 +717,12 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span className="font-extrabold text-slate-900 flex items-center gap-1.5">
                       <Server size={15} className="text-emerald-600" />
-                      <span>سرور مرکزی (Master)</span>
+                      <span>سرور مرکزی (Master Host)</span>
                     </span>
                     {targetRole === 'server' && <Check size={14} className="text-emerald-600" />}
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    داده‌ها روی این دستگاه ذخیره شده و بقیه به آن وصل می‌شوند.
+                    داده‌ها روی این دستگاه ذخیره شده و سایر صندوق‌ها به آن وصل می‌شوند.
                   </p>
                 </button>
 
@@ -598,28 +743,108 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                     {targetRole === 'client' && <Check size={14} className="text-blue-600" />}
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    به یک سرور دیگر در شبکه وصل شده و اطلاعات با آن همگام می‌شود.
+                    به یک آی‌پی یا دامنه سرور دیگر متصل شده و اطلاعات همگام می‌گردد.
                   </p>
                 </button>
               </div>
 
-              {/* If Target is Client, specify Target Server IP/URL */}
+              {/* If Target is Client, Config Host/IP & Port */}
               {targetRole === 'client' && (
-                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-                  <label className="block font-bold text-slate-800 text-[11.5px]">
-                    آدرس IP سرور مرکزی که این دستگاه باید به آن متصل شود:
-                  </label>
-                  <input
-                    type="text"
-                    value={targetServerUrl}
-                    onChange={(e) => setTargetServerUrl(e.target.value)}
-                    placeholder="مثلاً: http://192.168.1.100:4040 یا https://foodmix.ir"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-blue-500"
-                    dir="ltr"
-                  />
-                  <p className="text-[10.5px] text-slate-500">
-                    سیستم قبل از اعمال تغییرات، حتماً آنلاین بودن سرور مقصد را بررسی و آزمایش می‌کند.
-                  </p>
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="font-extrabold text-slate-900 text-xs">
+                      تنظیمات آدرس اتصال به سرور مرکزی:
+                    </label>
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setHostType('ip')}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer transition ${
+                          hostType === 'ip' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        آی‌پی شبکه محلی (LAN)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHostType('domain')}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer transition ${
+                          hostType === 'domain' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        دامنه / اینترنت (Domain)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-2 space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-700">
+                        {hostType === 'ip' ? 'آدرس آی‌پی (IP Address):' : 'نام دامنه (Domain Name):'}
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={clientHostInput}
+                          onChange={(e) => setClientHostInput(e.target.value)}
+                          placeholder={hostType === 'ip' ? '192.168.1.50' : 'pos.myrestaurant.local'}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-blue-500"
+                          dir="ltr"
+                        />
+                        {hostType === 'domain' && (
+                          <Globe size={14} className="absolute right-3 top-2.5 text-slate-400" />
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-700">
+                        پورت سرور (Port):
+                      </label>
+                      <input
+                        type="text"
+                        value={clientPortInput}
+                        onChange={(e) => setClientPortInput(e.target.value)}
+                        placeholder="4040"
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-center text-xs font-bold text-slate-900 focus:outline-hidden focus:border-blue-500"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestClientConnection}
+                      disabled={isTestingConn}
+                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                    >
+                      {isTestingConn ? <RefreshCw size={13} className="animate-spin" /> : <Activity size={13} />}
+                      <span>تست اتصال و سنجش پینگ سرور</span>
+                    </button>
+
+                    <div className="text-[11px] text-slate-600 font-mono" dir="ltr">
+                      آدرس کامل: <strong className="text-blue-900">http://{clientHostInput.trim()}:{clientPortInput.trim()}</strong>
+                    </div>
+                  </div>
+
+                  {testConnResult && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                        testConnResult.ok
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-rose-50 border-rose-200 text-rose-800'
+                      }`}
+                    >
+                      {testConnResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                      <span>{testConnResult.message}</span>
+                      {testConnResult.pingMs !== undefined && (
+                        <span className="font-mono text-[10px] bg-white px-2 py-0.5 rounded border border-emerald-300 text-emerald-950 mr-auto">
+                          پینگ: {testConnResult.pingMs}ms
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -639,7 +864,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-sm"
               >
                 {isProcessing ? <RefreshCw size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-                <span>تایید نهایی و اعمال نقش جدید</span>
+                <span>تایید نهایی و اعمال تغییرات شبکه</span>
               </button>
               <button
                 type="button"
@@ -665,7 +890,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 نقش سیستم با موفقیت به «{currentRole === 'server' ? 'سرور مرکزی' : 'کلاینت فرعی'}» تغییر یافت!
               </h3>
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-                تمام تنظیمات و فرآیند ایمنی دیتابیس با موفقیت اعمال گردید. کلیه اتصالات شبکه و همگام‌سازی برقرار است.
+                تمام تنظیمات شبکه، پورت و فرآیند ایمنی دیتابیس با موفقیت اعمال گردید. کلیه اتصالات شبکه و همگام‌سازی برقرار است.
               </p>
             </div>
 
