@@ -11,11 +11,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   className = '',
   variant = 'badge',
 }) => {
-  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const { isInstallable, isInstalled, isTauri, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
 
-  if (isInstalled) {
+  if (isInstalled || isTauri) {
     return null;
   }
 

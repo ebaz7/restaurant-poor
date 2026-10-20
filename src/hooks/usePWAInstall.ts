@@ -8,14 +8,32 @@ interface BeforeInstallPromptEvent extends Event {
 export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [isTauri, setIsTauri] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
-    // Detect standalone display mode
+    // Detect Tauri environment
+    const isTauriEnv =
+      typeof window !== 'undefined' &&
+      ('__TAURI__' in window ||
+        '__TAURI_INTERNALS__' in window ||
+        '__TAURI_METADATA__' in window ||
+        window.location.protocol === 'tauri:' ||
+        window.location.protocol === 'asset:' ||
+        /tauri/i.test(window.navigator.userAgent));
+
+    setIsTauri(isTauriEnv);
+
+    // Detect standalone display mode or explicitly saved install state
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
-    setIsInstalled(isStandalone);
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true ||
+      localStorage.getItem('arka_pwa_installed') === 'true';
+
+    // If in Tauri desktop app or standalone PWA, mark as installed
+    if (isTauriEnv || isStandalone) {
+      setIsInstalled(true);
+    }
 
     // Detect iOS devices
     const userAgent = window.navigator.userAgent.toLowerCase();
@@ -23,6 +41,10 @@ export function usePWAInstall() {
     setIsIOS(isIOSDevice);
 
     const handleBeforeInstallPrompt = (e: Event) => {
+      // If running inside Tauri desktop app, never capture or offer install prompt
+      if (isTauriEnv) {
+        return;
+      }
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
@@ -30,6 +52,11 @@ export function usePWAInstall() {
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setDeferredPrompt(null);
+      try {
+        localStorage.setItem('arka_pwa_installed', 'true');
+      } catch {
+        // ignore storage errors
+      }
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -48,14 +75,20 @@ export function usePWAInstall() {
     if (outcome === 'accepted') {
       setIsInstalled(true);
       setDeferredPrompt(null);
+      try {
+        localStorage.setItem('arka_pwa_installed', 'true');
+      } catch {
+        // ignore storage errors
+      }
       return true;
     }
     return false;
   };
 
   return {
-    isInstallable: !!deferredPrompt,
-    isInstalled,
+    isInstallable: !isTauri && !isInstalled && !!deferredPrompt,
+    isInstalled: isTauri || isInstalled,
+    isTauri,
     isIOS,
     install,
   };

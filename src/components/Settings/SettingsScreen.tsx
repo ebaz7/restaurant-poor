@@ -19,7 +19,14 @@ import {
   getCurrencyLabel,
   optimizeDatabaseStorage,
 } from '../../lib/utils';
-import { notifyRawResetToCentralServer, pushToCentralServer } from '../../lib/networkSync';
+import {
+  notifyRawResetToCentralServer,
+  pushToCentralServer,
+  getNodeRole,
+  fetchServerNetworkInfo,
+  updateServerPort,
+  testServerConnection,
+} from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { PWAInstallButton } from '../Common/PWAInstallButton';
 import {
@@ -55,9 +62,15 @@ import {
   Radio,
   Wifi,
   ArrowRightLeft,
+  Globe,
+  Activity,
+  Copy,
+  Settings2,
+  RefreshCw,
+  ArrowLeft,
 } from 'lucide-react';
+import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { NodeRoleManagerModal } from '../Network/NodeRoleManagerModal';
-import { getNodeRole } from '../../lib/networkSync';
 
 const ROLE_PRESETS: Array<{
   label: string;
@@ -92,20 +105,130 @@ const ROLE_PRESETS: Array<{
 ];
 
 export default function SettingsScreen() {
+  const { isInstalled, isTauri } = usePWAInstall();
   const settings = useLiveQuery(() => db.settings.toCollection().first());
   const appUsers = useLiveQuery(() => db.appUsers.toArray()) || [];
 
-  const [activeTab, setActiveTab] = useState<'general' | 'users' | 'backup'>('general');
+  const [activeTab, setActiveTab] = useState<'network' | 'general' | 'users' | 'backup'>('network');
   const [formData, setFormData] = useState<Partial<AppSettings>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [isSendingBot, setIsSendingBot] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
 
-  // Network Node Role & Printer Intelligence
+  // Network Engine & Printer Intelligence State
   const [showNodeRoleModal, setShowNodeRoleModal] = useState(false);
   const [nodeRole, setNodeRoleState] = useState<'server' | 'client'>(getNodeRole());
   const [detectedPrinters, setDetectedPrinters] = useState<string[]>([]);
   const [isDetectingPrinters, setIsDetectingPrinters] = useState(false);
+
+  const [networkInfo, setNetworkInfo] = useState<{
+    hostname?: string;
+    port?: number;
+    localIps?: string[];
+    primaryUrl?: string;
+    rev?: number;
+  }>({});
+  const [serverCustomPort, setServerCustomPort] = useState<number | string>(4040);
+  const [isSavingPort, setIsSavingPort] = useState(false);
+  const [portNotice, setPortNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  // Client Connection Config State
+  const [hostType, setHostType] = useState<'ip' | 'domain'>('ip');
+  const [clientHostInput, setClientHostInput] = useState('192.168.1.100');
+  const [clientPortInput, setClientPortInput] = useState('4040');
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [testConnResult, setTestConnResult] = useState<{ ok: boolean; message: string; pingMs?: number } | null>(null);
+
+  useEffect(() => {
+    fetchServerNetworkInfo().then((res) => {
+      if (res.ok) {
+        setNetworkInfo(res);
+        if (res.port) {
+          setServerCustomPort(res.port);
+          setClientPortInput(String(res.port));
+        }
+        if (res.localIps && res.localIps.length > 0) {
+          setClientHostInput(res.localIps[0]);
+        }
+      }
+    });
+  }, []);
+
+  const handleCopyText = (text: string) => {
+    try {
+      navigator.clipboard.writeText(text);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2500);
+    } catch {}
+  };
+
+  const handleSaveCustomPort = async () => {
+    const portNum = Number(serverCustomPort);
+    if (!portNum || portNum < 1024 || portNum > 65535) {
+      setPortNotice({ type: 'error', text: 'لطفاً شماره پورت معتبر بین ۱۰۲۴ تا ۶۵۵۳۵ وارد فرمایید.' });
+      return;
+    }
+
+    setIsSavingPort(true);
+    setPortNotice(null);
+    try {
+      const res = await updateServerPort(portNum);
+      if (res.ok) {
+        setPortNotice({ type: 'success', text: `پورت سرور با موفقیت روی ${portNum} تنظیم گردید.` });
+        setNetworkInfo((prev) => ({
+          ...prev,
+          port: portNum,
+          primaryUrl: prev.localIps && prev.localIps.length > 0 ? `http://${prev.localIps[0]}:${portNum}` : `http://localhost:${portNum}`,
+        }));
+      } else {
+        setPortNotice({ type: 'error', text: res.error || 'خطا در ثبت پورت سرور.' });
+      }
+    } catch (e: any) {
+      setPortNotice({ type: 'error', text: e?.message || 'خطا در ذخیره پورت.' });
+    } finally {
+      setIsSavingPort(false);
+    }
+  };
+
+  const handleTestClientConnection = async () => {
+    let cleanHost = clientHostInput.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const cleanPort = clientPortInput.trim();
+    if (!cleanHost) {
+      setTestConnResult({ ok: false, message: 'لطفاً آدرس آی‌پی یا نام دامنه سرور را وارد فرمایید.' });
+      return;
+    }
+
+    const constructedUrl = cleanPort ? `http://${cleanHost}:${cleanPort}` : `http://${cleanHost}`;
+    setIsTestingConn(true);
+    setTestConnResult(null);
+
+    const startTime = performance.now();
+    try {
+      const res = await testServerConnection(constructedUrl);
+      const duration = Math.round(performance.now() - startTime);
+
+      if (res.ok) {
+        setTestConnResult({
+          ok: true,
+          message: `ارتباط موفقیت‌آمیز با سرور برقرار شد (ویرایش دیتابیس: ${res.rev || 1})`,
+          pingMs: duration,
+        });
+      } else {
+        setTestConnResult({
+          ok: false,
+          message: res.error || 'عدم امکان برقراری ارتباط با سرور مقصد.',
+        });
+      }
+    } catch (e: any) {
+      setTestConnResult({
+        ok: false,
+        message: e?.message || 'خطا در شبکه یا پاسخ ندادن سرور.',
+      });
+    } finally {
+      setIsTestingConn(false);
+    }
+  };
 
   const handleOptimizeDatabase = async () => {
     setIsOptimizing(true);
@@ -314,6 +437,48 @@ pause
     const link = document.createElement('a');
     link.href = url;
     link.download = 'cleanup-old-arka-pos.bat';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadFirewallScript = () => {
+    const targetPort = serverCustomPort || networkInfo.port || 4040;
+    const batContent = `@echo off
+chcp 65001 >nul
+title تنظیم خودکار فایروال ویندوز - Arka POS Server Firewall Rule
+color 0A
+cls
+echo ======================================================================
+echo    سامانه فروش و صندوقداری آرکا - باز کردن پورت ${targetPort} در فایروال ویندوز
+echo ======================================================================
+echo.
+echo این اسکریپت پورت شبکه ${targetPort} را در فایروال ویندوز (Windows Firewall) باز می‌کند
+echo تا سایر صندوق‌ها، کلاینت‌ها، تبلت‌ها و گوشی‌های موجود در شبکه محلی بدون مانع متصل شوند.
+echo.
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [!] خطا: این فایل باید به صورت Admin اجرا شود.
+    echo لطفاً روی فایل راست کلیک کرده و گزینه Run as Administrator را انتخاب نمایید.
+    echo.
+    pause
+    exit /b
+)
+echo [*] در حال ایجاد قانون ورودی (Inbound Rule) برای پورت TCP ${targetPort}...
+netsh advfirewall firewall delete rule name="Arka POS Server Port ${targetPort}" >nul 2>&1
+netsh advfirewall firewall add rule name="Arka POS Server Port ${targetPort}" dir=in action=allow protocol=TCP localport=${targetPort}
+echo.
+echo ======================================================================
+echo    [✔] پورت ${targetPort} با موفقیت در فایروال ویندوز آزاد گردید!
+echo    اکنون کلاینت‌های شبکه می‌توانند بدون مانع به این سرور متصل شوند.
+echo ======================================================================
+echo.
+pause
+`;
+    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `open-firewall-port-${targetPort}.bat`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -680,6 +845,18 @@ pause
           <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
             <button
               type="button"
+              onClick={() => setActiveTab('network')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                activeTab === 'network'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-slate-700 hover:bg-white/60'
+              }`}
+            >
+              <Wifi size={14} />
+              <span>۱. شبکه، IP سرور، پورت و پرینترها</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveTab('general')}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
                 activeTab === 'general'
@@ -688,7 +865,7 @@ pause
               }`}
             >
               <Store size={14} />
-              <span>۱. فروشگاه و خام‌سازی</span>
+              <span>۲. مشخصات فروشگاه و تنظیمات سلف</span>
             </button>
             <button
               type="button"
@@ -700,7 +877,7 @@ pause
               }`}
             >
               <Shield size={14} />
-              <span>۲. کاربران و سطح دسترسی</span>
+              <span>۳. کاربران و سطح دسترسی</span>
             </button>
             <button
               type="button"
@@ -712,7 +889,7 @@ pause
               }`}
             >
               <Bot size={14} />
-              <span>۳. بات بله/تلگرام و بکاپ</span>
+              <span>۴. بات بله/تلگرام و بکاپ</span>
             </button>
           </div>
         </div>
@@ -737,9 +914,421 @@ pause
             </div>
           )}
 
-          {/* TAB 1: GENERAL & 100% RAW RESET */}
+          {/* TAB 1: NETWORK ENGINE, SERVER IP, CUSTOM PORT, CLIENT SETUP & WINDOWS PRINTERS */}
+          {activeTab === 'network' && (
+            <div className="space-y-4">
+              {/* SERVER VS CLIENT ROLE CARD */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 md:p-5 space-y-4">
+                <div
+                  className={`p-4 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                    nodeRole === 'server'
+                      ? 'bg-emerald-50/80 border-emerald-300'
+                      : 'bg-blue-50/80 border-blue-300'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                        nodeRole === 'server'
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-blue-600 text-white'
+                      }`}
+                    >
+                      {nodeRole === 'server' ? <Server size={20} /> : <Radio size={20} />}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                          نقش فعلی این دستگاه در شبکه:
+                        </span>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full text-white font-black text-[10.5px] ${
+                            nodeRole === 'server' ? 'bg-emerald-600' : 'bg-blue-600'
+                          }`}
+                        >
+                          {nodeRole === 'server' ? '🟢 سرور مرکزی (Master Host)' : '🔵 کلاینت / صندوق فرعی'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">
+                        {nodeRole === 'server'
+                          ? 'این دستگاه به عنوان سرور مرکزی سیستم فعال است و تمامی صندوق‌ها، تبلت‌ها و گوشی‌های شبکه به این آی‌پی متصل می‌شوند.'
+                          : 'این دستگاه به عنوان کلاینت فرعی به سرور مرکزی شبکه متصل است و اطلاعات را به صورت زنده سینک می‌کند.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowNodeRoleModal(true)}
+                    className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
+                  >
+                    <ArrowRightLeft size={14} />
+                    <span>تغییر نقش سیستم (نیاز به پین مدیر)</span>
+                  </button>
+                </div>
+
+                {/* IF SERVER MODE: SHOW AUTO IP DETECTION, PORT SETUP & LAN SHARE URL */}
+                {nodeRole === 'server' && (
+                  <div className="space-y-4 pt-2">
+                    <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-extrabold text-emerald-950 text-xs sm:text-sm flex items-center gap-2">
+                          <Radio size={18} className="animate-pulse text-emerald-600" />
+                          <span>آدرس‌های شناسایی‌شده سرور در شبکه محلی (LAN)</span>
+                        </h3>
+                        <span className="text-[10.5px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-md">
+                          نام کامپیوتر: {networkInfo.hostname || 'نامعلوم'}
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        نرم‌افزار به‌صورت اتوماتیک کارت‌های شبکه ویندوز را آنالیز کرده است. سایر سیستم‌ها و گوشی‌ها می‌توانند با وارد کردن آدرس زیر در مرورگر به این صندوق متصل شوند:
+                      </p>
+
+                      {/* Primary URL Banner */}
+                      <div className="bg-white p-3 rounded-xl border border-emerald-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
+                        <div>
+                          <span className="text-[10px] text-emerald-800 font-bold block mb-0.5">آدرس اصلی اشتراک‌گذاری در شبکه:</span>
+                          <div className="font-mono text-xs sm:text-sm font-black text-emerald-950 truncate" dir="ltr">
+                            {networkInfo.primaryUrl || 'http://localhost:4040'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText(networkInfo.primaryUrl || 'http://localhost:4040')}
+                          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer"
+                        >
+                          {copiedUrl ? <Check size={14} /> : <Copy size={14} />}
+                          <span>{copiedUrl ? 'کپی شد!' : 'کپی آدرس شبکه'}</span>
+                        </button>
+                      </div>
+
+                      {/* Detected IP addresses list */}
+                      {networkInfo.localIps && networkInfo.localIps.length > 0 && (
+                        <div className="space-y-1.5 pt-1">
+                          <span className="text-[11px] font-bold text-emerald-900 flex items-center gap-1">
+                            <Wifi size={13} className="text-emerald-700" />
+                            <span>لیست آی‌پی‌های فعال شبکه این کامپیوتر:</span>
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {networkInfo.localIps.map((ip) => {
+                              const fullUrl = `http://${ip}:${networkInfo.port || 4040}`;
+                              return (
+                                <button
+                                  key={ip}
+                                  type="button"
+                                  onClick={() => handleCopyText(fullUrl)}
+                                  className="px-2.5 py-1 bg-white hover:bg-emerald-100 text-emerald-950 border border-emerald-300 rounded-lg font-mono text-xs font-bold cursor-pointer transition flex items-center gap-1"
+                                  dir="ltr"
+                                  title="کلیک جهت کپی"
+                                >
+                                  <span>{ip}</span>
+                                  <span className="text-[10px] text-emerald-600 font-sans">(:{networkInfo.port || 4040})</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Custom Server Port Configuration Box */}
+                      <div className="p-3.5 bg-white rounded-xl border border-emerald-300 space-y-2 pt-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <label className="font-extrabold text-emerald-950 text-xs flex items-center gap-1.5">
+                            <Settings2 size={16} className="text-emerald-700" />
+                            <span>تنظیم پورت دلخواه سرور (Server Port):</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              value={serverCustomPort}
+                              onChange={(e) => setServerCustomPort(e.target.value)}
+                              placeholder="4040"
+                              className="w-24 px-3 py-1.5 bg-emerald-50/50 border border-emerald-300 rounded-lg font-mono text-center font-bold text-xs text-emerald-950 focus:outline-hidden focus:border-emerald-600"
+                              dir="ltr"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveCustomPort}
+                              disabled={isSavingPort}
+                              className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs shrink-0 cursor-pointer transition flex items-center gap-1"
+                            >
+                              {isSavingPort ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
+                              <span>ذخیره پورت سرور</span>
+                            </button>
+                          </div>
+                        </div>
+                        {portNotice && (
+                          <p className={`text-[10.5px] font-bold ${portNotice.type === 'success' ? 'text-emerald-700' : 'text-rose-600'}`}>
+                            {portNotice.text}
+                          </p>
+                        )}
+                        <span className="text-[10px] text-slate-500 block leading-relaxed">
+                          پورت پیش‌فرض نرم‌افزار ۴۰۴۰ است. می‌توانید شماره پورت دلخواه شبکه خود را ست کرده و ذخیره نمایید.
+                        </span>
+                        <div className="border-t border-emerald-100 pt-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                          <span className="text-[10.5px] text-slate-600 font-bold">
+                            دیوار آتش ویندوز (Windows Firewall):
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleDownloadFirewallScript}
+                            className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-[11px] shrink-0 cursor-pointer transition flex items-center gap-1.5"
+                          >
+                            <Download size={13} />
+                            <span>دانلود اسکریپت باز کردن پورت در فایروال ویندوز (BAT)</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* IF CLIENT MODE OR CLIENT CONFIG SECTION */}
+                <div className="p-4 rounded-2xl bg-blue-50/60 border border-blue-200 space-y-3 pt-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-extrabold text-blue-950 text-xs sm:text-sm flex items-center gap-2">
+                      <Wifi size={17} className="text-blue-600" />
+                      <span>تنظیمات اتصال کلاینت‌ها به سرور (با آی‌پی محلی یا نام دامنه)</span>
+                    </h3>
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setHostType('ip')}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer transition ${
+                          hostType === 'ip' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        آی‌پی شبکه محلی (LAN IP)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHostType('domain')}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold cursor-pointer transition ${
+                          hostType === 'domain' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        نام دامنه (Domain / Internet)
+                      </button>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    اگر این کامپیوتر به عنوان کلاینت نصب شده است، آدرس IP سرور در شبکه محلی یا نام دامنه اینترنتی را به همراه شماره پورت وارد فرمایید:
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-2 space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-700">
+                        {hostType === 'ip' ? 'آدرس آی‌پی سرور (IP Address):' : 'نام دامنه سرور (Domain Name):'}
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={clientHostInput}
+                          onChange={(e) => setClientHostInput(e.target.value)}
+                          placeholder={hostType === 'ip' ? '192.168.1.50' : 'pos.myrestaurant.local یا server.foodmix.ir'}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-blue-500"
+                          dir="ltr"
+                        />
+                        {hostType === 'domain' && (
+                          <Globe size={14} className="absolute right-3 top-2.5 text-slate-400" />
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-bold text-slate-700">
+                        پورت سرور (Port):
+                      </label>
+                      <input
+                        type="text"
+                        value={clientPortInput}
+                        onChange={(e) => setClientPortInput(e.target.value)}
+                        placeholder="4040"
+                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-center text-xs font-bold text-slate-900 focus:outline-hidden focus:border-blue-500"
+                        dir="ltr"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestClientConnection}
+                      disabled={isTestingConn}
+                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                    >
+                      {isTestingConn ? <RefreshCw size={13} className="animate-spin" /> : <Activity size={13} />}
+                      <span>تست اتصال و سنجش پینگ سرور</span>
+                    </button>
+
+                    <div className="text-[11px] text-slate-600 font-mono" dir="ltr">
+                      آدرس کامل: <strong className="text-blue-900">http://{clientHostInput.trim()}:{clientPortInput.trim()}</strong>
+                    </div>
+                  </div>
+
+                  {testConnResult && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                        testConnResult.ok
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                          : 'bg-rose-50 border-rose-200 text-rose-800'
+                      }`}
+                    >
+                      {testConnResult.ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                      <span>{testConnResult.message}</span>
+                      {testConnResult.pingMs !== undefined && (
+                        <span className="font-mono text-[10px] bg-white px-2 py-0.5 rounded border border-emerald-300 text-emerald-950 mr-auto">
+                          پینگ: {testConnResult.pingMs}ms
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* WINDOWS REAL PRINTERS DETECTION & DIRECT PRINTING CARD */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 md:p-5 space-y-3.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-extrabold text-slate-900 text-xs sm:text-sm flex items-center gap-2">
+                    <Printer size={18} className="text-blue-600" />
+                    <span>🖨️ شناسایی خودکار پرینترهای ویندوز و تنظیم چاپ درجا (Silent Kiosk Printing)</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={handleDetectPrinters}
+                    disabled={isDetectingPrinters}
+                    className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-xl font-bold text-xs flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    {isDetectingPrinters ? <RefreshCw size={13} className="animate-spin" /> : <Printer size={13} />}
+                    <span>{isDetectingPrinters ? 'در حال استعلام...' : 'استعلام پرینترهای واقعی ویندوز'}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div className="space-y-2">
+                    <label className="block font-bold text-slate-800">
+                      نام پرینتر حرارتی در ویندوز:
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        name="printerName"
+                        value={formData.printerName || ''}
+                        onChange={(e) => {
+                          handleChange(e);
+                          try {
+                            window.localStorage.setItem('arka_terminal_printer', e.target.value);
+                          } catch {}
+                        }}
+                        placeholder="مثلاً: XP-80C یا POS-80 یا TM-T20"
+                        className="flex-1 px-3 py-2 rounded-xl border border-slate-300 font-mono text-left font-bold text-xs bg-white focus:outline-hidden focus:border-blue-500"
+                        dir="ltr"
+                      />
+                    </div>
+
+                    {/* Detected Windows printers pills */}
+                    {detectedPrinters.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        <span className="text-[10.5px] text-slate-500 font-bold block w-full">پرینترهای شناسا‌یی‌شده روی ویندوز:</span>
+                        {detectedPrinters.map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => {
+                              setFormData((prev) => ({ ...prev, printerName: p }));
+                              try {
+                                window.localStorage.setItem('arka_terminal_printer', p);
+                              } catch {}
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-900 font-mono text-xs font-bold cursor-pointer transition"
+                          >
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block font-bold text-slate-800">
+                      عناوین شورت‌کات و تنظیمات چاپ درجا:
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleDownloadSilentPrintBat}
+                      className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-xs cursor-pointer transition"
+                    >
+                      <Download size={14} />
+                      <span>دانلود شورت‌کات چاپ درجا (BAT) بدون دیالوگ پرینت</span>
+                    </button>
+                    <span className="text-[10.5px] text-slate-500 block leading-relaxed">
+                      با اجرای این شورت‌کات، مرورگر با سوئیچ <code className="font-mono font-bold bg-slate-100 px-1 rounded">--kiosk-printing</code> اجرا شده و تمام فیش‌ها مستقیماً و بدون باز شدن پنجره پرینت پیش‌نمایش چاپ می‌شوند.
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* INDEPENDENT INSTALLATION & ISOLATION CARD */}
+              <div className="p-4 bg-purple-50/80 rounded-2xl border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <ShieldCheck size={20} className="text-purple-700 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-extrabold text-purple-950 text-xs sm:text-sm">
+                        📦 نسخه ۲.۰.۰ اختصاصی و ایزوله سیستم (Arka POS Enterprise v2)
+                      </span>
+                      <span className="px-2.5 py-0.5 bg-purple-600 text-white font-bold text-[10px] rounded-full">
+                        ایزوله ۱۰۰٪
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-purple-900 leading-relaxed mt-1">
+                      این نسخه از نرم‌افزار در مسیر اختصاصی <code className="font-mono bg-purple-100 px-1 font-bold">C:\Program Files\Arka-POS-Enterprise-v2</code> و دیتابیس مجزای <code className="font-mono bg-purple-100 px-1 font-bold">Arka_Enterprise_POS_DB_v2</code> اجرا می‌شود تا با هیچ نسخه قدیمی قاطی نشود.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadCleanUninstallerBat}
+                  className="px-3.5 py-2.5 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-extrabold shrink-0 flex items-center justify-center gap-1.5 shadow-xs cursor-pointer transition"
+                >
+                  <Download size={14} />
+                  <span>دانلود اسکریپت پاکسازی نسخه قدیمی (BAT)</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: GENERAL & 100% RAW RESET */}
           {activeTab === 'general' && (
             <div className="space-y-4">
+              {/* Quick Network Settings Callout Banner */}
+              <div className="bg-gradient-to-r from-emerald-700 via-teal-700 to-emerald-800 text-white rounded-2xl p-3.5 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-white/20 backdrop-blur-xs flex items-center justify-center shrink-0 font-bold">
+                    <Wifi size={18} className="text-white" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-xs sm:text-sm">
+                      تنظیمات اشتراک‌گذاری در شبکه، IP سرور، پورت و پرینترها
+                    </h4>
+                    <p className="text-[11px] text-emerald-100 mt-0.5">
+                      جهت تعیین نقش سیستم (سرور/کلاینت)، آی‌پی محلی، پورت و شناسایی پرینترهای ویندوز به تب ۱ شبکه بروید.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('network')}
+                  className="px-3.5 py-2 bg-white hover:bg-emerald-50 text-emerald-950 rounded-xl font-extrabold text-xs shadow-xs transition cursor-pointer shrink-0 flex items-center gap-1.5"
+                >
+                  <span>ورود به تنظیمات شبکه و IP سرور</span>
+                  <ArrowLeft size={14} />
+                </button>
+              </div>
+
               {/* Currency Unit (Toman vs Rial) + PWA Install Card */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
@@ -776,19 +1365,28 @@ pause
                   </div>
                 </div>
 
-                {/* PWA Install & Mobile Ergonomics Card */}
+                {/* PWA Install & Mobile Ergonomics Card / Desktop Status */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col justify-between gap-3">
                   <div>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-xs md:text-sm font-extrabold text-slate-900">
                         <Smartphone size={18} className="text-emerald-600" />
-                        <span>نصب وب‌اپلیکیشن (PWA) روی گوشی و کامپیوتر</span>
+                        <span>نصب وب‌اپلیکیشن (PWA) و وضعیت نسخه</span>
                       </div>
-                      <PWAInstallButton compact />
+                      {!isTauri && !isInstalled && <PWAInstallButton compact />}
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
-                      با نصب نسخه PWA، نرم‌افزار آرکا مانند یک اپلیکیشن بومی روی صفحه اصلی گوشی موبایل و دسکتاپ شما نصب شده و به‌صورت تمام‌صفحه و آفلاین اجرا می‌شود.
-                    </p>
+                    {isTauri || isInstalled ? (
+                      <div className="mt-2.5 p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-2 text-emerald-900">
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                        <span className="text-[11px] font-bold">
+                          نرم‌افزار به‌صورت بومی و نصب‌شده (Arka POS Enterprise v2) روی این دستگاه در حال اجرا است.
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                        با نصب نسخه PWA، نرم‌افزار آرکا مانند یک اپلیکیشن بومی روی صفحه اصلی گوشی موبایل و دسکتاپ شما نصب شده و به‌صورت تمام‌صفحه و آفلاین اجرا می‌شود.
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
