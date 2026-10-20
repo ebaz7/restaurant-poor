@@ -23,7 +23,7 @@ type SyncListener = (state: SyncState) => void;
 let currentSyncState: SyncState = {
   isOnline: true,
   isSyncing: false,
-  serverUrl: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+  serverUrl: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:4040',
   lastSyncTime: null,
   serverRevision: 0,
   localRevision: 0,

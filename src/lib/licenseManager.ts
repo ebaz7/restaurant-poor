@@ -134,8 +134,8 @@ export function getCentralServerBaseUrl(): string {
       if (!/^https?:\/\//i.test(url)) {
         url = `http://${url}`;
       }
-      if (/^http:\/\/\d+\.\d+\.\d+\.\d+$/.test(url)) {
-        url = `${url}:3000`;
+      if (/^http:\/\/\d+\.\d+\.\d+\.\d+$/i.test(url) && window.location.port) {
+        url = `${url}:${window.location.port}`;
       }
       return url;
     }

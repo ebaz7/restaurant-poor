@@ -4,7 +4,6 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'central_db.json');
@@ -18,6 +17,27 @@ const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+
+function detectPort() {
+  if (process.env.PORT && !isNaN(Number(process.env.PORT)) && Number(process.env.PORT) > 0) {
+    return Number(process.env.PORT);
+  }
+  try {
+    const confFile = path.join(DATA_DIR, 'server_port.conf');
+    if (fs.existsSync(confFile)) {
+      const p = parseInt(fs.readFileSync(confFile, 'utf8').trim(), 10);
+      if (!isNaN(p) && p > 0) return p;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return 3000;
+}
+
+const PORT = detectPort();
+try {
+  fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
+} catch (e) {}
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }

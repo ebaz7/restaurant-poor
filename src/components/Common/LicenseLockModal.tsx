@@ -91,7 +91,7 @@ export const LicenseLockModal: React.FC<LicenseLockModalProps> = ({
 
   const handleConnectToCentralServer = async () => {
     if (!centralServerUrlInput.trim()) {
-      setFeedback({ type: 'error', text: 'لطفاً آدرس IP سرور مرکزی را وارد کنید (مثلاً 192.168.1.100:3000).' });
+      setFeedback({ type: 'error', text: 'لطفاً آدرس IP و پورت سرور مرکزی را وارد کنید (مثلاً 192.168.1.100:8080).' });
       return;
     }
 
@@ -103,8 +103,8 @@ export const LicenseLockModal: React.FC<LicenseLockModalProps> = ({
       if (!/^https?:\/\//i.test(formattedUrl)) {
         formattedUrl = `http://${formattedUrl}`;
       }
-      if (/^http:\/\/\d+\.\d+\.\d+\.\d+$/.test(formattedUrl)) {
-        formattedUrl = `${formattedUrl}:3000`;
+      if (/^http:\/\/\d+\.\d+\.\d+\.\d+$/i.test(formattedUrl) && window.location.port) {
+        formattedUrl = `${formattedUrl}:${window.location.port}`;
       }
 
       setServerUrl(formattedUrl);
@@ -259,7 +259,7 @@ export const LicenseLockModal: React.FC<LicenseLockModalProps> = ({
                   type="text"
                   value={centralServerUrlInput}
                   onChange={(e) => setCentralServerUrlInput(e.target.value)}
-                  placeholder="http://192.168.1.100:3000"
+                  placeholder="http://192.168.1.100:8080"
                   className="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl font-mono text-xs font-bold text-slate-800 text-left"
                   dir="ltr"
                 />

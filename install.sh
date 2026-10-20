@@ -10,11 +10,68 @@ APP_NAME="arka-restaurant"
 INSTALL_DIR="/opt/arka-restaurant"
 REPO_URL="https://github.com/ebaz7/restaurant-poor.git"
 
+get_active_port() {
+    if [ -f "$INSTALL_DIR/data/server_port.conf" ]; then
+        local P
+        P=$(tr -d ' \r\n' < "$INSTALL_DIR/data/server_port.conf" 2>/dev/null)
+        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
+            echo "$P"
+            return 0
+        fi
+    fi
+    if [ -f "/opt/arka-backup/server_port.conf" ]; then
+        local P
+        P=$(tr -d ' \r\n' < "/opt/arka-backup/server_port.conf" 2>/dev/null)
+        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
+            echo "$P"
+            return 0
+        fi
+    fi
+    if [ -f "/etc/systemd/system/arka-restaurant.service" ]; then
+        local P
+        P=$(grep -i "Environment=PORT=" /etc/systemd/system/arka-restaurant.service 2>/dev/null | cut -d= -f3 | tr -d ' \r\n')
+        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
+            echo "$P"
+            return 0
+        fi
+    fi
+    if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+        local P
+        P=$(grep -m1 "proxy_pass" /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null | grep -oP ':\K[0-9]+' | head -n1)
+        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
+            echo "$P"
+            return 0
+        fi
+    fi
+    if [ -n "${PORT:-}" ] && [[ "$PORT" =~ ^[0-9]+$ ]]; then
+        echo "$PORT"
+        return 0
+    fi
+    echo "3000"
+}
+
+save_active_port() {
+    local TARGET_PORT="$1"
+    if [ -n "$TARGET_PORT" ] && [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
+        mkdir -p "$INSTALL_DIR/data" /opt/arka-backup
+        echo "$TARGET_PORT" > "$INSTALL_DIR/data/server_port.conf"
+        echo "$TARGET_PORT" > "/opt/arka-backup/server_port.conf"
+        chmod 666 "$INSTALL_DIR/data/server_port.conf" 2>/dev/null || true
+    fi
+}
+
 print_banner() {
     clear
+    local SERVER_IP
+    SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local ACTIVE_PORT
+    ACTIVE_PORT=$(get_active_port 2>/dev/null || echo "3000")
     echo "================================================================"
     echo "   Arka Restaurant Management Software - Linux Installer & Manager"
     echo "   Networked Central Server, Multi-Terminal Live Sync & SSL"
+    if [ -n "$SERVER_IP" ]; then
+        echo "   Active Server URL: http://${SERVER_IP}:${ACTIVE_PORT}"
+    fi
     echo "================================================================"
 }
 
@@ -115,13 +172,37 @@ function sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDo
   });
 }
 
-const PORT = Number(process.env.PORT) || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'central_db.json');
 const LICENSE_FILE = path.join(DATA_DIR, 'server_license.json');
 const os = require('os');
 const crypto = require('crypto');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function detectPort() {
+  if (process.env.PORT && !isNaN(Number(process.env.PORT)) && Number(process.env.PORT) > 0) {
+    return Number(process.env.PORT);
+  }
+  try {
+    const confFile = path.join(DATA_DIR, 'server_port.conf');
+    if (fs.existsSync(confFile)) {
+      const p = parseInt(fs.readFileSync(confFile, 'utf8').trim(), 10);
+      if (!isNaN(p) && p > 0) return p;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return 3000;
+}
+
+const PORT = detectPort();
+try {
+  fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
+} catch (e) {}
 
 const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
 const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
@@ -587,7 +668,9 @@ EOF
 
 setup_official_ssl() {
     local DOMAIN="$1"
-    local PORT="${2:-3000}"
+    local DETECTED_PORT
+    DETECTED_PORT=$(get_active_port)
+    local PORT="${2:-$DETECTED_PORT}"
 
     if [ -z "$DOMAIN" ]; then
         read -p "[-] Enter your domain name (e.g. foodmix.ir): " DOMAIN
@@ -695,7 +778,7 @@ EOF
         # Ensure internal app port is not 80 or 443
         local APP_TARGET_PORT="$PORT"
         if [ "$APP_TARGET_PORT" == "80" ] || [ "$APP_TARGET_PORT" == "443" ]; then
-            APP_TARGET_PORT="3000"
+            APP_TARGET_PORT="$(get_active_port)"
         fi
 
         cat <<EOF > /etc/nginx/sites-available/arka-restaurant.conf
@@ -944,10 +1027,13 @@ show_network_sync_status() {
     echo "[+] Central Server & Network Terminal Sync Status"
     local SERVER_IP
     SERVER_IP=$(hostname -I | awk '{print $1}')
+    local ACTIVE_PORT
+    ACTIVE_PORT=$(get_active_port)
     local DB_FILE="$INSTALL_DIR/data/central_db.json"
 
     echo "----------------------------------------------------------------"
     echo "[v] Central Server IP:          $SERVER_IP"
+    echo "[v] Active Server Port:         $ACTIVE_PORT"
     echo "[v] Service Status:             $(systemctl is-active arka-restaurant 2>/dev/null || docker ps -f name=arka-restaurant --format '{{.Status}}')"
     if [ -f "$DB_FILE" ]; then
         local SIZE
@@ -961,8 +1047,8 @@ show_network_sync_status() {
     fi
     echo "----------------------------------------------------------------"
     echo "Client Connection URLs for LAN Terminals & Mobile Waiters:"
-    echo "1. Any PC / Laptop on LAN:      http://${SERVER_IP}:3000"
-    echo "2. Cashier 2 / Mobile Devices:  http://${SERVER_IP}:3000"
+    echo "1. Any PC / Laptop on LAN:      http://${SERVER_IP}:${ACTIVE_PORT}"
+    echo "2. Cashier 2 / Mobile Devices:  http://${SERVER_IP}:${ACTIVE_PORT}"
     if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
         local DOMAIN
         DOMAIN=$(grep -m1 "server_name" /etc/nginx/sites-available/arka-restaurant.conf | awk '{print $2}' | tr -d ';')
@@ -1001,8 +1087,12 @@ install_app() {
 
     cd "$INSTALL_DIR" || exit 1
 
-    read -p "[-] Enter desired port for running the app (default 3000): " PORT
-    PORT=${PORT:-3000}
+    local DETECTED_PORT
+    DETECTED_PORT=$(get_active_port)
+
+    read -p "[-] Enter desired port for running the app (default ${DETECTED_PORT}): " PORT
+    PORT=${PORT:-$DETECTED_PORT}
+    save_active_port "$PORT"
 
     read -p "[-] Do you want to configure Domain & SSL? (y/n, default y): " USE_SSL
     USE_SSL=${USE_SSL:-y}
@@ -1065,9 +1155,9 @@ services:
     working_dir: /app
     restart: always
     environment:
-      - PORT=3000
+      - PORT=${PORT}
     ports:
-      - "0.0.0.0:${PORT}:3000"
+      - "0.0.0.0:${PORT}:${PORT}"
     command: node server.cjs
     volumes:
       - .:/app
@@ -1160,6 +1250,8 @@ backup_app() {
 update_app() {
     print_banner
     echo "[+] Starting Safe Update Process for Arka Restaurant..."
+    local ACTIVE_PORT
+    ACTIVE_PORT=$(get_active_port)
     if [ -d "$INSTALL_DIR" ]; then
         echo "[+] Step 1/4: Creating automatic pre-update backup & sending to Bale/Telegram bots..."
         backup_app "Automatic Pre-Update Backup"
@@ -1179,6 +1271,9 @@ update_app() {
         mkdir -p "$INSTALL_DIR/data"
         cp -rf /tmp/arka_data_preserve/* "$INSTALL_DIR/data/" 2>/dev/null || true
         rm -rf /tmp/arka_data_preserve
+
+        # Ensure server port configuration is preserved
+        save_active_port "$ACTIVE_PORT"
 
         # Safety Fallback: If central_db.json was lost or empty, restore latest json from /opt/arka-backup/
         if [ ! -s "$INSTALL_DIR/data/central_db.json" ]; then
@@ -1202,11 +1297,28 @@ update_app() {
             npm install --no-audit --no-fund && npm run build || true
         fi
 
-        echo "[+] Step 4/4: Restarting services..."
+        echo "[+] Step 4/4: Restarting services on active port ${ACTIVE_PORT}..."
+        if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+            cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+services:
+  arka-app:
+    image: node:20-alpine
+    container_name: arka-restaurant
+    working_dir: /app
+    restart: always
+    environment:
+      - PORT=${ACTIVE_PORT}
+    ports:
+      - "0.0.0.0:${ACTIVE_PORT}:${ACTIVE_PORT}"
+    command: node server.cjs
+    volumes:
+      - .:/app
+EOF
+        fi
         docker compose restart 2>/dev/null || docker-compose restart 2>/dev/null || systemctl restart arka-restaurant 2>/dev/null || true
 
         echo "================================================================"
-        echo "[v] Update completed successfully!"
+        echo "[v] Update completed successfully on port ${ACTIVE_PORT}!"
         echo "[v] Pre-update backup saved & sent to configured bots."
         echo "[i] Tip: In your browser, press Ctrl+F5 (or clear cache in mobile) to load the new version immediately."
         echo "================================================================"
@@ -1408,10 +1520,12 @@ build_tauri_windows_on_linux() {
     if [ -f "$ZIP_PATH" ]; then
         echo "    3. پکیج کامل فشرده (ZIP):              $ZIP_PATH"
     fi
+    local ACTIVE_PORT
+    ACTIVE_PORT=$(get_active_port)
     echo "----------------------------------------------------------------"
-    echo "[+] لینک دانلود مستقیم از طریق مرورگر (اگر سرور روی پورت 3000 فعال است):"
-    echo "    >>> http://${SERVER_IP}:3000/Arka-POS-Windows-Setup.exe <<<"
-    echo "    >>> http://${SERVER_IP}:3000/Arka-Tauri-Windows.zip <<<"
+    echo "[+] لینک دانلود مستقیم از طریق مرورگر (پورت فعال سرور: ${ACTIVE_PORT}):"
+    echo "    >>> http://${SERVER_IP}:${ACTIVE_PORT}/Arka-POS-Windows-Setup.exe <<<"
+    echo "    >>> http://${SERVER_IP}:${ACTIVE_PORT}/Arka-Tauri-Windows.zip <<<"
     echo "================================================================"
 
     # Also offer sending to configured Telegram / Bale bots if available

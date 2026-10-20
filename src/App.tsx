@@ -757,7 +757,7 @@ export default function App() {
                       type="text"
                       value={customServerInput}
                       onChange={(e) => setCustomServerInput(e.target.value)}
-                      placeholder="https://foodmix.ir یا http://192.168.1.100:3000"
+                      placeholder="https://foodmix.ir یا http://192.168.1.100:8080"
                       className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-teal-500"
                       dir="ltr"
                     />
