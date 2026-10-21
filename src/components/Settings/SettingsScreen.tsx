@@ -9,6 +9,8 @@ import {
   PERMISSION_DEFINITIONS,
   resetDatabaseToRaw,
   convertDatabaseCurrencyUnit,
+  getDefaultQuickBeverages,
+  QuickBeverageOption,
 } from '../../lib/db';
 import {
   exportDB,
@@ -68,6 +70,8 @@ import {
   Settings2,
   RefreshCw,
   ArrowLeft,
+  Plus,
+  Coffee,
 } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { NodeRoleManagerModal } from '../Network/NodeRoleManagerModal';
@@ -514,7 +518,15 @@ pause
 
   useEffect(() => {
     if (settings) {
-      setFormData(settings);
+      const currentUnit = settings.currencyUnit || 'toman';
+      const defaultBevs = getDefaultQuickBeverages(currentUnit);
+      setFormData({
+        ...settings,
+        quickBeverages:
+          settings.quickBeverages && settings.quickBeverages.length > 0
+            ? settings.quickBeverages
+            : defaultBevs,
+      });
       if (settings.currencyUnit) {
         setGlobalCurrencyUnit(settings.currencyUnit);
       }
@@ -562,12 +574,37 @@ pause
     if (formData.currencyUnit) {
       setGlobalCurrencyUnit(formData.currencyUnit);
     }
+
+    // Auto-sync raw materials stock items for all quick beverages so warehouse deduction is 100% ready
+    if (formData.quickBeverages && formData.quickBeverages.length > 0) {
+      const currentMaterials = await db.rawMaterials.toArray();
+      for (const bev of formData.quickBeverages) {
+        if (!bev.name?.trim()) continue;
+        const matName = bev.name.replace(/ اضافه$/, '').trim();
+        const exists = currentMaterials.some(
+          (m) => m.name.trim() === matName || m.name.trim() === bev.name.trim()
+        );
+        if (!exists) {
+          const autoCost = Math.round((bev.price || 0) * 0.45);
+          await db.rawMaterials.add({
+            name: matName,
+            unit: 'عدد',
+            currentQty: 200,
+            minQty: 15,
+            avgCost: autoCost,
+            lastPurchasePrice: autoCost,
+            updatedAt: new Date(),
+          });
+        }
+      }
+    }
+
     await db.settings.update(settings.id, formData);
     await syncBackupToServer(formData);
     setIsSaving(false);
     showNotice(
       'success',
-      'تنظیمات فروشگاه، واحد پول، سلف سرویس و کانفیگ ربات بکاپ ذخیره و با سرور همگام‌سازی شد.'
+      'تنظیمات فروشگاه، واحد پول، دکمه‌های میانبر نوشیدنی و انبار کالا ذخیره و همگام‌سازی شد.'
     );
   };
 
@@ -1539,75 +1576,137 @@ pause
                     </div>
                   </div>
 
-                  {/* Default Beverage Unit Prices */}
-                  <div className="border-t border-slate-100 pt-3">
-                    <label className="block text-xs font-extrabold text-slate-900 mb-2">
-                      🥤 تنظیم قیمت پیش‌فرض انواع نوشیدنی‌های اضافه ({currencyLabel}):
-                    </label>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  {/* Dynamic Quick Beverage Options Manager */}
+                  <div className="border-t border-slate-200 pt-4 space-y-3">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
                       <div>
-                        <label className="block font-bold text-slate-700 mb-1">
-                          🥤 نوشابه قوطی اضافه:
-                        </label>
-                        <FormattedNumberInput
-                          value={
-                            formData.defaultSodaPrice ??
-                            (formData.currencyUnit === 'rial' ? 150000 : 15000)
-                          }
-                          onValueChange={(val) =>
-                            setFormData({ ...formData, defaultSodaPrice: val })
-                          }
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
-                        />
+                        <h4 className="text-xs md:text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                          <Coffee size={17} className="text-amber-600" />
+                          <span>مدیریت دکمه‌های نوشیدنی و نوشابه اضافه دستی ({currencyLabel})</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          شما می‌توانید انواع نوشیدنی‌ها را اضافه یا حذف کرده و قیمت یا نام آن‌ها را تغییر دهید. با ثبت فاکتور، تمام این نوشیدنی‌ها از انبار کالا کسر می‌گردند.
+                        </p>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const currentList =
+                            formData.quickBeverages && formData.quickBeverages.length > 0
+                              ? formData.quickBeverages
+                              : getDefaultQuickBeverages(formData.currencyUnit || 'toman');
+                          const newBev: QuickBeverageOption = {
+                            id: `bev_${Date.now()}`,
+                            name: 'نوشیدنی جدید',
+                            price: formData.currencyUnit === 'rial' ? 150000 : 15000,
+                            color: 'amber',
+                            isActive: true,
+                          };
+                          setFormData({ ...formData, quickBeverages: [...currentList, newBev] });
+                        }}
+                        className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
+                      >
+                        <Plus size={14} />
+                        <span>افزودن نوشیدنی جدید</span>
+                      </button>
+                    </div>
 
-                      <div>
-                        <label className="block font-bold text-slate-700 mb-1">
-                          🥛 دوغ بطری/لیوانی:
-                        </label>
-                        <FormattedNumberInput
-                          value={
-                            formData.defaultDoughPrice ??
-                            (formData.currencyUnit === 'rial' ? 150000 : 15000)
-                          }
-                          onValueChange={(val) =>
-                            setFormData({ ...formData, defaultDoughPrice: val })
-                          }
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
-                        />
-                      </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+                      {((formData.quickBeverages && formData.quickBeverages.length > 0)
+                        ? formData.quickBeverages
+                        : getDefaultQuickBeverages(formData.currencyUnit || 'toman')
+                      ).map((bev, idx) => (
+                        <div
+                          key={bev.id || idx}
+                          className="p-3 bg-slate-50/80 rounded-2xl border border-slate-200 space-y-2 shadow-2xs relative"
+                        >
+                          <div className="flex items-center justify-between gap-1.5">
+                            <input
+                              type="text"
+                              value={bev.name}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const currentList = [
+                                  ...((formData.quickBeverages && formData.quickBeverages.length > 0)
+                                    ? formData.quickBeverages
+                                    : getDefaultQuickBeverages(formData.currencyUnit || 'toman')),
+                                ];
+                                currentList[idx] = { ...currentList[idx], name: val };
+                                setFormData({ ...formData, quickBeverages: currentList });
+                              }}
+                              className="px-2.5 py-1 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-900 w-full focus:outline-hidden focus:border-blue-500"
+                              placeholder="نام نوشیدنی (مثلاً نوشابه)"
+                            />
 
-                      <div>
-                        <label className="block font-bold text-slate-700 mb-1">
-                          💧 آب معدنی:
-                        </label>
-                        <FormattedNumberInput
-                          value={
-                            formData.defaultWaterPrice ??
-                            (formData.currencyUnit === 'rial' ? 100000 : 10000)
-                          }
-                          onValueChange={(val) =>
-                            setFormData({ ...formData, defaultWaterPrice: val })
-                          }
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
-                        />
-                      </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const currentList = [
+                                  ...((formData.quickBeverages && formData.quickBeverages.length > 0)
+                                    ? formData.quickBeverages
+                                    : getDefaultQuickBeverages(formData.currencyUnit || 'toman')),
+                                ];
+                                currentList.splice(idx, 1);
+                                setFormData({ ...formData, quickBeverages: currentList });
+                              }}
+                              className="p-1.5 rounded-xl text-rose-500 hover:bg-rose-100 hover:text-rose-700 transition cursor-pointer shrink-0"
+                              title="حذف این نوشیدنی"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
 
-                      <div>
-                        <label className="block font-bold text-slate-700 mb-1">
-                          🍺 دلستر / ماءالشعیر:
-                        </label>
-                        <FormattedNumberInput
-                          value={
-                            formData.defaultDelsterPrice ??
-                            (formData.currencyUnit === 'rial' ? 200000 : 20000)
-                          }
-                          onValueChange={(val) =>
-                            setFormData({ ...formData, defaultDelsterPrice: val })
-                          }
-                          className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left bg-white"
-                        />
-                      </div>
+                          <div className="grid grid-cols-2 gap-2 text-xs">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                قیمت ({currencyLabel}):
+                              </label>
+                              <FormattedNumberInput
+                                value={bev.price}
+                                onValueChange={(val) => {
+                                  const currentList = [
+                                    ...((formData.quickBeverages && formData.quickBeverages.length > 0)
+                                      ? formData.quickBeverages
+                                      : getDefaultQuickBeverages(formData.currencyUnit || 'toman')),
+                                  ];
+                                  currentList[idx] = { ...currentList[idx], price: val };
+                                  setFormData({ ...formData, quickBeverages: currentList });
+                                }}
+                                className="w-full px-2 py-1 rounded-xl border border-slate-300 font-mono text-xs font-bold text-left bg-white"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                رنگ دکمه:
+                              </label>
+                              <select
+                                value={bev.color || 'amber'}
+                                onChange={(e) => {
+                                  const val = e.target.value as any;
+                                  const currentList = [
+                                    ...((formData.quickBeverages && formData.quickBeverages.length > 0)
+                                      ? formData.quickBeverages
+                                      : getDefaultQuickBeverages(formData.currencyUnit || 'toman')),
+                                  ];
+                                  currentList[idx] = { ...currentList[idx], color: val };
+                                  setFormData({ ...formData, quickBeverages: currentList });
+                                }}
+                                className="w-full px-2 py-1 rounded-xl border border-slate-300 text-xs font-bold bg-white"
+                              >
+                                <option value="amber">زرد / نارنجی</option>
+                                <option value="emerald">سبز</option>
+                                <option value="blue">آبی</option>
+                                <option value="purple">بنفش</option>
+                                <option value="rose">قرمز</option>
+                                <option value="teal">فیروزه‌ای</option>
+                                <option value="indigo">نیلی</option>
+                                <option value="slate">خاکستری</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>

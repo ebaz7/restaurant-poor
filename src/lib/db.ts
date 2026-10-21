@@ -22,6 +22,26 @@ export interface MenuItem {
   price: number;
   isActive: boolean;
   image?: string;
+  isQuickBeverage?: boolean;
+}
+
+export interface QuickBeverageOption {
+  id: string;
+  name: string;
+  price: number;
+  color?: 'amber' | 'emerald' | 'blue' | 'purple' | 'rose' | 'teal' | 'indigo' | 'slate';
+  isActive?: boolean;
+  menuItemId?: number;
+}
+
+export function getDefaultQuickBeverages(currencyUnit: 'toman' | 'rial' = 'toman'): QuickBeverageOption[] {
+  const isRial = currencyUnit === 'rial';
+  return [
+    { id: 'soda', name: 'نوشابه', price: isRial ? 150000 : 15000, color: 'amber', isActive: true },
+    { id: 'dough', name: 'دوغ', price: isRial ? 150000 : 15000, color: 'emerald', isActive: true },
+    { id: 'water', name: 'آب معدنی', price: isRial ? 100000 : 10000, color: 'blue', isActive: true },
+    { id: 'delster', name: 'دلستر', price: isRial ? 200000 : 20000, color: 'purple', isActive: true },
+  ];
 }
 
 export interface OrderItem {
@@ -92,6 +112,7 @@ export interface AppSettings {
   defaultDoughPrice?: number;
   defaultWaterPrice?: number;
   defaultDelsterPrice?: number;
+  quickBeverages?: QuickBeverageOption[];
   // Default Invoice Mode ('self_service' | 'standard') and lock option
   defaultInvoiceMode?: 'self_service' | 'standard';
   lockSelfServiceMode?: boolean;
@@ -992,66 +1013,136 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
   for (const item of order.items) {
     if (item.menuItemId <= 0) continue; // virtual self-service line handled above
     const recipe = await db.productionRecipes.where('menuItemId').equals(item.menuItemId).first();
-    if (!recipe) continue;
+    if (recipe && recipe.ingredients && recipe.ingredients.length > 0) {
+      for (const ing of recipe.ingredients) {
+        const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
+        const effectiveRecipeQty = ing.quantity * (1 + (ing.wastePercent || 0) / 100);
 
-    for (const ing of recipe.ingredients) {
-      const isMisc = Boolean(ing.isMisc || ing.materialId < 0);
-      const effectiveRecipeQty = ing.quantity * (1 + (ing.wastePercent || 0) / 100);
+        // Miscellaneous items (کالای متفرقه) do NOT deduct from warehouse inventory, but DO add to COGS!
+        if (isMisc) {
+          const miscUnitPrice = Math.max(0, Number(ing.customUnitPrice) || 0);
+          const miscLineCost = Math.round(effectiveRecipeQty * miscUnitPrice * item.quantity);
+          totalOrderCOGS += miscLineCost;
+          continue;
+        }
 
-      // Miscellaneous items (کالای متفرقه) do NOT deduct from warehouse inventory, but DO add to COGS!
-      if (isMisc) {
-        const miscUnitPrice = Math.max(0, Number(ing.customUnitPrice) || 0);
-        const miscLineCost = Math.round(effectiveRecipeQty * miscUnitPrice * item.quantity);
-        totalOrderCOGS += miscLineCost;
-        continue;
+        const mat = matMap.get(ing.materialId);
+        if (!mat || !mat.id) continue;
+
+        const stockUnit = mat.unit || ing.unit || 'کیلوگرم';
+        const recipeUnit = ing.recipeUnit || stockUnit;
+
+        // Convert from recipeUnit (e.g., گرم) to warehouse stockUnit (e.g., کیلوگرم or کارتن)
+        const effectiveStockPerUnit = convertRecipeQtyToStockUnit({
+          quantity: effectiveRecipeQty,
+          recipeUnit,
+          stockUnit,
+          unitsPerPackage: ing.unitsPerPackage || mat.unitsPerPackage,
+        });
+
+        const totalConsumed = Number((effectiveStockPerUnit * item.quantity).toFixed(4));
+        const lineCost = Math.round(totalConsumed * mat.avgCost);
+        totalOrderCOGS += lineCost;
+
+        const newQty = Math.max(0, Number((mat.currentQty - totalConsumed).toFixed(4)));
+        const newVal = Math.round(newQty * mat.avgCost);
+        mat.currentQty = newQty;
+
+        await db.rawMaterials.update(mat.id, {
+          currentQty: newQty,
+          updatedAt: new Date(),
+        });
+
+        await db.inventoryTransactions.add({
+          materialId: mat.id,
+          materialName: mat.name,
+          unit: mat.unit,
+          date: new Date(),
+          type: 'out_sale_bom',
+          quantity: totalConsumed,
+          unitPrice: mat.avgCost,
+          totalPrice: lineCost,
+          balanceQtyAfter: newQty,
+          balanceValueAfter: newVal,
+          description: `مصرف فرمول تولید (${item.name} × ${item.quantity}) - فاکتور #${order.invoiceNumber}`,
+        });
       }
 
-      const mat = matMap.get(ing.materialId);
-      if (!mat || !mat.id) continue;
-
-      const stockUnit = mat.unit || ing.unit || 'کیلوگرم';
-      const recipeUnit = ing.recipeUnit || stockUnit;
-
-      // Convert from recipeUnit (e.g., گرم) to warehouse stockUnit (e.g., کیلوگرم or کارتن)
-      const effectiveStockPerUnit = convertRecipeQtyToStockUnit({
-        quantity: effectiveRecipeQty,
-        recipeUnit,
-        stockUnit,
-        unitsPerPackage: ing.unitsPerPackage || mat.unitsPerPackage,
+      const directExtra =
+        ((recipe.laborCost || 0) + (recipe.overheadCost || 0) + (recipe.packagingCost || 0)) *
+        item.quantity;
+      totalOrderCOGS += directExtra;
+    } else {
+      // DIRECT BEVERAGE & ITEM WAREHOUSE DEDUCTION (WHEN NO BOM RECIPE EXISTS)
+      const cleanItemName = item.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
+      let matchedMat = materials.find((m) => {
+        const cleanMatName = m.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
+        return (
+          m.name.trim() === item.name.trim() ||
+          m.name.trim() === cleanItemName ||
+          (cleanItemName.length >= 2 &&
+            cleanMatName.length >= 2 &&
+            (cleanItemName.includes(cleanMatName) || cleanMatName.includes(cleanItemName)))
+        );
       });
 
-      const totalConsumed = Number((effectiveStockPerUnit * item.quantity).toFixed(4));
-      const lineCost = Math.round(totalConsumed * mat.avgCost);
-      totalOrderCOGS += lineCost;
+      // If missing in raw materials warehouse, auto-create so inventory is always tracked
+      if (!matchedMat) {
+        const matName = item.name.replace(/ اضافه$/, '').trim();
+        const autoCost = Math.round((item.price || 0) * 0.45);
+        const newMatId = (await db.rawMaterials.add({
+          name: matName,
+          unit: 'عدد',
+          currentQty: 200,
+          minQty: 15,
+          avgCost: autoCost,
+          lastPurchasePrice: autoCost,
+          updatedAt: new Date(),
+        })) as number;
 
-      const newQty = Math.max(0, Number((mat.currentQty - totalConsumed).toFixed(4)));
-      const newVal = Math.round(newQty * mat.avgCost);
-      mat.currentQty = newQty;
+        matchedMat = {
+          id: newMatId,
+          name: matName,
+          unit: 'عدد',
+          currentQty: 200,
+          minQty: 15,
+          avgCost: autoCost,
+          lastPurchasePrice: autoCost,
+          updatedAt: new Date(),
+        };
+        materials.push(matchedMat);
+        matMap.set(newMatId, matchedMat);
+      }
 
-      await db.rawMaterials.update(mat.id, {
-        currentQty: newQty,
-        updatedAt: new Date(),
-      });
+      if (matchedMat && matchedMat.id) {
+        const qtyConsumed = item.quantity;
+        const lineCost = Math.round(qtyConsumed * (matchedMat.avgCost || 0));
+        totalOrderCOGS += lineCost;
 
-      await db.inventoryTransactions.add({
-        materialId: mat.id,
-        materialName: mat.name,
-        unit: mat.unit,
-        date: new Date(),
-        type: 'out_sale_bom',
-        quantity: totalConsumed,
-        unitPrice: mat.avgCost,
-        totalPrice: lineCost,
-        balanceQtyAfter: newQty,
-        balanceValueAfter: newVal,
-        description: `مصرف فرمول تولید (${item.name} × ${item.quantity}) - فاکتور #${order.invoiceNumber}`,
-      });
+        const newQty = Math.max(0, Number((matchedMat.currentQty - qtyConsumed).toFixed(4)));
+        const newVal = Math.round(newQty * (matchedMat.avgCost || 0));
+        matchedMat.currentQty = newQty; // update local memory map
+
+        await db.rawMaterials.update(matchedMat.id, {
+          currentQty: newQty,
+          updatedAt: new Date(),
+        });
+
+        await db.inventoryTransactions.add({
+          materialId: matchedMat.id,
+          materialName: matchedMat.name,
+          unit: matchedMat.unit || 'عدد',
+          date: new Date(),
+          type: 'out_sale_bom',
+          quantity: qtyConsumed,
+          unitPrice: matchedMat.avgCost || 0,
+          totalPrice: lineCost,
+          balanceQtyAfter: newQty,
+          balanceValueAfter: newVal,
+          description: `کاهش مستقیم انبار بابت فروش نوشیدنی (${item.name} × ${item.quantity}) - فاکتور #${order.invoiceNumber}`,
+        });
+      }
     }
-
-    const directExtra =
-      ((recipe.laborCost || 0) + (recipe.overheadCost || 0) + (recipe.packagingCost || 0)) *
-      item.quantity;
-    totalOrderCOGS += directExtra;
   }
 
   return totalOrderCOGS;

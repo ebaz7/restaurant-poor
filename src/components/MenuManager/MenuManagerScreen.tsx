@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, Category, MenuItem } from '../../lib/db';
+import { db, Category, MenuItem, getDefaultQuickBeverages } from '../../lib/db';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import {
@@ -51,26 +51,89 @@ export default function MenuManagerScreen() {
     if (selectedCategoryId === id) setSelectedCategoryId(null);
   };
 
-  // Item Actions
   const handleSaveItem = async () => {
     if (!editingItem?.name?.trim() || !editingItem.price || !selectedCategoryId) return;
 
-    if (editingItem.id) {
-      await db.menuItems.update(editingItem.id, {
-        name: editingItem.name,
-        price: Number(editingItem.price),
-        isActive: editingItem.isActive !== undefined ? editingItem.isActive : true,
-        image: editingItem.image || '',
-      });
+    const itemData = {
+      name: editingItem.name,
+      price: Number(editingItem.price),
+      isActive: editingItem.isActive !== undefined ? editingItem.isActive : true,
+      image: editingItem.image || '',
+      isQuickBeverage: Boolean(editingItem.isQuickBeverage),
+    };
+
+    let itemId = editingItem.id;
+    if (itemId) {
+      await db.menuItems.update(itemId, itemData);
     } else {
-      await db.menuItems.add({
+      itemId = (await db.menuItems.add({
         categoryId: selectedCategoryId,
-        name: editingItem.name,
-        price: Number(editingItem.price),
-        isActive: true,
-        image: editingItem.image || '',
-      } as MenuItem);
+        ...itemData,
+      } as MenuItem)) as number;
     }
+
+    // Sync with quick beverages and warehouse stock if it's a beverage item
+    const category = categories?.find((c) => c.id === selectedCategoryId);
+    const isBeverageCategory =
+      category?.name?.includes('نوشیدنی') || editingItem.isQuickBeverage;
+
+    if (isBeverageCategory) {
+      const settings = await db.settings.toCollection().first();
+      if (settings?.id) {
+        const currentUnit = settings.currencyUnit || 'toman';
+        const currentList =
+          settings.quickBeverages && settings.quickBeverages.length > 0
+            ? [...settings.quickBeverages]
+            : getDefaultQuickBeverages(currentUnit);
+
+        const existingIdx = currentList.findIndex(
+          (b) =>
+            (b.menuItemId && b.menuItemId === itemId) ||
+            b.name.trim() === editingItem.name.trim()
+        );
+
+        if (existingIdx >= 0) {
+          currentList[existingIdx] = {
+            ...currentList[existingIdx],
+            name: editingItem.name,
+            price: Number(editingItem.price),
+            isActive: editingItem.isActive !== false,
+            menuItemId: itemId,
+          };
+        } else if (editingItem.isQuickBeverage) {
+          currentList.push({
+            id: `bev_${itemId}_${Date.now()}`,
+            name: editingItem.name,
+            price: Number(editingItem.price),
+            color: 'amber',
+            isActive: true,
+            menuItemId: itemId,
+          });
+        }
+
+        await db.settings.update(settings.id, { quickBeverages: currentList });
+      }
+
+      // Ensure Raw Material stock exists in warehouse for this beverage
+      const rawMaterials = await db.rawMaterials.toArray();
+      const matName = editingItem.name.replace(/ اضافه$/, '').trim();
+      const matExists = rawMaterials.some(
+        (m) => m.name.trim() === matName || m.name.trim() === editingItem.name.trim()
+      );
+      if (!matExists) {
+        const autoCost = Math.round(Number(editingItem.price) * 0.45);
+        await db.rawMaterials.add({
+          name: matName,
+          unit: 'عدد',
+          currentQty: 200,
+          minQty: 15,
+          avgCost: autoCost,
+          lastPurchasePrice: autoCost,
+          updatedAt: new Date(),
+        });
+      }
+    }
+
     setEditingItem(null);
   };
 
@@ -331,6 +394,23 @@ export default function MenuManagerScreen() {
                   onChange={handleImageUpload}
                   className="w-full text-xs text-slate-600"
                 />
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
+                <label className="flex items-center gap-2 cursor-pointer font-bold text-amber-900 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={editingItem.isQuickBeverage || false}
+                    onChange={(e) =>
+                      setEditingItem({ ...editingItem, isQuickBeverage: e.target.checked })
+                    }
+                    className="w-4 h-4 accent-amber-600 rounded cursor-pointer"
+                  />
+                  <span>📌 نمایش در دکمه‌های میانبر نوشیدنی اضافه سلف</span>
+                </label>
+                <p className="text-[10px] text-amber-700 mt-1 leading-relaxed">
+                  با فعال کردن این گزینه، دکمه این نوشیدنی در نوار میانبر بالای فاکتور فروش نمایش داده خواهد شد و فروش آن مستقیماً از انبار کسر می‌شود.
+                </p>
               </div>
             </div>
 

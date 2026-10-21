@@ -8,6 +8,8 @@ import {
   Customer,
   recordJournalVoucher,
   processOrderInventoryAndCOGS,
+  getDefaultQuickBeverages,
+  QuickBeverageOption,
 } from '../../lib/db';
 import {
   clampSelfServiceGuests,
@@ -94,6 +96,13 @@ export default function POSScreen({
   const defaultDoughPrice = settings?.defaultDoughPrice ?? (isRial ? 150000 : 15000);
   const defaultWaterPrice = settings?.defaultWaterPrice ?? (isRial ? 100000 : 10000);
   const defaultDelsterPrice = settings?.defaultDelsterPrice ?? (isRial ? 200000 : 20000);
+
+  const quickBeveragesList = useMemo(() => {
+    if (settings?.quickBeverages && settings.quickBeverages.length > 0) {
+      return settings.quickBeverages.filter((b) => b.isActive !== false);
+    }
+    return getDefaultQuickBeverages(settings?.currencyUnit || 'toman');
+  }, [settings?.quickBeverages, settings?.currencyUnit]);
 
   const bankAccounts = useLiveQuery(() => db.bankAccounts.toArray()) || [];
   const allOrders = useLiveQuery(() => db.orders.toArray()) || [];
@@ -1209,41 +1218,38 @@ export default function POSScreen({
                   </div>
 
                   <div className="flex flex-wrap gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => handleAddQuickBeverage('نوشابه قوطی اضافه', defaultSodaPrice)}
-                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
-                    >
-                      <Plus size={13} />
-                      <span>۱+ نوشابه ({formatCurrency(defaultSodaPrice)})</span>
-                    </button>
+                    {quickBeveragesList.map((bev) => {
+                      const colorClasses =
+                        bev.color === 'emerald'
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                          : bev.color === 'blue'
+                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                          : bev.color === 'purple'
+                          ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                          : bev.color === 'rose'
+                          ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                          : bev.color === 'teal'
+                          ? 'bg-teal-600 hover:bg-teal-700 text-white'
+                          : bev.color === 'indigo'
+                          ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                          : bev.color === 'slate'
+                          ? 'bg-slate-700 hover:bg-slate-800 text-white'
+                          : 'bg-amber-600 hover:bg-amber-700 text-white';
 
-                    <button
-                      type="button"
-                      onClick={() => handleAddQuickBeverage('دوغ اضافه', defaultDoughPrice)}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
-                    >
-                      <Plus size={13} />
-                      <span>۱+ دوغ ({formatCurrency(defaultDoughPrice)})</span>
-                    </button>
+                      const fullName = bev.name.endsWith('اضافه') ? bev.name : `${bev.name} اضافه`;
 
-                    <button
-                      type="button"
-                      onClick={() => handleAddQuickBeverage('آب معدنی اضافه', defaultWaterPrice)}
-                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
-                    >
-                      <Plus size={13} />
-                      <span>۱+ آب معدنی ({formatCurrency(defaultWaterPrice)})</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleAddQuickBeverage('دلستر اضافه', defaultDelsterPrice)}
-                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer"
-                    >
-                      <Plus size={13} />
-                      <span>۱+ دلستر ({formatCurrency(defaultDelsterPrice)})</span>
-                    </button>
+                      return (
+                        <button
+                          key={bev.id || bev.name}
+                          type="button"
+                          onClick={() => handleAddQuickBeverage(fullName, bev.price)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition cursor-pointer ${colorClasses}`}
+                        >
+                          <Plus size={13} />
+                          <span>۱+ {bev.name} ({formatCurrency(bev.price)})</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
