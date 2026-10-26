@@ -72,10 +72,10 @@ if %errorlevel% neq 0 (
 )
 
 :: Auto open browser after 2 seconds with silent kiosk-printing enabled for thermal receipt printers
-start "" /b cmd /c "timeout /t 2 /nobreak >nul && (where chrome >nul 2>nul && start chrome --kiosk-printing http://localhost:3000 || (where msedge >nul 2>nul && start msedge --kiosk-printing http://localhost:3000 || start http://localhost:3000))"
+start "" /b cmd /c "timeout /t 2 /nobreak >nul && (where chrome >nul 2>nul && start chrome --kiosk-printing http://localhost:4040 || (where msedge >nul 2>nul && start msedge --kiosk-printing http://localhost:4040 || start http://localhost:4040))"
 
 :: Start production server
-echo [*] در حال راه‌اندازی سرور مرکزی روی پورت ۳۰۰۰...
+echo [*] در حال راه‌اندازی سرور مرکزی روی پورت ۴۰۴۰...
 echo [*] برای بستن سرور، پنجره را نبندید یا کلید Ctrl+C را بزنید.
 echo.
 node server.cjs
@@ -106,19 +106,19 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [+] در حال باز کردن پورت 3000 در فایروال ویندوز (TCP Inbound)...
+echo [+] در حال باز کردن پورت 4040 در فایروال ویندوز (TCP Inbound)...
 netsh advfirewall firewall delete rule name="Arka Restaurant Server" >nul 2>&1
-netsh advfirewall firewall add rule name="Arka Restaurant Server" dir=in action=allow protocol=TCP localport=3000 profile=any >nul
+netsh advfirewall firewall add rule name="Arka Restaurant Server" dir=in action=allow protocol=TCP localport=4040 profile=any >nul
 
 if %errorlevel% equ 0 (
     color 0A
     echo.
-    echo [✔] پورت 3000 با موفقیت در فایروال ویندوز باز شد!
+    echo [✔] پورت 4040 با موفقیت در فایروال ویندوز باز شد!
     echo [✔] اکنون تمام گوشی‌ها، تبلت‌ها و صندوق‌های دیگر در شبکه Wi-Fi/LAN
     echo     می‌توانند به این سرور ویندوزی متصل شوند.
 ) else (
     color 0C
-    echo [-] خطا در تنظیم فایروال. لطفاً به صورت دستی پورت 3000 را باز کنید.
+    echo [-] خطا در تنظیم فایروال. لطفاً به صورت دستی پورت 4040 را باز کنید.
 )
 
 echo.
@@ -165,9 +165,9 @@ echo                  متوقف کردن سرور مرکزی آرکا
 echo ======================================================================
 echo.
 
-for /f "tokens=5" %%a in ('netstat -aon ^| find ":3000" ^| find "LISTENING"') do (
+for /f "tokens=5" %%a in ('netstat -aon ^| find ":4040" ^| find "LISTENING"') do (
     taskkill /F /PID %%a >nul 2>&1
-    echo [+] سرور فعال روی پورت 3000 متوقف شد (PID: %%a)
+    echo [+] سرور فعال روی پورت 4040 متوقف شد (PID: %%a)
 )
 
 echo.

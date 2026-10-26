@@ -31,7 +31,7 @@ function detectPort() {
   } catch (e) {
     // ignore
   }
-  return 3000;
+  return 4040;
 }
 
 const PORT = detectPort();
@@ -40,6 +40,16 @@ try {
 } catch (e) {}
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+function getSavedDomain() {
+  try {
+    const domainFile = path.join(DATA_DIR, 'server_domain.conf');
+    if (fs.existsSync(domainFile)) {
+      return fs.readFileSync(domainFile, 'utf8').trim();
+    }
+  } catch (e) {}
+  return '';
 }
 
 function fnvFallbackHex(str) {
@@ -160,20 +170,39 @@ try {
   // ignore
 }
 
-// Get all non-internal IPv4 addresses for LAN sharing
+// Get all non-internal IPv4 addresses for LAN sharing (prioritizing physical adapters like Wi-Fi/Ethernet)
 function getLocalIpAddresses() {
   const interfaces = os.networkInterfaces();
-  const addresses = [];
+  const physicalIps = [];
+  const virtualIps = [];
+
   for (const name of Object.keys(interfaces)) {
+    const isVirtual = /virtual|vmware|vbox|docker|loopback|tap|hyper-v|vethernet|tailscale|zerotier|wsl/i.test(name);
     const ifaceList = interfaces[name];
     if (!ifaceList) continue;
     for (const iface of ifaceList) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        addresses.push(iface.address);
+        if (isVirtual) {
+          virtualIps.push(iface.address);
+        } else {
+          physicalIps.push(iface.address);
+        }
       }
     }
   }
-  return addresses;
+
+  const sortFn = (a, b) => {
+    if (a.startsWith('192.168.') && !b.startsWith('192.168.')) return -1;
+    if (!a.startsWith('192.168.') && b.startsWith('192.168.')) return 1;
+    if (a.startsWith('10.') && !b.startsWith('10.')) return -1;
+    if (!a.startsWith('10.') && b.startsWith('10.')) return 1;
+    return a.localeCompare(b);
+  };
+
+  physicalIps.sort(sortFn);
+  virtualIps.sort(sortFn);
+
+  return [...physicalIps, ...virtualIps];
 }
 
 function hasDbData(obj) {
@@ -343,6 +372,17 @@ const server = http.createServer((req, res) => {
 
     if (parsedUrl.pathname === '/api/network/info' && req.method === 'GET') {
       const localIps = getLocalIpAddresses();
+      const customDomain = getSavedDomain();
+      let domainUrl = '';
+      if (customDomain) {
+        if (customDomain.startsWith('http://') || customDomain.startsWith('https://')) {
+          domainUrl = customDomain;
+        } else if (customDomain.includes(':')) {
+          domainUrl = `http://${customDomain}`;
+        } else {
+          domainUrl = `http://${customDomain}:${PORT}`;
+        }
+      }
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-cache, no-store',
@@ -353,10 +393,30 @@ const server = http.createServer((req, res) => {
         platform: os.platform(),
         port: PORT,
         localIps,
+        customDomain,
+        domainUrl,
         primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${PORT}` : `http://localhost:${PORT}`,
         serverTime: new Date().toISOString(),
         rev: currentRev,
       }));
+      return;
+    }
+
+    if (parsedUrl.pathname === '/api/network/set-domain' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const cleanDomain = String(payload.domain || '').trim();
+          fs.writeFileSync(path.join(DATA_DIR, 'server_domain.conf'), cleanDomain, 'utf8');
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, domain: cleanDomain, message: 'دامنه اختصاصی سرور ذخیره گردید.' }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: 'خطا در ثبت دامنه سرور.' }));
+        }
+      });
       return;
     }
 

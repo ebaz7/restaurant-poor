@@ -160,6 +160,7 @@ export interface BOMCostResult {
 
 export interface SelfServiceCalcInput {
   guestCount: number;
+  halfPriceGuestCount?: number; // تعداد نفرات نیم‌بها / کودکان
   pricePerPerson: number;
   extraItemsSubtotal?: number;
   discountType?: 'none' | 'percent' | 'amount';
@@ -170,6 +171,9 @@ export interface SelfServiceCalcInput {
 
 export interface SelfServiceCalcResult {
   clampedGuests: number;
+  halfPriceGuests: number;
+  fullPriceTotal: number;
+  halfPriceTotal: number;
   selfServiceTotal: number;
   extraItemsSubtotal: number;
   subtotal: number;
@@ -280,11 +284,17 @@ export function scaleMonetaryAmountForCurrencySwitch(
  * Computes Self-Service ticket pricing (for 1 or more guests) + optional extra items, discounts, and tax.
  */
 export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfServiceCalcResult {
-  const clampedGuests = clampSelfServiceGuests(input.guestCount);
+  const rawGuests = Math.max(0, Math.round(Number(input.guestCount) || 0));
+  const halfGuests = Math.max(0, Math.round(Number(input.halfPriceGuestCount) || 0));
+  // If both full-price and half-price guests are 0, clamp full guests to 1
+  const clampedGuests = rawGuests === 0 && halfGuests === 0 ? 1 : rawGuests;
   const unitPrice = Math.max(0, Number(input.pricePerPerson) || 0);
+  const halfUnitPrice = Math.round(unitPrice / 2);
   const extraItemsSubtotal = Math.max(0, Number(input.extraItemsSubtotal) || 0);
 
-  const selfServiceTotal = Math.round(clampedGuests * unitPrice);
+  const fullPriceTotal = Math.round(clampedGuests * unitPrice);
+  const halfPriceTotal = Math.round(halfGuests * halfUnitPrice);
+  const selfServiceTotal = fullPriceTotal + halfPriceTotal;
   const subtotal = selfServiceTotal + extraItemsSubtotal;
 
   let discountAmount = 0;
@@ -306,6 +316,9 @@ export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfSe
 
   return {
     clampedGuests,
+    halfPriceGuests: halfGuests,
+    fullPriceTotal,
+    halfPriceTotal,
     selfServiceTotal,
     extraItemsSubtotal,
     subtotal,
@@ -313,7 +326,7 @@ export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfSe
     taxableAmount,
     taxAmount,
     total,
-    drinkQuota: clampedGuests,
+    drinkQuota: clampedGuests + halfGuests,
   };
 }
 

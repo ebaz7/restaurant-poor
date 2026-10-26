@@ -48,6 +48,23 @@ test('Self-service invoice calculates price, drink quota, discount, and tax accu
   assert.equal(res.total, 1108530);
 });
 
+test('Self-service invoice accurately calculates half-price / child guests at 50% ticket price', () => {
+  const res = calculateSelfServiceInvoice({
+    guestCount: 2, // 2 adults @ 200,000 = 400,000
+    halfPriceGuestCount: 1, // 1 child @ 100,000 (half price) = 100,000
+    pricePerPerson: 200000,
+    extraItemsSubtotal: 0,
+  });
+
+  assert.equal(res.clampedGuests, 2);
+  assert.equal(res.halfPriceGuests, 1);
+  assert.equal(res.fullPriceTotal, 400000);
+  assert.equal(res.halfPriceTotal, 100000);
+  assert.equal(res.selfServiceTotal, 500000);
+  assert.equal(res.drinkQuota, 3);
+  assert.equal(res.total, 500000);
+});
+
 test('Production formula (BOM) calculates exact COGS, waste, profit per unit, and margins without bugs', () => {
   const cost = calculateRecipeCost({
     ingredients: [

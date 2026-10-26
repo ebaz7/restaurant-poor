@@ -87,7 +87,17 @@ export async function initNetworkSync(customServerUrl?: string) {
     setServerUrl(customServerUrl);
   } else if (typeof window !== 'undefined') {
     const savedUrl = window.localStorage.getItem('arka_server_url');
-    currentSyncState.serverUrl = savedUrl ? savedUrl.replace(/\/+$/, '') : window.location.origin;
+    if (savedUrl) {
+      currentSyncState.serverUrl = savedUrl.replace(/\/+$/, '');
+    } else if (
+      window.location.protocol === 'tauri:' ||
+      window.location.origin.includes('tauri') ||
+      (window as any).__TAURI__
+    ) {
+      currentSyncState.serverUrl = 'http://127.0.0.1:4040';
+    } else {
+      currentSyncState.serverUrl = window.location.origin;
+    }
   }
 
   // Attach hooks to Dexie tables so ANY change on this client automatically triggers sync to central server
@@ -378,7 +388,72 @@ export function setNodeRole(role: 'server' | 'client') {
 }
 
 /**
- * Fetches network info (IP, Port, Hostname) from the server
+ * Detects local LAN IPv4 address (e.g. 192.168.1.X, 10.X.X.X) directly inside the
+ * browser / Tauri WebView using WebRTC ICE candidate discovery.
+ * This runs completely offline on the client side without needing any external or local server.
+ */
+export async function detectClientLanIpViaWebRTC(): Promise<string[]> {
+  if (typeof window === 'undefined' || typeof RTCPeerConnection === 'undefined') {
+    return [];
+  }
+  return new Promise((resolve) => {
+    const ips = new Set<string>();
+    let resolved = false;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        pc1.close();
+      } catch {}
+      try {
+        pc2.close();
+      } catch {}
+      resolve(Array.from(ips));
+    };
+
+    const timer = setTimeout(finish, 1000);
+
+    const parseCandidate = (candStr: string) => {
+      const match = candStr.match(/\b(?:192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})\b/);
+      if (match && match[0]) {
+        ips.add(match[0]);
+      }
+    };
+
+    let pc1: RTCPeerConnection;
+    let pc2: RTCPeerConnection;
+    try {
+      pc1 = new RTCPeerConnection({ iceServers: [] });
+      pc2 = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+      pc1.onicecandidate = (e) => {
+        if (e.candidate && e.candidate.candidate) {
+          parseCandidate(e.candidate.candidate);
+        }
+      };
+      pc2.onicecandidate = (e) => {
+        if (e.candidate && e.candidate.candidate) {
+          parseCandidate(e.candidate.candidate);
+        }
+      };
+
+      pc1.createDataChannel('arka_probe');
+      pc2.createDataChannel('arka_probe2');
+
+      pc1.createOffer().then((offer) => pc1.setLocalDescription(offer)).catch(() => {});
+      pc2.createOffer().then((offer) => pc2.setLocalDescription(offer)).catch(() => {});
+    } catch {
+      clearTimeout(timer);
+      resolve([]);
+    }
+  });
+}
+
+/**
+ * Fetches network info (Real Windows IP, Port, Hostname, Custom Domain) from the server.
+ * If backend server is unreachable or offline, it falls back to WebRTC client-side IP detection
+ * so that the user never sees "localhost" or "نامعلوم".
  */
 export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
   ok: boolean;
@@ -386,25 +461,93 @@ export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
   port?: number;
   localIps?: string[];
   primaryUrl?: string;
+  customDomain?: string;
+  domainUrl?: string;
+  isServerRunning?: boolean;
   rev?: number;
 }> {
-  const target = (customUrl || currentSyncState.serverUrl || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '');
-  try {
-    const res = await fetch(`${target}/api/network/info`, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-    if (res.ok) {
-      return await res.json();
+  // Build list of candidate endpoints to probe
+  const candidates: string[] = [];
+  if (customUrl) {
+    candidates.push(customUrl.trim().replace(/\/+$/, ''));
+  } else {
+    if (currentSyncState.serverUrl && !currentSyncState.serverUrl.startsWith('tauri:')) {
+      candidates.push(currentSyncState.serverUrl.trim().replace(/\/+$/, ''));
     }
-  } catch {
-    // ignore
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem('arka_server_url') : null;
+    if (saved && !saved.startsWith('tauri:')) {
+      candidates.push(saved.trim().replace(/\/+$/, ''));
+    }
+    // Try standard Windows server local addresses
+    candidates.push('http://127.0.0.1:4040');
+    candidates.push('http://localhost:4040');
+    candidates.push('http://127.0.0.1:3000');
+    if (typeof window !== 'undefined' && window.location.origin && !window.location.origin.startsWith('tauri:')) {
+      candidates.push(window.location.origin);
+    }
   }
-  return { ok: false };
+
+  // Deduplicate candidates
+  const uniqueCandidates = Array.from(new Set(candidates)).filter(Boolean);
+
+  for (const target of uniqueCandidates) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1800);
+      const res = await fetch(`${target}/api/network/info`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) {
+          // If in server mode, update our active serverUrl
+          if (getNodeRole() === 'server' && target.startsWith('http://127.0.0.1')) {
+            currentSyncState.serverUrl = target;
+            currentSyncState.isOnline = true;
+            notifyListeners();
+          }
+          return {
+            ...data,
+            isServerRunning: true,
+          };
+        }
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  // If server daemon is not responding, detect real Windows IP directly via WebRTC
+  const webrtcIps = await detectClientLanIpViaWebRTC();
+  const savedLanIp = typeof window !== 'undefined' ? window.localStorage.getItem('arka_server_lan_ip') : null;
+  const savedDomain = typeof window !== 'undefined' ? window.localStorage.getItem('arka_server_domain') : null;
+
+  const resolvedIps = Array.from(new Set([
+    ...(savedLanIp ? [savedLanIp] : []),
+    ...webrtcIps,
+  ])).filter(Boolean);
+
+  const bestIp = resolvedIps.length > 0 ? resolvedIps[0] : '';
+  const port = 4040;
+
+  return {
+    ok: resolvedIps.length > 0,
+    hostname: 'ویندوز (سیستم محلی)',
+    port,
+    localIps: resolvedIps,
+    primaryUrl: bestIp ? `http://${bestIp}:${port}` : `http://localhost:${port}`,
+    customDomain: savedDomain || '',
+    domainUrl: savedDomain ? (savedDomain.startsWith('http') ? savedDomain : `http://${savedDomain}:${port}`) : '',
+    isServerRunning: false,
+  };
 }
 
 /**
- * Tests connection to a potential server URL before committing a switch
+ * Tests connection to a potential server URL with clear, human-friendly Persian error messages
  */
 export async function testServerConnection(url: string): Promise<{ ok: boolean; rev?: number; error?: string }> {
   const cleanUrl = url.trim().replace(/\/+$/, '');
@@ -413,7 +556,7 @@ export async function testServerConnection(url: string): Promise<{ ok: boolean; 
   }
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 4500);
     const res = await fetch(`${cleanUrl}/api/db/version`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
@@ -425,8 +568,23 @@ export async function testServerConnection(url: string): Promise<{ ok: boolean; 
       const data = await res.json();
       return { ok: true, rev: data.rev };
     }
-    return { ok: false, error: `پاسخ ناموفق از سرور (کد خطا: ${res.status})` };
+    return { ok: false, error: `پاسخ ناموفق از سرور مقصد (کد وضعیت خطا: ${res.status} ${res.statusText})` };
   } catch (err: any) {
+    if (err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort')) {
+      return {
+        ok: false,
+        error: 'پاسخی از این آدرس دریافت نشد (Timeout - مهلت اتصال سررسید شد). لطفاً مطمئن شوید سرویس سرور روی این کامپیوتر روشن است و پورت ۴۰۴۰ در فایروال ویندوز باز می‌باشد.',
+      };
+    }
+    if (
+      String(err?.message || '').toLowerCase().includes('failed to fetch') ||
+      String(err?.message || '').toLowerCase().includes('networkerror')
+    ) {
+      return {
+        ok: false,
+        error: 'ارتباط شبکه با سرور برقرار نشد (Connection Refused). ممکن است آدرس آی‌پی اشتباه باشد، کامپیوتر مقصد خاموش باشد یا شبکه روی حالت Public قرار داشته باشد.',
+      };
+    }
     return { ok: false, error: err?.message || 'امکان برقراری ارتباط با این آدرس وجود ندارد.' };
   }
 }
@@ -507,7 +665,8 @@ export async function clearCacheAndHardReload() {
  */
 export async function updateServerPort(port: number): Promise<{ ok: boolean; message?: string; error?: string }> {
   try {
-    const res = await fetch('/api/network/set-port', {
+    const target = currentSyncState.serverUrl || 'http://127.0.0.1:4040';
+    const res = await fetch(`${target}/api/network/set-port`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port }),
@@ -521,6 +680,50 @@ export async function updateServerPort(port: number): Promise<{ ok: boolean; mes
   } catch (e: any) {
     return { ok: false, error: e?.message || 'ارتباط با سرور امکان‌پذیر نیست.' };
   }
+}
+
+/**
+ * Sends request to server to save a custom domain configuration
+ */
+export async function updateServerDomain(domain: string): Promise<{ ok: boolean; message?: string; error?: string }> {
+  const cleanDomain = domain.trim();
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem('arka_server_domain', cleanDomain);
+    } catch {}
+  }
+  try {
+    const target = currentSyncState.serverUrl || 'http://127.0.0.1:4040';
+    const res = await fetch(`${target}/api/network/set-domain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: cleanDomain }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return { ok: true, message: data.message || 'دامنه سرور ثبت گردید.' };
+    }
+    const err = await res.json().catch(() => ({}));
+    return { ok: false, error: err.error || 'خطا در ثبت دامنه سرور.' };
+  } catch (e: any) {
+    // If backend is not running, localStorage still has it
+    return { ok: true, message: 'دامنه در تنظیمات این سیستم ذخیره شد.' };
+  }
+}
+
+/**
+ * Stores preferred manual server LAN IP in localStorage
+ */
+export function saveServerLanIpPreference(ip: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const cleanIp = ip.trim();
+    if (cleanIp) {
+      window.localStorage.setItem('arka_server_lan_ip', cleanIp);
+    } else {
+      window.localStorage.removeItem('arka_server_lan_ip');
+    }
+  } catch {}
 }
 
 

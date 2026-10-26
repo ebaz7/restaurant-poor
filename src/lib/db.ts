@@ -70,8 +70,10 @@ export interface Order {
   status: 'paid' | 'cancelled';
   // New fields for Self-Service (Mode 2) & Bank/Cashier Settlement
   invoiceMode?: 'standard' | 'self_service';
-  selfServiceGuests?: number; // 1 to 4
+  selfServiceGuests?: number; // 1 to 4 or any custom adult count
+  selfServiceHalfPriceGuests?: number; // تعداد نفرات نیم‌بها / کودکان
   selfServiceUnitPrice?: number;
+  selfServiceHalfPriceUnitPrice?: number; // فی هر نفر نیم‌بها (نصف قیمت ورودی)
   selfServiceDrinkNote?: string;
   paymentMethod?: 'cash' | 'card' | 'split' | 'credit';
   bankId?: number;

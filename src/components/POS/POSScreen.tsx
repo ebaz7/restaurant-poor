@@ -59,6 +59,7 @@ interface OpenTab {
   title: string;
   invoiceMode: 'standard' | 'self_service';
   selfServiceGuests: number; // 1, 2, 3, 4 or any custom higher count
+  selfServiceHalfPriceGuests: number; // تعداد نفرات نیم‌بها / کودکان
   selfServiceUnitPrice: number;
   selfServiceDrinkNote: string;
   customerPhone: string;
@@ -126,6 +127,7 @@ export default function POSScreen({
       title: 'سفارش 1',
       invoiceMode: 'self_service',
       selfServiceGuests: 0,
+      selfServiceHalfPriceGuests: 0,
       selfServiceUnitPrice: 0,
       selfServiceDrinkNote: '',
       customerPhone: '',
@@ -253,6 +255,7 @@ export default function POSScreen({
   const selfServiceCalc = useMemo(() => {
     return calculateSelfServiceInvoice({
       guestCount: activeTab.selfServiceGuests,
+      halfPriceGuestCount: activeTab.selfServiceHalfPriceGuests || 0,
       pricePerPerson: activeTab.selfServiceUnitPrice,
       extraItemsSubtotal: extraMenuSubtotal,
       discountType: activeTab.discountType,
@@ -262,6 +265,7 @@ export default function POSScreen({
     });
   }, [
     activeTab.selfServiceGuests,
+    activeTab.selfServiceHalfPriceGuests,
     activeTab.selfServiceUnitPrice,
     extraMenuSubtotal,
     activeTab.discountType,
@@ -445,6 +449,7 @@ export default function POSScreen({
         title: `سفارش ${openTabs.length + 1}`,
         invoiceMode: defaultInvoiceMode,
         selfServiceGuests: unitPrice > 0 ? 1 : 0,
+        selfServiceHalfPriceGuests: 0,
         selfServiceUnitPrice: unitPrice,
         selfServiceDrinkNote: settings?.selfServiceTitle || '',
         customerPhone: '',
@@ -472,6 +477,7 @@ export default function POSScreen({
           title: 'سفارش 1',
           invoiceMode: defaultInvoiceMode,
           selfServiceGuests: unitPrice > 0 ? 1 : 0,
+          selfServiceHalfPriceGuests: 0,
           selfServiceUnitPrice: unitPrice,
           selfServiceDrinkNote: settings?.selfServiceTitle || '',
           customerPhone: '',
@@ -592,7 +598,8 @@ export default function POSScreen({
 
   const canCheckout =
     activeTab.invoiceMode === 'self_service'
-      ? activeTab.selfServiceGuests >= 1 && activeTab.selfServiceUnitPrice > 0
+      ? (activeTab.selfServiceGuests >= 1 || (activeTab.selfServiceHalfPriceGuests || 0) >= 1) &&
+        activeTab.selfServiceUnitPrice > 0
       : activeTab.items.length > 0;
 
   const handleCheckout = async () => {
@@ -633,17 +640,34 @@ export default function POSScreen({
       const selectedBank =
         activeBanks.find((b) => b.id === activeTab.bankId) || defaultBank;
 
-      // Build final items list (for self-service mode, include the self-service line item + any extra items)
+      // Build final items list (for self-service mode, include the self-service line item + half-price line item + any extra items)
       const clampedGuests = clampSelfServiceGuests(activeTab.selfServiceGuests);
+      const halfGuests = Math.max(0, Math.floor(Number(activeTab.selfServiceHalfPriceGuests) || 0));
+      const halfUnitPrice = Math.round(activeTab.selfServiceUnitPrice / 2);
+
       const finalItems: OrderItem[] =
         activeTab.invoiceMode === 'self_service'
           ? [
-              {
-                menuItemId: -1,
-                name: `${settings?.selfServiceTitle || 'ورودی بار سلف سرویس + نوشابه'} (${clampedGuests} نفر)`,
-                price: activeTab.selfServiceUnitPrice,
-                quantity: clampedGuests,
-              },
+              ...(clampedGuests > 0
+                ? [
+                    {
+                      menuItemId: -1,
+                      name: `${settings?.selfServiceTitle || 'ورودی بار سلف سرویس + نوشابه'} (${clampedGuests} نفر تمام‌بها)`,
+                      price: activeTab.selfServiceUnitPrice,
+                      quantity: clampedGuests,
+                    },
+                  ]
+                : []),
+              ...(halfGuests > 0
+                ? [
+                    {
+                      menuItemId: -2,
+                      name: `ورودی نیم‌بها / کودکان (${halfGuests} نفر)`,
+                      price: halfUnitPrice,
+                      quantity: halfGuests,
+                    },
+                  ]
+                : []),
               ...activeTab.items,
             ]
           : [...activeTab.items];
@@ -685,6 +709,10 @@ export default function POSScreen({
           activeTab.invoiceMode === 'self_service'
             ? activeTab.selfServiceUnitPrice
             : undefined,
+        selfServiceHalfPriceGuests:
+          activeTab.invoiceMode === 'self_service' && halfGuests > 0 ? halfGuests : undefined,
+        selfServiceHalfPriceUnitPrice:
+          activeTab.invoiceMode === 'self_service' && halfGuests > 0 ? halfUnitPrice : undefined,
         selfServiceDrinkNote:
           activeTab.invoiceMode === 'self_service'
             ? activeTab.selfServiceDrinkNote
@@ -1134,6 +1162,122 @@ export default function POSScreen({
                             ? 'bg-white text-teal-700 hover:bg-teal-50 shadow-xs'
                             : 'bg-teal-600 hover:bg-teal-700 text-white shadow-xs'
                         }`}
+                      >
+                        <Plus size={15} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* بخش ویژه کودکان و نیم‌بها با دکمه مثبت و منفی و نصف قیمت فیش */}
+                <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-3 md:p-3.5 space-y-2.5">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500 text-white flex items-center justify-center font-bold text-base shadow-xs shrink-0">
+                        👶
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs md:text-sm font-extrabold text-amber-950">
+                            ورودی نیم‌بها / کودکان (نصف قیمت فیش)
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-900 border border-amber-300">
+                            ۵۰٪ قیمت هر نفر
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-amber-800 mt-0.5">
+                          به ازای هر کودک، نصف قیمت ورودی (
+                          <span className="font-mono font-bold">
+                            {formatCurrency(Math.round(activeTab.selfServiceUnitPrice / 2))}
+                          </span>
+                          ) محاسبه و به فاکتور و سهمیه نوشیدنی افزوده می‌شود.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* وضعیت فعال و مجموع نیم بها */}
+                    <div className="flex items-center gap-2 self-end sm:self-center">
+                      {(activeTab.selfServiceHalfPriceGuests || 0) > 0 && (
+                        <div className="text-left bg-white px-2.5 py-1 rounded-lg border border-amber-300 shadow-2xs">
+                          <span className="text-[10px] text-amber-800 block">جمع کل نیم‌بها:</span>
+                          <span className="text-xs font-black font-mono text-amber-900">
+                            {formatCurrency(
+                              (activeTab.selfServiceHalfPriceGuests || 0) *
+                                Math.round(activeTab.selfServiceUnitPrice / 2)
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* انتخابگر سریع و کلیدهای + و - برای کودکان نیم‌بها */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-amber-200/60">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-xs font-bold text-amber-900 ml-1">انتخاب سریع:</span>
+                      {[0, 1, 2, 3].map((num) => (
+                        <button
+                          key={num}
+                          type="button"
+                          onClick={() => updateActiveTab({ selfServiceHalfPriceGuests: num })}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                            (activeTab.selfServiceHalfPriceGuests || 0) === num
+                              ? 'bg-amber-600 text-white border-amber-700 shadow-xs scale-[1.02]'
+                              : 'bg-white text-amber-900 border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          {num === 0 ? 'بدون کودک (۰ نفر)' : `${num} کودک نیم‌بها`}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* دکمه‌های مثبت و منفی و ورودی عددی مستقیم برای تعداد دلخواه */}
+                    <div className="flex items-center gap-2 bg-white border border-amber-300 rounded-xl px-2.5 py-1.5 shadow-2xs">
+                      <span className="text-xs font-extrabold text-amber-900">
+                        تعداد کودکان / نیم‌بها:
+                      </span>
+
+                      <button
+                        type="button"
+                        title="کاهش تعداد کودک (-)"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests: Math.max(
+                              0,
+                              (activeTab.selfServiceHalfPriceGuests || 0) - 1
+                            ),
+                          })
+                        }
+                        className="w-8 h-8 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 flex items-center justify-center font-bold transition cursor-pointer"
+                      >
+                        <Minus size={15} />
+                      </button>
+
+                      <input
+                        type="number"
+                        min={0}
+                        aria-label="تعداد کودکان نیم بها"
+                        value={activeTab.selfServiceHalfPriceGuests ?? 0}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests: Number.isFinite(val) && val >= 0 ? val : 0,
+                          });
+                        }}
+                        className="w-12 h-8 text-center rounded-lg font-mono font-black text-sm outline-none border border-amber-200 bg-amber-50/50 text-amber-950 focus:border-amber-500 focus:bg-white"
+                        dir="ltr"
+                      />
+
+                      <button
+                        type="button"
+                        title="افزایش تعداد کودک (+)"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests:
+                              (activeTab.selfServiceHalfPriceGuests || 0) + 1,
+                          })
+                        }
+                        className="w-8 h-8 rounded-lg bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center font-bold transition cursor-pointer shadow-xs"
                       >
                         <Plus size={15} />
                       </button>
@@ -1676,8 +1820,76 @@ export default function POSScreen({
                   </div>
                 </div>
 
+                {/* کارت کودکان و نیم‌بها در ستون فاکتور */}
+                <div className="bg-amber-50/90 border border-amber-300 rounded-lg px-2.5 py-1.5 space-y-1">
+                  <div className="flex justify-between items-center text-[11px]">
+                    <span className="font-extrabold text-amber-950 flex items-center gap-1">
+                      <span>👶</span>
+                      <span>کودکان / نیم‌بها:</span>
+                    </span>
+                    <span className="font-mono font-bold text-amber-900">
+                      {formatCurrency(
+                        (activeTab.selfServiceHalfPriceGuests || 0) *
+                          Math.round(activeTab.selfServiceUnitPrice / 2)
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="text-[10px] text-amber-800">
+                      فی: {formatCurrency(Math.round(activeTab.selfServiceUnitPrice / 2))}
+                    </span>
+                    <div className="flex items-center gap-1 bg-white border border-amber-300 rounded-md px-1.5 py-0.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests: Math.max(
+                              0,
+                              (activeTab.selfServiceHalfPriceGuests || 0) - 1
+                            ),
+                          })
+                        }
+                        className="w-5 h-5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 flex items-center justify-center font-bold cursor-pointer"
+                        title="کاهش تعداد کودک (-)"
+                      >
+                        <Minus size={11} />
+                      </button>
+                      <input
+                        type="number"
+                        min={0}
+                        value={activeTab.selfServiceHalfPriceGuests ?? 0}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests: Number.isFinite(val) && val >= 0 ? val : 0,
+                          });
+                        }}
+                        className="w-8 text-center font-mono font-black text-xs text-amber-950 outline-none"
+                        dir="ltr"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateActiveTab({
+                            selfServiceHalfPriceGuests:
+                              (activeTab.selfServiceHalfPriceGuests || 0) + 1,
+                          })
+                        }
+                        className="w-5 h-5 rounded bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center font-bold cursor-pointer"
+                        title="افزایش تعداد کودک (+)"
+                      >
+                        <Plus size={11} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex justify-between items-center text-[11px] text-teal-800 pt-1 border-t border-teal-200/60">
-                  <span>سهمیه نوشابه: {activeTab.selfServiceGuests} عدد</span>
+                  <span>
+                    سهمیه کل نوشابه:{' '}
+                    {(activeTab.selfServiceGuests || 0) + (activeTab.selfServiceHalfPriceGuests || 0)} عدد
+                  </span>
                   <span className="font-bold font-mono">
                     {formatCurrency(selfServiceCalc.selfServiceTotal)}
                   </span>
@@ -1857,6 +2069,29 @@ export default function POSScreen({
               </button>
 
               <div className="flex items-center gap-1 flex-1 justify-end">
+                {/* Quick 50% Half Price discount shortcut */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateActiveTab({
+                      discountType:
+                        activeTab.discountType === 'percent' && activeTab.discountValue === 50
+                          ? 'none'
+                          : 'percent',
+                      discountValue:
+                        activeTab.discountType === 'percent' && activeTab.discountValue === 50 ? 0 : 50,
+                    })
+                  }
+                  className={`px-2 py-1 rounded-lg text-xs font-bold transition-all border shrink-0 cursor-pointer ${
+                    activeTab.discountType === 'percent' && activeTab.discountValue === 50
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                      : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                  }`}
+                  title="اعمال ۵۰٪ تخفیف نیم‌بها روی کل فاکتور"
+                >
+                  ۵۰٪ نیم‌بها
+                </button>
+
                 <select
                   aria-label="نوع تخفیف"
                   value={activeTab.discountType}

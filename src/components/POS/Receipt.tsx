@@ -125,17 +125,40 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
           </div>
           <div className="flex justify-around items-center py-1">
             <div>
-              <div className="text-[9.5px] text-gray-700">تعداد نفرات (سقف ۴ نفر)</div>
-              <div className="text-[15px] font-black font-mono">{order.selfServiceGuests || 1} نفر</div>
+              <div className="text-[9.5px] text-gray-700">تعداد کل نفرات</div>
+              <div className="text-[15px] font-black font-mono">
+                {(order.selfServiceGuests || 0) + (order.selfServiceHalfPriceGuests || 0)} نفر
+              </div>
+              {((order.selfServiceHalfPriceGuests || 0) > 0 || (order.selfServiceGuests || 0) > 0) && (
+                <div className="text-[8.5px] text-gray-600 font-medium">
+                  {[
+                    order.selfServiceGuests ? `${order.selfServiceGuests} تمام‌بها` : '',
+                    order.selfServiceHalfPriceGuests ? `${order.selfServiceHalfPriceGuests} نیم‌بها / کودک` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' + ')}
+                </div>
+              )}
             </div>
             <div className="h-7 border-r border-black" />
             <div>
-              <div className="text-[9.5px] text-gray-700">سهمیه نوشابه</div>
-              <div className="text-[15px] font-black font-mono">{order.selfServiceGuests || 1} عدد</div>
+              <div className="text-[9.5px] text-gray-700">سهمیه کل نوشابه</div>
+              <div className="text-[15px] font-black font-mono">
+                {(order.selfServiceGuests || 0) + (order.selfServiceHalfPriceGuests || 0)} عدد
+              </div>
             </div>
           </div>
-          <div className="text-[10px] font-semibold border-t border-dashed border-gray-400 pt-1">
-            فی هر نفر: {formatCurrency(order.selfServiceUnitPrice || 0)}
+          <div className="text-[10px] font-semibold border-t border-dashed border-gray-400 pt-1 flex justify-around">
+            <span>فی تمام‌بها: {formatCurrency(order.selfServiceUnitPrice || 0)}</span>
+            {(order.selfServiceHalfPriceGuests || 0) > 0 && (
+              <span>
+                فی نیم‌بها:{' '}
+                {formatCurrency(
+                  order.selfServiceHalfPriceUnitPrice ||
+                    Math.round((order.selfServiceUnitPrice || 0) / 2)
+                )}
+              </span>
+            )}
           </div>
           {order.selfServiceDrinkNote && (
             <div className="text-[9.5px] text-gray-700">توضیحات: {order.selfServiceDrinkNote}</div>

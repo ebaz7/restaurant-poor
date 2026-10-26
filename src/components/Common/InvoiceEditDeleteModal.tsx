@@ -54,6 +54,7 @@ export default function InvoiceEditDeleteModal({
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [items, setItems] = useState<OrderItem[]>([]);
   const [selfServiceGuests, setSelfServiceGuests] = useState<number>(1);
+  const [selfServiceHalfPriceGuests, setSelfServiceHalfPriceGuests] = useState<number>(0);
 
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
 
@@ -69,8 +70,15 @@ export default function InvoiceEditDeleteModal({
       setSelectedBankId(order.bankId);
       setDiscountType(order.discountType || 'none');
       setDiscountValue(order.discountValue || 0);
-      setItems(order.items ? order.items.map((i) => ({ ...i })) : []);
-      setSelfServiceGuests(order.selfServiceGuests || 1);
+      setItems(
+        order.items
+          ? order.items
+              .filter((i) => i.menuItemId !== -1 && i.menuItemId !== -2)
+              .map((i) => ({ ...i }))
+          : []
+      );
+      setSelfServiceGuests(order.selfServiceGuests || (order.invoiceMode === 'self_service' ? 1 : 0));
+      setSelfServiceHalfPriceGuests(order.selfServiceHalfPriceGuests || 0);
     }
   }, [order]);
 
@@ -80,8 +88,14 @@ export default function InvoiceEditDeleteModal({
   const calculateItemsSubtotal = () => {
     if (order.invoiceMode === 'self_service') {
       const baseGuests = selfServiceGuests * (order.selfServiceUnitPrice || 0);
-      const extraItems = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-      return baseGuests + extraItems;
+      const halfPriceUnit =
+        order.selfServiceHalfPriceUnitPrice ||
+        Math.round((order.selfServiceUnitPrice || 0) / 2);
+      const halfGuestsTotal = selfServiceHalfPriceGuests * halfPriceUnit;
+      const extraItems = items
+        .filter((item) => item.menuItemId !== -1 && item.menuItemId !== -2)
+        .reduce((sum, item) => sum + item.price * item.quantity, 0);
+      return baseGuests + halfGuestsTotal + extraItems;
     }
     return items.reduce((sum, item) => sum + item.price * item.quantity, 0);
   };
@@ -131,6 +145,37 @@ export default function InvoiceEditDeleteModal({
       const selectedBank =
         bankAccounts.find((b) => b.id === Number(selectedBankId)) || bankAccounts[0];
 
+      const halfPriceUnit =
+        order.selfServiceHalfPriceUnitPrice ||
+        Math.round((order.selfServiceUnitPrice || 0) / 2);
+
+      const finalSavedItems: OrderItem[] =
+        order.invoiceMode === 'self_service'
+          ? [
+              ...(selfServiceGuests > 0
+                ? [
+                    {
+                      menuItemId: -1,
+                      name: `ورودی بار سلف سرویس + نوشابه (${selfServiceGuests} نفر تمام‌بها)`,
+                      price: order.selfServiceUnitPrice || 0,
+                      quantity: selfServiceGuests,
+                    },
+                  ]
+                : []),
+              ...(selfServiceHalfPriceGuests > 0
+                ? [
+                    {
+                      menuItemId: -2,
+                      name: `ورودی نیم‌بها / کودکان (${selfServiceHalfPriceGuests} نفر)`,
+                      price: halfPriceUnit,
+                      quantity: selfServiceHalfPriceGuests,
+                    },
+                  ]
+                : []),
+              ...items.filter((i) => i.menuItemId !== -1 && i.menuItemId !== -2),
+            ]
+          : items;
+
       const updatedOrderFields: Partial<Order> = {
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
@@ -139,8 +184,16 @@ export default function InvoiceEditDeleteModal({
         bankName: paymentMethod === 'card' ? selectedBank?.bankName : undefined,
         discountType,
         discountValue,
-        items,
+        items: finalSavedItems,
         selfServiceGuests: order.invoiceMode === 'self_service' ? selfServiceGuests : undefined,
+        selfServiceHalfPriceGuests:
+          order.invoiceMode === 'self_service' && selfServiceHalfPriceGuests > 0
+            ? selfServiceHalfPriceGuests
+            : undefined,
+        selfServiceHalfPriceUnitPrice:
+          order.invoiceMode === 'self_service' && selfServiceHalfPriceGuests > 0
+            ? halfPriceUnit
+            : undefined,
         subtotal,
         taxAmount: taxAmt,
         total: newTotal,
@@ -335,32 +388,59 @@ export default function InvoiceEditDeleteModal({
                 </div>
                 <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto">
                   {order.invoiceMode === 'self_service' && (
-                    <div className="p-2.5 flex justify-between items-center bg-amber-50/50">
-                      <div>
-                        <span className="font-bold text-slate-800">ورودی سلف سرویس</span>
-                        <span className="text-[10px] text-slate-500 block">
-                          {order.selfServiceGuests} نفر × {formatCurrency(order.selfServiceUnitPrice || 0)}
-                        </span>
-                      </div>
-                      <span className="font-mono font-bold text-slate-900">
-                        {formatCurrency((order.selfServiceGuests || 1) * (order.selfServiceUnitPrice || 0))}
-                      </span>
-                    </div>
+                    <>
+                      {(order.selfServiceGuests || 0) > 0 && (
+                        <div className="p-2.5 flex justify-between items-center bg-teal-50/60">
+                          <div>
+                            <span className="font-bold text-slate-800">ورودی سلف تمام‌بها</span>
+                            <span className="text-[10px] text-slate-500 block">
+                              {order.selfServiceGuests} نفر × {formatCurrency(order.selfServiceUnitPrice || 0)}
+                            </span>
+                          </div>
+                          <span className="font-mono font-bold text-slate-900">
+                            {formatCurrency((order.selfServiceGuests || 0) * (order.selfServiceUnitPrice || 0))}
+                          </span>
+                        </div>
+                      )}
+                      {(order.selfServiceHalfPriceGuests || 0) > 0 && (
+                        <div className="p-2.5 flex justify-between items-center bg-amber-50/70 border-t border-amber-100">
+                          <div>
+                            <span className="font-bold text-amber-950">ورودی نیم‌بها / کودکان</span>
+                            <span className="text-[10px] text-amber-800 block">
+                              {order.selfServiceHalfPriceGuests} نفر ×{' '}
+                              {formatCurrency(
+                                order.selfServiceHalfPriceUnitPrice ||
+                                  Math.round((order.selfServiceUnitPrice || 0) / 2)
+                              )}
+                            </span>
+                          </div>
+                          <span className="font-mono font-bold text-amber-900">
+                            {formatCurrency(
+                              (order.selfServiceHalfPriceGuests || 0) *
+                                (order.selfServiceHalfPriceUnitPrice ||
+                                  Math.round((order.selfServiceUnitPrice || 0) / 2))
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </>
                   )}
 
-                  {order.items?.map((it, idx) => (
-                    <div key={idx} className="p-2.5 flex justify-between items-center">
-                      <div>
-                        <span className="font-bold text-slate-800">{it.name}</span>
-                        <span className="text-[10px] text-slate-500 block">
-                          {it.quantity} عدد × {formatCurrency(it.price)}
+                  {order.items
+                    ?.filter((it) => it.menuItemId !== -1 && it.menuItemId !== -2)
+                    .map((it, idx) => (
+                      <div key={idx} className="p-2.5 flex justify-between items-center">
+                        <div>
+                          <span className="font-bold text-slate-800">{it.name}</span>
+                          <span className="text-[10px] text-slate-500 block">
+                            {it.quantity} عدد × {formatCurrency(it.price)}
+                          </span>
+                        </div>
+                        <span className="font-mono font-bold text-slate-900">
+                          {formatCurrency(it.price * it.quantity)}
                         </span>
                       </div>
-                      <span className="font-mono font-bold text-slate-900">
-                        {formatCurrency(it.price * it.quantity)}
-                      </span>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               </div>
             </div>
@@ -430,24 +510,55 @@ export default function InvoiceEditDeleteModal({
 
               {/* Self Service Guests Edit */}
               {order.invoiceMode === 'self_service' && (
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">تعداد نفرات سلف:</label>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setSelfServiceGuests((g) => Math.max(1, g - 1))}
-                      className="w-8 h-8 rounded-lg bg-slate-200 text-slate-800 font-bold flex items-center justify-center cursor-pointer"
-                    >
-                      <Minus size={16} />
-                    </button>
-                    <span className="font-mono font-black text-base">{selfServiceGuests} نفر</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelfServiceGuests((g) => g + 1)}
-                      className="w-8 h-8 rounded-lg bg-slate-200 text-slate-800 font-bold flex items-center justify-center cursor-pointer"
-                    >
-                      <Plus size={16} />
-                    </button>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white p-3 rounded-xl border border-slate-200">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1 text-xs">
+                      نفرات تمام‌بها سلف:
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelfServiceGuests((g) => Math.max(0, g - 1))}
+                        className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold flex items-center justify-center cursor-pointer"
+                      >
+                        <Minus size={16} />
+                      </button>
+                      <span className="font-mono font-black text-sm w-12 text-center">
+                        {selfServiceGuests} نفر
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelfServiceGuests((g) => g + 1)}
+                        className="w-8 h-8 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold flex items-center justify-center cursor-pointer shadow-xs"
+                      >
+                        <Plus size={16} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-bold text-amber-900 mb-1 text-xs">
+                      کودکان / نیم‌بها (نصف قیمت):
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelfServiceHalfPriceGuests((g) => Math.max(0, g - 1))}
+                        className="w-8 h-8 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold flex items-center justify-center cursor-pointer"
+                      >
+                        <Minus size={16} />
+                      </button>
+                      <span className="font-mono font-black text-sm w-12 text-center text-amber-950">
+                        {selfServiceHalfPriceGuests} کودک
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelfServiceHalfPriceGuests((g) => g + 1)}
+                        className="w-8 h-8 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold flex items-center justify-center cursor-pointer shadow-xs"
+                      >
+                        <Plus size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
