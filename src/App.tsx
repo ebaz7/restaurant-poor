@@ -369,24 +369,28 @@ export default function App() {
   }) => {
     if (!hasPermission(tab)) return null;
 
+    const isActive = activeTab === tab;
+
     return (
       <button
         type="button"
         onClick={() => setActiveTab(tab)}
         className={`flex flex-col items-center justify-center transition-all duration-150 relative cursor-pointer ${
           mobile
-            ? `flex-1 py-1 h-full ${
-                activeTab === tab ? 'text-teal-600 font-bold' : 'text-slate-500'
+            ? `min-w-[54px] sm:min-w-[64px] flex-1 px-1.5 py-1.5 rounded-xl shrink-0 ${
+                isActive
+                  ? 'bg-teal-50 text-teal-700 font-extrabold shadow-2xs border border-teal-200'
+                  : 'text-slate-600 hover:bg-slate-50'
               }`
             : `p-2 rounded-xl w-22 h-15 ${
-                activeTab === tab
+                isActive
                   ? 'bg-teal-600 text-white shadow-xs'
                   : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
               }`
         }`}
       >
-        <Icon size={mobile ? 18 : 20} className={mobile ? 'mb-0.5' : 'mb-1'} />
-        <span className={`${mobile ? 'text-[9px]' : 'text-[11px] font-bold'} whitespace-nowrap`}>
+        <Icon size={mobile ? 19 : 20} className={mobile ? 'mb-0.5' : 'mb-1'} />
+        <span className={`${mobile ? 'text-[10.5px] leading-tight' : 'text-[11px] font-bold'} whitespace-nowrap`}>
           {label}
         </span>
         {badge && !mobile && (
@@ -579,9 +583,80 @@ export default function App() {
 
   return (
     <div
-      className="flex flex-col md:flex-row h-screen w-screen max-w-full bg-slate-100 overflow-hidden"
+      className="flex flex-col md:flex-row h-[100dvh] w-screen max-w-full bg-slate-100 overflow-hidden"
       dir="rtl"
     >
+      {/* Mobile Compact Top Header Bar */}
+      <header className="flex md:hidden bg-white border-b border-slate-200 px-3 py-1.5 items-center justify-between gap-2 shrink-0 z-30">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-7 h-7 rounded-lg overflow-hidden bg-teal-600 flex items-center justify-center shrink-0">
+            <svg
+              viewBox="0 0 100 100"
+              className="w-full h-full"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <rect width="100" height="100" rx="20" fill="#0d9488" />
+              <path d="M50 28 L68 68 H58 L50 48 L42 68 H32 L50 28 Z" fill="white" />
+              <path d="M45 58 H55" stroke="white" strokeWidth="3.5" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <div className="text-xs font-extrabold text-slate-900 truncate">
+              {settings?.restaurantName || 'آرکا سیستم'}
+            </div>
+            <div className="text-[10px] text-slate-500 font-bold truncate">
+              {currentUser?.fullName || 'مدیر'} ({currentUser?.roleLabel || 'ادمین'})
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <PWAInstallButton variant="compact" className="px-2 py-1 text-[10px]" />
+
+          <button
+            type="button"
+            onClick={() => setShowNetworkModal(true)}
+            className={`px-2 py-1 rounded-lg text-[10px] font-extrabold flex items-center gap-1 border cursor-pointer ${
+              syncState.isOnline
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-rose-50 border-rose-200 text-rose-800'
+            }`}
+          >
+            {syncState.isSyncing ? (
+              <RefreshCw size={11} className="animate-spin text-amber-600" />
+            ) : syncState.isOnline ? (
+              <Wifi size={11} className="text-emerald-600" />
+            ) : (
+              <WifiOff size={11} className="text-rose-600" />
+            )}
+            <span>{syncState.isOnline ? 'متصل' : 'آفلاین'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowNodeRoleModal(true)}
+            className={`px-2 py-1 rounded-lg text-[10px] font-extrabold flex items-center gap-1 border cursor-pointer ${
+              nodeRole === 'server'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-blue-50 border-blue-200 text-blue-800'
+            }`}
+          >
+            {nodeRole === 'server' ? <Server size={11} /> : <Radio size={11} />}
+            <span>{nodeRole === 'server' ? 'سرور' : 'کلاینت'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenSwitchUser}
+            title="تغییر کاربر یا قفل"
+            className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 cursor-pointer"
+          >
+            <LogOut size={13} />
+          </button>
+        </div>
+      </header>
+
       {/* Sidebar Navigation (Desktop) */}
       <aside className="hidden md:flex w-28 bg-white border-l border-slate-200 flex-col items-center py-2 justify-between z-10 shrink-0">
         <div className="flex flex-col items-center gap-1 w-full">
@@ -703,7 +778,7 @@ export default function App() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 min-w-0 max-w-full flex flex-col h-[calc(100vh-3.5rem)] md:h-full overflow-hidden">
+      <main className="flex-1 min-w-0 max-w-full flex flex-col overflow-hidden">
         {activeTab === 'pos' && hasPermission('pos') && (
           <POSScreen
             key={`pos-${settings?.currencyUnit || 'toman'}`}
@@ -733,30 +808,15 @@ export default function App() {
         {activeTab === 'settings' && hasPermission('settings') && <SettingsScreen />}
       </main>
 
-      {/* Bottom Navigation (Mobile) */}
-      <nav className="flex md:hidden bg-white border-t border-slate-200 h-14 shrink-0 z-30 justify-around items-center px-1 w-full">
+      {/* Bottom Navigation (Mobile) - All 7 sections accessible with smooth horizontal scroll if needed */}
+      <nav className="flex md:hidden bg-white border-t border-slate-200 py-1.5 px-1.5 shrink-0 z-30 items-center justify-between gap-1 w-full overflow-x-auto no-scrollbar">
         <NavButton tab="pos" icon={Store} label="صندوق" mobile />
         <NavButton tab="kitchen" icon={ChefHat} label="آشپزخانه" mobile />
         <NavButton tab="accounting" icon={Landmark} label="حسابداری" mobile />
         <NavButton tab="menu" icon={UtensilsCrossed} label="منو" mobile />
-        <NavButton tab="reports" icon={BarChart3} label="گزارش" mobile />
+        <NavButton tab="reports" icon={BarChart3} label="گزارشات" mobile />
+        <NavButton tab="customers" icon={Users} label="مشتریان" mobile />
         <NavButton tab="settings" icon={Settings} label="تنظیمات" mobile />
-        <button
-          type="button"
-          onClick={() => setShowNetworkModal(true)}
-          className="flex flex-col items-center justify-center flex-1 py-1 h-full text-slate-500 cursor-pointer"
-        >
-          <Server size={17} className={syncState.isOnline ? 'text-emerald-600' : 'text-rose-600'} />
-          <span className="text-[9px] font-bold whitespace-nowrap">شبکه</span>
-        </button>
-        <button
-          type="button"
-          onClick={handleOpenSwitchUser}
-          className="flex flex-col items-center justify-center flex-1 py-1 h-full text-rose-600 cursor-pointer"
-        >
-          <LogOut size={17} className="mb-0.5" />
-          <span className="text-[9px] font-bold whitespace-nowrap">کاربر</span>
-        </button>
       </nav>
 
       {/* Network Terminal & Central Server Modal */}

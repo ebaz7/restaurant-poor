@@ -91,23 +91,8 @@ export default function AccountingScreen() {
             </div>
           </div>
 
-          {/* Mobile Dropdown Menu for Sub-Tabs */}
-          <div className="sm:hidden block w-full">
-            <select
-              value={activeSubTab}
-              onChange={(e) => setActiveSubTab(e.target.value as AccountingSubTab)}
-              className="w-full bg-slate-100 border border-slate-300 text-slate-900 rounded-xl px-3 py-2 text-xs font-extrabold focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {navItems.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label} {item.badge && item.badge > 0 ? `(${item.badge} چک معوق)` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Desktop & Scrollable Sub-Tabs Bar */}
-          <div className="hidden sm:flex items-center gap-1.5 overflow-x-auto no-scrollbar scrollbar-none pb-0.5">
+          {/* Scrollable Sub-Tabs Bar (Mobile & Desktop) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scrollbar-none pb-0.5">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeSubTab === item.id;
@@ -116,7 +101,7 @@ export default function AccountingScreen() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveSubTab(item.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 border ${
+                  className={`px-3 py-2 sm:py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 border cursor-pointer ${
                     isActive
                       ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                       : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'

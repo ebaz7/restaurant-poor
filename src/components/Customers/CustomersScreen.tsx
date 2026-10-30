@@ -135,18 +135,20 @@ export default function CustomersScreen() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-slate-50">
-      <div className="max-w-6xl mx-auto space-y-6">
+    <div className="flex-1 overflow-y-auto p-3 sm:p-6 md:p-8 bg-slate-50">
+      <div className="max-w-6xl mx-auto space-y-3.5 sm:space-y-6">
         {/* Header Section */}
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div className="bg-white p-3.5 sm:p-6 rounded-2xl border border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-3.5 md:gap-6">
           <div>
-            <h1 className="text-2xl font-extrabold text-slate-900">باشگاه مشتریان و مشترکین</h1>
-            <p className="text-xs text-slate-500 mt-1">
+            <h1 className="text-base sm:text-2xl font-extrabold text-slate-900">
+              باشگاه مشتریان و مشترکین
+            </h1>
+            <p className="text-[11px] sm:text-xs text-slate-500 mt-1">
               مدیریت مشخصات، کد اشتراک و آدرس بیرون‌بر مشتریان رستوران
             </p>
           </div>
 
-          <div className="flex items-center gap-3 w-full md:w-auto">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full md:w-auto">
             <div className="relative flex-1 md:w-72">
               <Search
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
@@ -163,7 +165,7 @@ export default function CustomersScreen() {
             <button
               type="button"
               onClick={handleOpenAddModal}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-colors shrink-0 text-xs"
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors shrink-0 text-xs cursor-pointer"
             >
               <UserPlus size={16} />
               <span>افزودن مشتری جدید</span>

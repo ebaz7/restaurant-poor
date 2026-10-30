@@ -229,6 +229,12 @@ body {
   font-variant-numeric: tabular-nums;
   background-color: #f1f5f9;
   color: #1e293b;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+button, a, select, input {
+  touch-action: manipulation;
 }
 
 .font-mono, .tabular-nums {
@@ -236,10 +242,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

@@ -972,45 +972,67 @@ export default function POSScreen({
       )}
 
       {/* Top Bar: Open Order Tabs + Live Cashier Summary Strip */}
-      <div className="bg-white border-b border-slate-200 flex flex-wrap items-center justify-between px-3 pt-2 pb-1.5 gap-2 shrink-0 shadow-xs z-10">
-        {/* Order Tabs */}
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {openTabs.map((tab) => (
-            <div
-              key={tab.id}
-              onClick={() => setActiveTabId(tab.id)}
-              className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl cursor-pointer min-w-[130px] transition-colors border ${
-                activeTabId === tab.id
-                  ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold'
-                  : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              <span className="text-xs whitespace-nowrap">{tab.title}</span>
-              <span className="bg-white px-1.5 py-0.5 rounded text-[11px] font-mono font-bold border border-slate-200">
-                {tab.invoiceMode === 'self_service' ? `${tab.selfServiceGuests}نفر` : tab.items.length}
-              </span>
-              <button
-                type="button"
-                aria-label={`بستن ${tab.title}`}
-                onClick={(e) => handleCloseTab(tab.id, e)}
-                className="hover:bg-red-100 hover:text-red-600 rounded p-0.5 transition-colors"
+      <div className="bg-white border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between px-2.5 sm:px-3 pt-1.5 pb-1.5 gap-1.5 shrink-0 shadow-xs z-10">
+        <div className="flex items-center justify-between gap-2 w-full sm:w-auto">
+          {/* Order Tabs */}
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar flex-1">
+            {openTabs.map((tab) => (
+              <div
+                key={tab.id}
+                onClick={() => setActiveTabId(tab.id)}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl cursor-pointer shrink-0 transition-colors border ${
+                  activeTabId === tab.id
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold'
+                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                }`}
               >
-                <X size={13} />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            aria-label="تب سفارش جدید"
-            onClick={handleNewTab}
-            className="flex items-center justify-center p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-colors shrink-0 border border-dashed border-blue-200"
-          >
-            <Plus size={18} />
-          </button>
+                <span className="text-xs whitespace-nowrap">{tab.title}</span>
+                <span className="bg-white px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border border-slate-200">
+                  {tab.invoiceMode === 'self_service' ? `${tab.selfServiceGuests}نفر` : tab.items.length}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`بستن ${tab.title}`}
+                  onClick={(e) => handleCloseTab(tab.id, e)}
+                  className="hover:bg-red-100 hover:text-red-600 rounded p-0.5 transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              aria-label="تب سفارش جدید"
+              onClick={handleNewTab}
+              className="flex items-center justify-center p-1.5 sm:p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-colors shrink-0 border border-dashed border-blue-200"
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+
+          {/* Mobile Quick Action Buttons */}
+          <div className="flex sm:hidden items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowRecentOrdersModal(true)}
+              className="px-2.5 py-1.5 bg-emerald-600 text-white rounded-xl text-[11px] font-bold flex items-center gap-1 shadow-xs"
+            >
+              <History size={13} />
+              <span>فیش‌ها ({todayOrders.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCashierModal(true)}
+              className="px-2.5 py-1.5 bg-slate-900 text-white rounded-xl text-[11px] font-bold flex items-center gap-1"
+            >
+              <Lock size={13} />
+              <span>صندوق</span>
+            </button>
+          </div>
         </div>
 
-        {/* Live Daily / Weekly / Monthly Cashier Summary & Z-Report Button */}
-        <div className="flex items-center gap-2 overflow-x-auto">
+        {/* Live Daily / Weekly / Monthly Cashier Summary & Z-Report Button (Tablet/Desktop) */}
+        <div className="hidden sm:flex items-center gap-2 overflow-x-auto">
           <div className="hidden xl:flex items-center gap-4 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
             <div>
               <span className="text-slate-500 ml-1">فروش امروز:</span>
@@ -1050,6 +1072,41 @@ export default function POSScreen({
           >
             <Lock size={14} />
             <span>گزارش صندوق و بستن حساب روزانه</span>
+          </button>
+        </div>
+
+        {/* Mobile Segmented Switcher: Selection vs Invoice/Checkout */}
+        <div className="grid lg:hidden grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl w-full">
+          <button
+            type="button"
+            onClick={() => setShowCartOnMobile(false)}
+            className={`py-1.5 px-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              !showCartOnMobile
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Utensils size={14} />
+            <span>۱. انتخاب نفرات و نوشیدنی</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowCartOnMobile(true)}
+            className={`py-1.5 px-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              showCartOnMobile
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'text-slate-700 hover:text-slate-900'
+            }`}
+          >
+            <ReceiptIcon size={14} />
+            <span>۲. فاکتور و تسویه</span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                showCartOnMobile ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'
+              }`}
+            >
+              {formatCurrency(activeTabTotal)}
+            </span>
           </button>
         </div>
       </div>
