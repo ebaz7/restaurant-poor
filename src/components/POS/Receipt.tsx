@@ -10,6 +10,9 @@ interface ReceiptProps {
 
 export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, settings }, ref) => {
   const isSelfService = order.invoiceMode === 'self_service';
+  const hasSelfServiceGuests =
+    isSelfService &&
+    ((order.selfServiceGuests || 0) > 0 || (order.selfServiceHalfPriceGuests || 0) > 0);
 
   const paymentLabel = () => {
     if (order.paymentMethod === 'cash') return 'نقدی (صندوق)';
@@ -42,11 +45,15 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
         <h1 className="text-[15px] font-bold mb-0.5 tracking-tight">
           {settings.restaurantName || 'رستوران و سلف سرویس آرکا'}
         </h1>
-        {isSelfService && (
+        {hasSelfServiceGuests ? (
           <div className="mt-1 inline-block border-2 border-black px-2 py-0.5 font-black text-[11px] rounded">
             ویژه خط سلف سرویس و دریافت نوشابه
           </div>
-        )}
+        ) : isSelfService ? (
+          <div className="mt-1 inline-block border border-black px-2 py-0.5 font-bold text-[10.5px] rounded">
+            فاکتور نوشابه و نوشیدنی (بدون سلف سرویس)
+          </div>
+        ) : null}
         {settings.phone && (
           <p className="text-[10px] text-gray-800 mt-1">
             تلفن: <span dir="ltr" className="font-semibold">{settings.phone}</span>
@@ -81,7 +88,11 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
         <div className="flex justify-between items-center text-[10px]">
           <span>نوع فاکتور:</span>
           <span className="font-bold">
-            {isSelfService ? 'حالت دوم: فیش سلف سرویس' : 'حالت اول: فاکتور عادی منو'}
+            {hasSelfServiceGuests
+              ? 'حالت دوم: فیش سلف سرویس'
+              : isSelfService
+              ? 'تک فاکتور نوشابه و نوشیدنی'
+              : 'حالت اول: فاکتور عادی منو'}
           </span>
         </div>
 
@@ -118,7 +129,7 @@ export const Receipt = React.forwardRef<HTMLDivElement, ReceiptProps>(({ order, 
       </div>
 
       {/* Dedicated Self-Service Voucher Box (Mode 2) */}
-      {isSelfService && (
+      {hasSelfServiceGuests && (
         <div className="mb-2.5 border-2 border-black rounded p-2 bg-gray-50 text-center space-y-1">
           <div className="text-[12px] font-black border-b border-black pb-1">
             کوپن استفاده از سلف سرویس و نوشابه

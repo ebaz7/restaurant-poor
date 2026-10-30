@@ -77,7 +77,9 @@ export default function InvoiceEditDeleteModal({
               .map((i) => ({ ...i }))
           : []
       );
-      setSelfServiceGuests(order.selfServiceGuests || (order.invoiceMode === 'self_service' ? 1 : 0));
+      setSelfServiceGuests(
+        order.selfServiceGuests ?? (order.invoiceMode === 'self_service' ? 0 : 0)
+      );
       setSelfServiceHalfPriceGuests(order.selfServiceHalfPriceGuests || 0);
     }
   }, [order]);

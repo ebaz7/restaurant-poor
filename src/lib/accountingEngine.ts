@@ -286,8 +286,7 @@ export function scaleMonetaryAmountForCurrencySwitch(
 export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfServiceCalcResult {
   const rawGuests = Math.max(0, Math.round(Number(input.guestCount) || 0));
   const halfGuests = Math.max(0, Math.round(Number(input.halfPriceGuestCount) || 0));
-  // If both full-price and half-price guests are 0, clamp full guests to 1
-  const clampedGuests = rawGuests === 0 && halfGuests === 0 ? 1 : rawGuests;
+  const clampedGuests = rawGuests;
   const unitPrice = Math.max(0, Number(input.pricePerPerson) || 0);
   const halfUnitPrice = Math.round(unitPrice / 2);
   const extraItemsSubtotal = Math.max(0, Number(input.extraItemsSubtotal) || 0);

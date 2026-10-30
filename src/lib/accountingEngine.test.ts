@@ -65,6 +65,22 @@ test('Self-service invoice accurately calculates half-price / child guests at 50
   assert.equal(res.total, 500000);
 });
 
+test('Self-service invoice supports 0 guests (beverage-only order without self-service ticket)', () => {
+  const res = calculateSelfServiceInvoice({
+    guestCount: 0,
+    halfPriceGuestCount: 0,
+    pricePerPerson: 200000,
+    extraItemsSubtotal: 45000, // e.g. 3 drinks @ 15,000
+  });
+
+  assert.equal(res.clampedGuests, 0);
+  assert.equal(res.halfPriceGuests, 0);
+  assert.equal(res.selfServiceTotal, 0);
+  assert.equal(res.drinkQuota, 0);
+  assert.equal(res.subtotal, 45000);
+  assert.equal(res.total, 45000);
+});
+
 test('Production formula (BOM) calculates exact COGS, waste, profit per unit, and margins without bugs', () => {
   const cost = calculateRecipeCost({
     ingredients: [

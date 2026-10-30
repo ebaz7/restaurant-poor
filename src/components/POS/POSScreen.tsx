@@ -598,8 +598,9 @@ export default function POSScreen({
 
   const canCheckout =
     activeTab.invoiceMode === 'self_service'
-      ? (activeTab.selfServiceGuests >= 1 || (activeTab.selfServiceHalfPriceGuests || 0) >= 1) &&
-        activeTab.selfServiceUnitPrice > 0
+      ? ((activeTab.selfServiceGuests >= 1 || (activeTab.selfServiceHalfPriceGuests || 0) >= 1) &&
+          activeTab.selfServiceUnitPrice > 0) ||
+        activeTab.items.length > 0
       : activeTab.items.length > 0;
 
   const handleCheckout = async () => {
@@ -641,7 +642,7 @@ export default function POSScreen({
         activeBanks.find((b) => b.id === activeTab.bankId) || defaultBank;
 
       // Build final items list (for self-service mode, include the self-service line item + half-price line item + any extra items)
-      const clampedGuests = clampSelfServiceGuests(activeTab.selfServiceGuests);
+      const clampedGuests = Math.max(0, Math.floor(Number(activeTab.selfServiceGuests) || 0));
       const halfGuests = Math.max(0, Math.floor(Number(activeTab.selfServiceHalfPriceGuests) || 0));
       const halfUnitPrice = Math.round(activeTab.selfServiceUnitPrice / 2);
 
@@ -685,12 +686,20 @@ export default function POSScreen({
           ? activeTabTotal
           : 0;
 
+      const isSelfServiceTicketIncluded =
+        activeTab.invoiceMode === 'self_service' && (clampedGuests > 0 || halfGuests > 0);
+
       const newOrder: Order = {
         invoiceNumber: nextInvoiceNum,
         createdAt: new Date(),
         customerPhone: phone,
         customerName:
-          name || (activeTab.invoiceMode === 'self_service' ? 'مهمان سلف سرویس' : ''),
+          name ||
+          (activeTab.invoiceMode === 'self_service'
+            ? isSelfServiceTicketIncluded
+              ? 'مهمان سلف سرویس'
+              : 'فروش نوشیدنی / متفرقه'
+            : ''),
         customerSubscriptionCode: subscriptionCode,
         customerAddress: address,
         items: finalItems,
@@ -704,19 +713,15 @@ export default function POSScreen({
         status: 'paid',
         invoiceMode: activeTab.invoiceMode,
         selfServiceGuests:
-          activeTab.invoiceMode === 'self_service' ? clampedGuests : undefined,
+          activeTab.invoiceMode === 'self_service' && clampedGuests > 0 ? clampedGuests : 0,
         selfServiceUnitPrice:
-          activeTab.invoiceMode === 'self_service'
-            ? activeTab.selfServiceUnitPrice
-            : undefined,
+          isSelfServiceTicketIncluded ? activeTab.selfServiceUnitPrice : undefined,
         selfServiceHalfPriceGuests:
           activeTab.invoiceMode === 'self_service' && halfGuests > 0 ? halfGuests : undefined,
         selfServiceHalfPriceUnitPrice:
           activeTab.invoiceMode === 'self_service' && halfGuests > 0 ? halfUnitPrice : undefined,
         selfServiceDrinkNote:
-          activeTab.invoiceMode === 'self_service'
-            ? activeTab.selfServiceDrinkNote
-            : undefined,
+          isSelfServiceTicketIncluded ? activeTab.selfServiceDrinkNote : undefined,
         paymentMethod: activeTab.paymentMethod,
         bankId:
           activeTab.paymentMethod === 'card' || activeTab.paymentMethod === 'split'
@@ -1074,8 +1079,28 @@ export default function POSScreen({
                     </p>
                   </div>
 
-                  {/* 1 to 4 Person Buttons + Plus/Minus Option for More Guests */}
+                  {/* 0 to 4 Person Buttons + Plus/Minus Option for More Guests */}
                   <div className="flex flex-wrap items-stretch gap-2 w-full md:w-auto">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateActiveTab({
+                          selfServiceGuests: 0,
+                          selfServiceHalfPriceGuests: 0,
+                        })
+                      }
+                      className={`flex-1 sm:flex-initial min-w-[78px] md:w-24 py-2.5 px-2 rounded-xl font-bold text-sm transition-all border flex flex-col items-center justify-center cursor-pointer ${
+                        activeTab.selfServiceGuests === 0 &&
+                        (activeTab.selfServiceHalfPriceGuests || 0) === 0
+                          ? 'bg-amber-600 text-white border-amber-700 shadow-sm scale-[1.02]'
+                          : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100 hover:border-amber-300'
+                      }`}
+                      title="ثبت تک فاکتور نوشابه و نوشیدنی بدون ورودی سلف سرویس"
+                    >
+                      <span className="text-sm font-black font-mono">۰ نفر</span>
+                      <span className="text-[10px] opacity-90">فقط نوشابه</span>
+                    </button>
+
                     {[1, 2, 3, 4].map((num) => (
                       <button
                         key={num}
@@ -1092,7 +1117,7 @@ export default function POSScreen({
                       </button>
                     ))}
 
-                    {/* نفرات بیشتر با دکمه + و - و قابلیت وارد کردن هر تعداد دلخواه */}
+                    {/* نفرات بیشتر یا صفر با دکمه + و - و قابلیت وارد کردن هر تعداد دلخواه */}
                     <div
                       className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border transition-all ${
                         activeTab.selfServiceGuests > 4
@@ -1106,7 +1131,7 @@ export default function POSScreen({
                             activeTab.selfServiceGuests > 4 ? 'text-teal-100' : 'text-slate-500'
                           }`}
                         >
-                          نفرات بیشتر
+                          تعداد دلخواه
                         </span>
                         <span className="text-xs font-black font-mono whitespace-nowrap">
                           {activeTab.selfServiceGuests} نفر
@@ -1118,7 +1143,7 @@ export default function POSScreen({
                         title="کاهش تعداد نفرات (-)"
                         onClick={() =>
                           updateActiveTab({
-                            selfServiceGuests: Math.max(1, (activeTab.selfServiceGuests || 1) - 1),
+                            selfServiceGuests: Math.max(0, (activeTab.selfServiceGuests ?? 0) - 1),
                           })
                         }
                         className={`w-8 h-8 rounded-lg font-bold flex items-center justify-center transition cursor-pointer ${
@@ -1132,13 +1157,13 @@ export default function POSScreen({
 
                       <input
                         type="number"
-                        min={1}
+                        min={0}
                         aria-label="تعداد نفرات دلخواه سلف"
-                        value={activeTab.selfServiceGuests || 1}
+                        value={activeTab.selfServiceGuests ?? 0}
                         onChange={(e) => {
                           const val = parseInt(e.target.value, 10);
                           updateActiveTab({
-                            selfServiceGuests: Number.isFinite(val) && val >= 1 ? val : 1,
+                            selfServiceGuests: Number.isFinite(val) && val >= 0 ? val : 0,
                           });
                         }}
                         className={`w-12 h-8 text-center rounded-lg font-mono font-black text-sm outline-none border ${
@@ -1349,7 +1374,12 @@ export default function POSScreen({
                 <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-extrabold text-amber-900 flex items-center gap-1.5">
-                      <span>🥤 افزودن نوشیدنی یا نوشابه اضافه دستی (خارج از سهمیه سلف):</span>
+                      <span>
+                        {activeTab.selfServiceGuests === 0 &&
+                        (activeTab.selfServiceHalfPriceGuests || 0) === 0
+                          ? '🥤 انتخاب نوشابه و نوشیدنی برای تک فاکتور (بدون فیش سلف):'
+                          : '🥤 افزودن نوشیدنی یا نوشابه اضافه دستی (خارج از سهمیه سلف):'}
+                      </span>
                       {activeTab.items.length > 0 && (
                         <span className="px-2 py-0.5 rounded-md bg-amber-600 text-white font-mono text-[10px]">
                           {activeTab.items.reduce((sum, i) => sum + i.quantity, 0)} مورد اضافه شد
@@ -1357,7 +1387,10 @@ export default function POSScreen({
                       )}
                     </span>
                     <span className="text-[11px] text-amber-800">
-                      (مثلاً ۳ نفر هستند اما ۴ نوشابه یا ۲ دوغ می‌خواهند)
+                      {activeTab.selfServiceGuests === 0 &&
+                      (activeTab.selfServiceHalfPriceGuests || 0) === 0
+                        ? 'فقط قیمت نوشیدنی‌های انتخابی در فیش محاسبه می‌شود'
+                        : '(مثلاً ۳ نفر هستند اما ۴ نوشابه یا ۲ دوغ می‌خواهند)'}
                     </span>
                   </div>
 
@@ -1380,7 +1413,14 @@ export default function POSScreen({
                           ? 'bg-slate-700 hover:bg-slate-800 text-white'
                           : 'bg-amber-600 hover:bg-amber-700 text-white';
 
-                      const fullName = bev.name.endsWith('اضافه') ? bev.name : `${bev.name} اضافه`;
+                      const isZeroGuests =
+                        activeTab.selfServiceGuests === 0 &&
+                        (activeTab.selfServiceHalfPriceGuests || 0) === 0;
+                      const fullName = isZeroGuests
+                        ? bev.name.replace(/\s*اضافه$/, '')
+                        : bev.name.endsWith('اضافه')
+                        ? bev.name
+                        : `${bev.name} اضافه`;
 
                       return (
                         <button
@@ -1751,15 +1791,36 @@ export default function POSScreen({
               <div className="bg-teal-50/70 border border-teal-200 p-3 rounded-xl space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="font-extrabold text-teal-900 text-xs">
-                    فیش سلف سرویس و نوشابه
+                    {activeTab.selfServiceGuests === 0 &&
+                    (activeTab.selfServiceHalfPriceGuests || 0) === 0
+                      ? 'فقط نوشابه و نوشیدنی (بدون فیش سلف)'
+                      : 'فیش سلف سرویس و نوشابه'}
                   </span>
                   <span className="text-xs font-mono font-black text-teal-800">
                     {activeTab.selfServiceGuests} نفر
                   </span>
                 </div>
 
-                {/* Compact 1..4 selector + Plus/Minus stepper inside cart too */}
-                <div className="grid grid-cols-4 gap-1">
+                {/* Compact 0..4 selector + Plus/Minus stepper inside cart too */}
+                <div className="grid grid-cols-5 gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateActiveTab({
+                        selfServiceGuests: 0,
+                        selfServiceHalfPriceGuests: 0,
+                      })
+                    }
+                    className={`py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                      activeTab.selfServiceGuests === 0 &&
+                      (activeTab.selfServiceHalfPriceGuests || 0) === 0
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+                    }`}
+                    title="فقط نوشابه (بدون فیش سلف)"
+                  >
+                    ۰ نفر
+                  </button>
                   {[1, 2, 3, 4].map((n) => (
                     <button
                       key={n}
@@ -1776,17 +1837,17 @@ export default function POSScreen({
                   ))}
                 </div>
 
-                {/* نفرات بیشتر با + و - در ستون فاکتور */}
+                {/* نفرات بیشتر یا صفر با + و - در ستون فاکتور */}
                 <div className="flex items-center justify-between gap-2 bg-white border border-teal-200 rounded-lg px-2.5 py-1.5">
                   <span className="text-[11px] font-bold text-slate-700">
-                    نفرات بیشتر / دلخواه:
+                    تعداد نفرات سلف:
                   </span>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() =>
                         updateActiveTab({
-                          selfServiceGuests: Math.max(1, (activeTab.selfServiceGuests || 1) - 1),
+                          selfServiceGuests: Math.max(0, (activeTab.selfServiceGuests ?? 0) - 1),
                         })
                       }
                       className="w-6 h-6 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center font-bold cursor-pointer"
@@ -1795,12 +1856,12 @@ export default function POSScreen({
                     </button>
                     <input
                       type="number"
-                      min={1}
-                      value={activeTab.selfServiceGuests || 1}
+                      min={0}
+                      value={activeTab.selfServiceGuests ?? 0}
                       onChange={(e) => {
                         const val = parseInt(e.target.value, 10);
                         updateActiveTab({
-                          selfServiceGuests: Number.isFinite(val) && val >= 1 ? val : 1,
+                          selfServiceGuests: Number.isFinite(val) && val >= 0 ? val : 0,
                         });
                       }}
                       className="w-11 text-center font-mono font-black text-xs text-teal-800 border border-slate-200 rounded py-0.5 outline-none focus:border-teal-600"
