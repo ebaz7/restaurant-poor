@@ -214,6 +214,168 @@ function hasDbData(obj) {
   return (c + m + o + s) > 0;
 }
 
+function mergeDatabaseObjects(existing, incoming) {
+  if (!existing || typeof existing !== 'object') return incoming || {};
+  if (!incoming || typeof incoming !== 'object') return existing || {};
+
+  const result = { ...existing };
+
+  // 1. Orders: merge by invoiceNumber or id (keep existing orders and append/update incoming)
+  const ordersMap = new Map();
+  if (Array.isArray(existing.orders)) {
+    for (const o of existing.orders) {
+      if (o) {
+        const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
+        ordersMap.set(k, o);
+      }
+    }
+  }
+  if (Array.isArray(incoming.orders)) {
+    for (const o of incoming.orders) {
+      if (o) {
+        const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
+        const prev = ordersMap.get(k);
+        if (prev) {
+          ordersMap.set(k, { ...prev, ...o });
+        } else {
+          ordersMap.set(k, o);
+        }
+      }
+    }
+  }
+  result.orders = Array.from(ordersMap.values()).sort(
+    (a, b) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0)
+  );
+
+  // 2. Customers: merge by phone or id
+  const customersMap = new Map();
+  if (Array.isArray(existing.customers)) {
+    for (const c of existing.customers) {
+      if (c) customersMap.set(c.phone || c.id, c);
+    }
+  }
+  if (Array.isArray(incoming.customers)) {
+    for (const c of incoming.customers) {
+      if (c) customersMap.set(c.phone || c.id, c);
+    }
+  }
+  result.customers = Array.from(customersMap.values());
+
+  // 3. Journal Vouchers: merge by voucherNumber or id
+  const vouchersMap = new Map();
+  if (Array.isArray(existing.journalVouchers)) {
+    for (const v of existing.journalVouchers) {
+      if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+    }
+  }
+  if (Array.isArray(incoming.journalVouchers)) {
+    for (const v of incoming.journalVouchers) {
+      if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+    }
+  }
+  result.journalVouchers = Array.from(vouchersMap.values());
+
+  // 4. Inventory Transactions: merge by id
+  const invMap = new Map();
+  if (Array.isArray(existing.inventoryTransactions)) {
+    for (const it of existing.inventoryTransactions) {
+      if (it && it.id) invMap.set(it.id, it);
+    }
+  }
+  if (Array.isArray(incoming.inventoryTransactions)) {
+    for (const it of incoming.inventoryTransactions) {
+      if (it && it.id) invMap.set(it.id, it);
+    }
+  }
+  result.inventoryTransactions = Array.from(invMap.values());
+
+  // 5. Kitchen Productions: merge by batchNumber or id
+  const kpMap = new Map();
+  if (Array.isArray(existing.kitchenProductions)) {
+    for (const kp of existing.kitchenProductions) {
+      if (kp) kpMap.set(kp.batchNumber || kp.id, kp);
+    }
+  }
+  if (Array.isArray(incoming.kitchenProductions)) {
+    for (const kp of incoming.kitchenProductions) {
+      if (kp) kpMap.set(kp.batchNumber || kp.id, kp);
+    }
+  }
+  result.kitchenProductions = Array.from(kpMap.values());
+
+  // 6. Cash Closures: merge by closedAt or id
+  const ccMap = new Map();
+  if (Array.isArray(existing.cashClosures)) {
+    for (const cc of existing.cashClosures) {
+      if (cc) ccMap.set(cc.id || cc.closedAt, cc);
+    }
+  }
+  if (Array.isArray(incoming.cashClosures)) {
+    for (const cc of incoming.cashClosures) {
+      if (cc) ccMap.set(cc.id || cc.closedAt, cc);
+    }
+  }
+  result.cashClosures = Array.from(ccMap.values());
+
+  // 7. Categories: merge by id or name
+  const catMap = new Map();
+  if (Array.isArray(existing.categories)) {
+    for (const c of existing.categories) {
+      if (c) catMap.set(c.id || c.name, c);
+    }
+  }
+  if (Array.isArray(incoming.categories)) {
+    for (const c of incoming.categories) {
+      if (c) catMap.set(c.id || c.name, c);
+    }
+  }
+  result.categories = Array.from(catMap.values());
+
+  // 8. Menu Items: merge by id or name
+  const menuMap = new Map();
+  if (Array.isArray(existing.menuItems)) {
+    for (const m of existing.menuItems) {
+      if (m) menuMap.set(m.id || m.name, m);
+    }
+  }
+  if (Array.isArray(incoming.menuItems)) {
+    for (const m of incoming.menuItems) {
+      if (m) menuMap.set(m.id || m.name, m);
+    }
+  }
+  result.menuItems = Array.from(menuMap.values());
+
+  // 9. Other tables: merge by key
+  const mergeTable = (key) => {
+    const map = new Map();
+    if (Array.isArray(existing[key])) {
+      for (const item of existing[key]) if (item) map.set(item.id || item.code || item.name, item);
+    }
+    if (Array.isArray(incoming[key])) {
+      for (const item of incoming[key]) if (item) map.set(item.id || item.code || item.name, item);
+    }
+    result[key] = Array.from(map.values());
+  };
+  mergeTable('bankAccounts');
+  mergeTable('persons');
+  mergeTable('cheques');
+  mergeTable('rawMaterials');
+  mergeTable('productionRecipes');
+  mergeTable('accounts');
+  mergeTable('appUsers');
+
+  // 10. Settings: prefer non-empty incoming settings
+  if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
+    result.settings = incoming.settings;
+  } else if (Array.isArray(existing.settings)) {
+    result.settings = existing.settings;
+  }
+
+  result.version = incoming.version || existing.version || 8;
+  result.exportedAt = new Date().toISOString();
+  return result;
+}
+
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -240,7 +402,8 @@ const server = http.createServer((req, res) => {
   // Set standard CORS headers for LAN clients & Tauri Desktop App
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Access-Control-Request-Private-Network');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -521,7 +684,8 @@ const server = http.createServer((req, res) => {
           }
 
           if (payload.data && clientHasData) {
-            if (serverHasData) {
+            let finalDataToSave = payload.data;
+            if (serverHasData && existingData) {
               try {
                 fs.writeFileSync(
                   path.join(BACKUP_DIR, 'central_db_autobackup.json'),
@@ -529,9 +693,13 @@ const server = http.createServer((req, res) => {
                   'utf8'
                 );
               } catch (e) {}
+
+              // Smart merge incoming orders, customers, vouchers, and transactions with existing server data
+              finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
             }
+
             const tmpFile = DB_FILE + '.tmp';
-            fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
+            fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
             currentRev += 1;
           }

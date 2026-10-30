@@ -18,6 +18,7 @@ import {
   JournalLine,
 } from '../../lib/accountingEngine';
 import { formatCurrency, getCurrencyLabel, setGlobalCurrencyUnit } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import {
   Search,
   Plus,
@@ -875,6 +876,9 @@ export default function POSScreen({
         bankName: selectedBank?.bankName,
         lines: voucherLines,
       });
+
+      // Immediately broadcast and push the new order and voucher to the central server so all other network clients sync instantly
+      pushToCentralServer(false).catch((e) => console.warn('Instant push order notice:', e));
 
       // Trigger instant automatic thermal printing without opening the preview modal
       if (settings?.autoPrintReceipt !== false) {

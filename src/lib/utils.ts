@@ -155,10 +155,102 @@ export const importDB = async (jsonString: string): Promise<void> => {
         }
       }
     });
+
+    // Auto-recover/sync menu if categories or menuItems are empty in the imported backup
+    try {
+      const catCount = await db.categories.count();
+      const menuCount = await db.menuItems.count();
+      if (catCount === 0 || menuCount === 0) {
+        await autoSyncBeveragesToMenuIfEmpty();
+      }
+    } catch (e) {
+      console.warn('Auto-sync menu notice:', e);
+    }
   } catch (err: any) {
     console.error('Failed to import database', err);
     throw new Error(err?.message || 'فرمت یا محتوای فایل بکاپ نامعتبر است.');
   }
+};
+
+/**
+ * Automatically creates categories and menuItems from settings.quickBeverages
+ * and order history if the menu tables are empty.
+ */
+export const autoSyncBeveragesToMenuIfEmpty = async (): Promise<number> => {
+  const currentCategories = await db.categories.toArray();
+  const currentMenuItems = await db.menuItems.toArray();
+
+  if (currentCategories.length > 0 && currentMenuItems.length > 0) {
+    return 0; // Menu already contains items
+  }
+
+  const settings = await db.settings.toCollection().first();
+  const beverages =
+    settings?.quickBeverages && settings.quickBeverages.length > 0
+      ? settings.quickBeverages
+      : [
+          { id: 'soda', name: 'نوشابه', price: settings?.currencyUnit === 'rial' ? 550000 : 55000, color: 'amber' as const, isActive: true },
+          { id: 'dough', name: 'دوغ', price: settings?.currencyUnit === 'rial' ? 150000 : 15000, color: 'emerald' as const, isActive: true },
+          { id: 'water', name: 'آب معدنی', price: settings?.currencyUnit === 'rial' ? 250000 : 25000, color: 'blue' as const, isActive: true },
+          { id: 'delster', name: 'دلستر', price: settings?.currencyUnit === 'rial' ? 800000 : 80000, color: 'purple' as const, isActive: true },
+        ];
+
+  // Scan order history for any unique items sold
+  const orders = await db.orders.toArray();
+  const orderItemsMap = new Map<string, number>();
+  for (const order of orders) {
+    for (const item of order.items || []) {
+      if (item.menuItemId !== -1 && item.name && item.price > 0) {
+        const cleanName = item.name.replace(/\s*اضافه$/, '').trim();
+        if (!orderItemsMap.has(cleanName)) {
+          orderItemsMap.set(cleanName, item.price);
+        }
+      }
+    }
+  }
+
+  let catId: number;
+  if (currentCategories.length === 0) {
+    catId = (await db.categories.add({ name: 'نوشیدنی‌ها و مخلفات' })) as number;
+  } else {
+    catId = currentCategories[0].id!;
+  }
+
+  let addedCount = 0;
+  const existingNames = new Set(currentMenuItems.map((m) => m.name.trim()));
+
+  // 1. Add quickBeverages
+  for (const bev of beverages) {
+    const cleanName = bev.name.replace(/\s*اضافه$/, '').trim();
+    if (!existingNames.has(cleanName) && !existingNames.has(bev.name.trim())) {
+      await db.menuItems.add({
+        categoryId: catId,
+        name: cleanName,
+        price: bev.price,
+        isActive: bev.isActive !== false,
+        isQuickBeverage: true,
+      });
+      existingNames.add(cleanName);
+      addedCount++;
+    }
+  }
+
+  // 2. Add any other items discovered in orders
+  for (const [name, price] of orderItemsMap.entries()) {
+    if (!existingNames.has(name)) {
+      await db.menuItems.add({
+        categoryId: catId,
+        name,
+        price,
+        isActive: true,
+        isQuickBeverage: true,
+      });
+      existingNames.add(name);
+      addedCount++;
+    }
+  }
+
+  return addedCount;
 };
 
 /**

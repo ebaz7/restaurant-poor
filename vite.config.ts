@@ -112,6 +112,119 @@ function centralServerDbPlugin(): Plugin {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // Auto-seed central_db.json from backup if missing
+  if (!fs.existsSync(dbFile)) {
+    const seedBackup = path.join(dataDir, 'latest_db_backup.json');
+    if (fs.existsSync(seedBackup)) {
+      try {
+        fs.copyFileSync(seedBackup, dbFile);
+      } catch (e) {}
+    }
+  }
+
+  try {
+    if (fs.existsSync(dbFile)) {
+      const stat = fs.statSync(dbFile);
+      currentRev = Math.max(1, Math.floor(stat.mtimeMs / 1000));
+    }
+  } catch {}
+
+  function mergeDatabaseObjectsNode(existing: any, incoming: any) {
+    if (!existing || typeof existing !== 'object') return incoming || {};
+    if (!incoming || typeof incoming !== 'object') return existing || {};
+
+    const result = { ...existing };
+
+    // 1. Orders: merge by invoiceNumber or id
+    const ordersMap = new Map();
+    if (Array.isArray(existing.orders)) {
+      for (const o of existing.orders) {
+        if (o) {
+          const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
+          ordersMap.set(k, o);
+        }
+      }
+    }
+    if (Array.isArray(incoming.orders)) {
+      for (const o of incoming.orders) {
+        if (o) {
+          const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
+          const prev = ordersMap.get(k);
+          if (prev) {
+            ordersMap.set(k, { ...prev, ...o });
+          } else {
+            ordersMap.set(k, o);
+          }
+        }
+      }
+    }
+    result.orders = Array.from(ordersMap.values()).sort(
+      (a: any, b: any) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0)
+    );
+
+    // 2. Customers: merge by phone or id
+    const customersMap = new Map();
+    if (Array.isArray(existing.customers)) {
+      for (const c of existing.customers) {
+        if (c) customersMap.set(c.phone || c.id, c);
+      }
+    }
+    if (Array.isArray(incoming.customers)) {
+      for (const c of incoming.customers) {
+        if (c) customersMap.set(c.phone || c.id, c);
+      }
+    }
+    result.customers = Array.from(customersMap.values());
+
+    // 3. Journal Vouchers: merge by voucherNumber or id
+    const vouchersMap = new Map();
+    if (Array.isArray(existing.journalVouchers)) {
+      for (const v of existing.journalVouchers) {
+        if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+      }
+    }
+    if (Array.isArray(incoming.journalVouchers)) {
+      for (const v of incoming.journalVouchers) {
+        if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+      }
+    }
+    result.journalVouchers = Array.from(vouchersMap.values());
+
+    // 4. Other tables: merge by key
+    const mergeTable = (key: string) => {
+      const map = new Map();
+      if (Array.isArray(existing[key])) {
+        for (const item of existing[key]) if (item) map.set(item.id || item.code || item.name || item.batchNumber, item);
+      }
+      if (Array.isArray(incoming[key])) {
+        for (const item of incoming[key]) if (item) map.set(item.id || item.code || item.name || item.batchNumber, item);
+      }
+      result[key] = Array.from(map.values());
+    };
+    mergeTable('inventoryTransactions');
+    mergeTable('kitchenProductions');
+    mergeTable('cashClosures');
+    mergeTable('categories');
+    mergeTable('menuItems');
+    mergeTable('bankAccounts');
+    mergeTable('persons');
+    mergeTable('cheques');
+    mergeTable('rawMaterials');
+    mergeTable('productionRecipes');
+    mergeTable('accounts');
+    mergeTable('appUsers');
+
+    if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
+      result.settings = incoming.settings;
+    } else if (Array.isArray(existing.settings)) {
+      result.settings = existing.settings;
+    }
+
+    result.version = incoming.version || existing.version || 8;
+    result.exportedAt = new Date().toISOString();
+    return result;
+  }
+
   function getOrCreateServerLicense() {
     let record: any = null;
     if (fs.existsSync(licenseFile)) {
@@ -175,6 +288,18 @@ function centralServerDbPlugin(): Plugin {
     name: 'central-server-db-plugin',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        // Set standard CORS headers for LAN clients & Tauri Desktop App
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Access-Control-Request-Private-Network');
+        res.setHeader('Access-Control-Allow-Private-Network', 'true');
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+
         const url = req.url ? new URL(req.url, 'http://localhost:3000') : new URL('http://localhost:3000');
 
         if (
@@ -290,6 +415,33 @@ function centralServerDbPlugin(): Plugin {
           return;
         }
 
+        if (url.pathname === '/api/network/info' && req.method === 'GET') {
+          const interfaces = os.networkInterfaces();
+          const ips: string[] = [];
+          for (const name of Object.keys(interfaces)) {
+            const ifaceList = interfaces[name];
+            if (!ifaceList) continue;
+            for (const iface of ifaceList) {
+              if (iface.family === 'IPv4' && !iface.internal) {
+                ips.push(iface.address);
+              }
+            }
+          }
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache, no-store');
+          res.end(JSON.stringify({
+            ok: true,
+            hostname: os.hostname(),
+            platform: os.platform(),
+            port: 3000,
+            localIps: ips,
+            primaryUrl: ips.length > 0 ? `http://${ips[0]}:3000` : `http://localhost:3000`,
+            serverTime: new Date().toISOString(),
+            rev: currentRev,
+          }));
+          return;
+        }
+
         if (url.pathname === '/api/db/sync' && req.method === 'POST') {
           let body = '';
           req.on('data', (c) => (body += c.toString()));
@@ -345,15 +497,20 @@ function centralServerDbPlugin(): Plugin {
               }
 
               if (payload.data && clientHasData) {
-                if (serverHasData) {
+                let finalDataToSave = payload.data;
+                if (serverHasData && existingData) {
                   try {
                     const backupDir = path.join(dataDir, 'backups');
                     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
                     fs.writeFileSync(path.join(backupDir, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
                   } catch {}
+
+                  // Smart merge incoming orders, customers, vouchers, and transactions with existing server data
+                  finalDataToSave = mergeDatabaseObjectsNode(existingData, payload.data);
                 }
+
                 const tmpFile = dbFile + '.tmp';
-                fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
+                fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
                 fs.renameSync(tmpFile, dbFile);
                 currentRev += 1;
               }

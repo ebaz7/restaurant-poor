@@ -1,9 +1,9 @@
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 1. Force WebView2 to disable stale HTTP/disk cache and enable direct kiosk thermal printing
+    // 1. Force WebView2 to disable stale HTTP/disk cache, allow LAN network sync and enable direct kiosk thermal printing
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--kiosk-printing --disable-print-preview --disable-http-cache --disable-cache --disk-cache-size=1",
+        "--kiosk-printing --disable-print-preview --disable-http-cache --disable-cache --disk-cache-size=1 --disable-web-security --allow-running-insecure-content",
     );
 
     // 2. Auto-purge stale WebView2 cache on Windows if app version changed or upgraded

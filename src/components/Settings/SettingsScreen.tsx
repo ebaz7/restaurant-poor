@@ -24,7 +24,10 @@ import {
 import {
   notifyRawResetToCentralServer,
   pushToCentralServer,
+  pullFromCentralServer,
   getNodeRole,
+  setNodeRole,
+  setServerUrl,
   fetchServerNetworkInfo,
   updateServerPort,
   updateServerDomain,
@@ -322,6 +325,21 @@ export default function SettingsScreen() {
     } finally {
       setIsTestingConn(false);
     }
+  };
+
+  const handleApplyClientServerUrl = async () => {
+    let cleanHost = clientHostInput.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const cleanPort = clientPortInput.trim();
+    if (!cleanHost) {
+      showNotice('error', 'لطفاً ابتدا آدرس آی‌پی یا نام دامنه سرور را وارد فرمایید.');
+      return;
+    }
+    const constructedUrl = cleanPort ? `http://${cleanHost}:${cleanPort}` : `http://${cleanHost}`;
+    setServerUrl(constructedUrl);
+    setNodeRole('client');
+    setNodeRoleState('client');
+    showNotice('success', `این دستگاه به عنوان کلاینت با موفقیت به سرور مرکزی (${constructedUrl}) متصل شد.`);
+    await pullFromCentralServer(false);
   };
 
   const handleOptimizeDatabase = async () => {
@@ -1593,15 +1611,26 @@ pause
                   </div>
 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={handleTestClientConnection}
-                      disabled={isTestingConn}
-                      className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
-                    >
-                      {isTestingConn ? <RefreshCw size={13} className="animate-spin" /> : <Activity size={13} />}
-                      <span>تست اتصال و سنجش پینگ سرور</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleTestClientConnection}
+                        disabled={isTestingConn}
+                        className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                      >
+                        {isTestingConn ? <RefreshCw size={13} className="animate-spin" /> : <Activity size={13} />}
+                        <span>تست اتصال و سنجش پینگ سرور</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleApplyClientServerUrl}
+                        className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                      >
+                        <Check size={14} />
+                        <span>ذخیره و اتصال این کلاینت به سرور فوق</span>
+                      </button>
+                    </div>
 
                     <div className="text-[11px] text-slate-600 font-mono" dir="ltr">
                       آدرس کامل: <strong className="text-blue-900">http://{clientHostInput.trim()}:{clientPortInput.trim()}</strong>

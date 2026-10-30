@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, Category, MenuItem, getDefaultQuickBeverages } from '../../lib/db';
-import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { formatCurrency, getCurrencyLabel, autoSyncBeveragesToMenuIfEmpty } from '../../lib/utils';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import {
   Plus,
@@ -10,6 +10,8 @@ import {
   CheckCircle2,
   Circle,
   UtensilsCrossed,
+  Sparkles,
+  RefreshCw,
 } from 'lucide-react';
 
 export default function MenuManagerScreen() {
@@ -19,7 +21,26 @@ export default function MenuManagerScreen() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [editingCategory, setEditingCategory] = useState<Partial<Category> | null>(null);
   const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const currencyLabel = getCurrencyLabel();
+
+  const handleAutoSync = async () => {
+    setIsSyncing(true);
+    try {
+      const count = await autoSyncBeveragesToMenuIfEmpty();
+      if (count > 0) {
+        setSyncMsg(`${count} آیتم نوشیدنی و نرخ‌های پایگاه داده با موفقیت به منو اضافه شد.`);
+        const cats = await db.categories.toArray();
+        if (cats.length > 0) setSelectedCategoryId(cats[0].id!);
+      } else {
+        setSyncMsg('منو در حال حاضر دارای اطلاعات است.');
+      }
+      setTimeout(() => setSyncMsg(null), 4000);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   useEffect(() => {
     if (categories && categories.length > 0 && selectedCategoryId === null) {
@@ -308,9 +329,51 @@ export default function MenuManagerScreen() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-slate-400 flex-col">
-            <UtensilsCrossed size={48} className="mb-3 opacity-10" />
-            <p className="text-xs font-medium">یک گروه را انتخاب کنید.</p>
+          <div className="flex-1 flex items-center justify-center text-slate-400 flex-col p-6 text-center">
+            {syncMsg && (
+              <div className="mb-4 px-4 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold flex items-center gap-2">
+                <CheckCircle2 size={16} />
+                <span>{syncMsg}</span>
+              </div>
+            )}
+            {categories && categories.length === 0 ? (
+              <div className="max-w-md bg-white border border-slate-200 rounded-2xl p-6 shadow-xs space-y-4 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto">
+                  <Sparkles size={24} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-800">
+                    منوی غذای عادی در این فایل پشتیبان خالی است
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    در پایگاه داده رستوران شما (فود میکس)، فروش‌ها بر اساس «ورودی سلف سرویس» ثبت شده‌اند و نرخ نوشیدنی‌ها در بخش تنظیمات دیتابیس قرار دارد. با کلیک روی دکمه زیر، تمام نوشیدنی‌ها (نوشابه خانواده، نوشابه، آب معدنی، دلستر و دوغ) با نرخ‌های واقعی دیتابیس به صورت خودکار در منو ساخته می‌شوند.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleAutoSync}
+                    disabled={isSyncing}
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+                    <span>{isSyncing ? 'در حال استخراج...' : 'استخراج و ثبت خودکار نوشیدنی‌ها در منو'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingCategory({ name: '' })}
+                    className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
+                  >
+                    افزودن گروه جدید
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <UtensilsCrossed size={48} className="mb-3 opacity-10" />
+                <p className="text-xs font-medium">یک گروه را از منوی سمت راست انتخاب کنید.</p>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -5,6 +5,7 @@
   "type": "module",
   "main": "main.cjs",
   "scripts": {
+    "start": "node server.cjs",
     "dev": "vite --port=3000 --host=0.0.0.0",
     "local": "vite --port=7375 --host=0.0.0.0",
     "build": "node fix-ico.cjs && vite build && node -e \"const fs = require('fs'); fs.mkdirSync('dist', { recursive: true }); fs.copyFileSync('src/assets/images/arka_logo.png', 'dist/arka_logo.png'); fs.copyFileSync('src/assets/images/arka_logo.ico', 'dist/arka_logo.ico');\"",

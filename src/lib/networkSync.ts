@@ -180,7 +180,241 @@ async function checkServerRevision() {
 }
 
 /**
- * Pulls the entire database state from the central server into local Dexie.
+ * Smartly merges server database state into local Dexie WITHOUT wiping or clearing tables.
+ * Preserves newly created local orders, vouchers, customers, and records that haven't been pushed yet.
+ */
+export async function mergeServerDataIntoDexie(serverData: any): Promise<{ hasUnsyncedLocalRecords: boolean }> {
+  if (!serverData || typeof serverData !== 'object') {
+    return { hasUnsyncedLocalRecords: false };
+  }
+
+  let hasUnsyncedLocalRecords = false;
+
+  const parseDatesInArray = (arr: any[]): any[] => {
+    if (!Array.isArray(arr)) return [];
+    return arr.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      const copy = { ...item };
+      if (copy.createdAt && typeof copy.createdAt === 'string') {
+        const d = new Date(copy.createdAt);
+        if (!isNaN(d.getTime())) copy.createdAt = d;
+      }
+      if (copy.updatedAt && typeof copy.updatedAt === 'string') {
+        const d = new Date(copy.updatedAt);
+        if (!isNaN(d.getTime())) copy.updatedAt = d;
+      }
+      if (copy.date && typeof copy.date === 'string') {
+        const d = new Date(copy.date);
+        if (!isNaN(d.getTime())) copy.date = d;
+      }
+      if (copy.closedAt && typeof copy.closedAt === 'string') {
+        const d = new Date(copy.closedAt);
+        if (!isNaN(d.getTime())) copy.closedAt = d;
+      }
+      if (copy.issueDate && typeof copy.issueDate === 'string') {
+        const d = new Date(copy.issueDate);
+        if (!isNaN(d.getTime())) copy.issueDate = d;
+      }
+      if (copy.dueDate && typeof copy.dueDate === 'string') {
+        const d = new Date(copy.dueDate);
+        if (!isNaN(d.getTime())) copy.dueDate = d;
+      }
+      return copy;
+    });
+  };
+
+  // 1. Orders: NEVER CLEAR! Safely merge all server orders by invoiceNumber, preserving local unpushed orders
+  if (Array.isArray(serverData.orders)) {
+    const serverOrders = parseDatesInArray(serverData.orders);
+    const serverInvoiceNumbers = new Set(
+      serverOrders
+        .filter((o) => o && o.invoiceNumber !== undefined && o.invoiceNumber !== null)
+        .map((o) => String(o.invoiceNumber))
+    );
+
+    // Check if local has any orders not present on server
+    const localOrders = await db.orders.toArray();
+    for (const lo of localOrders) {
+      if (lo && lo.invoiceNumber !== undefined && lo.invoiceNumber !== null) {
+        const key = String(lo.invoiceNumber);
+        if (!serverInvoiceNumbers.has(key)) {
+          hasUnsyncedLocalRecords = true;
+        }
+      }
+    }
+
+    for (const sOrder of serverOrders) {
+      if (!sOrder || sOrder.invoiceNumber === undefined || sOrder.invoiceNumber === null) continue;
+      try {
+        const existingLocal = await db.orders.where('invoiceNumber').equals(sOrder.invoiceNumber).first();
+        if (existingLocal) {
+          // Update in-place keeping existing local id to prevent Dexie primary key collisions
+          await db.orders.put({ ...sOrder, id: existingLocal.id });
+        } else {
+          // New order from server. Check if sOrder.id conflicts with a different local order
+          const conflict = sOrder.id ? await db.orders.get(sOrder.id) : null;
+          if (conflict && conflict.invoiceNumber !== sOrder.invoiceNumber) {
+            const { id: _, ...orderWithoutId } = sOrder;
+            await db.orders.add(orderWithoutId);
+          } else {
+            await db.orders.put(sOrder);
+          }
+        }
+      } catch (e) {
+        console.warn('Error merging server order:', sOrder.invoiceNumber, e);
+      }
+    }
+  }
+
+  // 2. Journal Vouchers: NEVER CLEAR! Safely merge by voucherNumber
+  if (Array.isArray(serverData.journalVouchers)) {
+    const serverVouchers = parseDatesInArray(serverData.journalVouchers);
+    const serverVoucherNums = new Set(
+      serverVouchers
+        .filter((v) => v && v.voucherNumber !== undefined && v.voucherNumber !== null)
+        .map((v) => String(v.voucherNumber))
+    );
+
+    const localVouchers = await db.journalVouchers.toArray();
+    for (const lv of localVouchers) {
+      if (lv && lv.voucherNumber !== undefined && lv.voucherNumber !== null) {
+        const key = String(lv.voucherNumber);
+        if (!serverVoucherNums.has(key)) {
+          hasUnsyncedLocalRecords = true;
+        }
+      }
+    }
+
+    for (const sVoucher of serverVouchers) {
+      if (!sVoucher || sVoucher.voucherNumber === undefined || sVoucher.voucherNumber === null) continue;
+      try {
+        const existingLocal = await db.journalVouchers.where('voucherNumber').equals(sVoucher.voucherNumber).first();
+        if (existingLocal) {
+          await db.journalVouchers.put({ ...sVoucher, id: existingLocal.id });
+        } else {
+          const conflict = sVoucher.id ? await db.journalVouchers.get(sVoucher.id) : null;
+          if (conflict && conflict.voucherNumber !== sVoucher.voucherNumber) {
+            const { id: _, ...vWithoutId } = sVoucher;
+            await db.journalVouchers.add(vWithoutId);
+          } else {
+            await db.journalVouchers.put(sVoucher);
+          }
+        }
+      } catch (e) {
+        console.warn('Error merging server voucher:', sVoucher.voucherNumber, e);
+      }
+    }
+  }
+
+  // 3. Customers: NEVER CLEAR! Safely merge by phone
+  if (Array.isArray(serverData.customers) && serverData.customers.length > 0) {
+    const sanitized = parseDatesInArray(serverData.customers);
+    for (const sCust of sanitized) {
+      if (!sCust || !sCust.phone) continue;
+      try {
+        const existingLocal = await db.customers.where('phone').equals(sCust.phone).first();
+        if (existingLocal) {
+          await db.customers.put({ ...sCust, id: existingLocal.id });
+        } else {
+          const conflict = sCust.id ? await db.customers.get(sCust.id) : null;
+          if (conflict && conflict.phone !== sCust.phone) {
+            const { id: _, ...cWithoutId } = sCust;
+            await db.customers.add(cWithoutId);
+          } else {
+            await db.customers.put(sCust);
+          }
+        }
+      } catch (e) {
+        console.warn('Error merging customer:', sCust.phone, e);
+      }
+    }
+  }
+
+  // 4. Categories & MenuItems: NEVER CLEAR!
+  if (Array.isArray(serverData.categories) && serverData.categories.length > 0) {
+    for (const cat of serverData.categories) {
+      if (!cat) continue;
+      try {
+        const existing = cat.id ? await db.categories.get(cat.id) : await db.categories.where('name').equals(cat.name).first();
+        if (existing) {
+          await db.categories.put({ ...cat, id: existing.id });
+        } else {
+          await db.categories.put(cat);
+        }
+      } catch {}
+    }
+  }
+  if (Array.isArray(serverData.menuItems) && serverData.menuItems.length > 0) {
+    for (const item of serverData.menuItems) {
+      if (!item) continue;
+      try {
+        const existing = item.id ? await db.menuItems.get(item.id) : await db.menuItems.where('name').equals(item.name).first();
+        if (existing) {
+          await db.menuItems.put({ ...item, id: existing.id });
+        } else {
+          await db.menuItems.put(item);
+        }
+      } catch {}
+    }
+  }
+
+  // 5. Raw Materials & Recipes & Kitchen Productions & Inventory
+  const safeBulkPutTable = async (tableName: string, dataArr: any[]) => {
+    if (!Array.isArray(dataArr) || dataArr.length === 0) return;
+    const table = (db as any)[tableName];
+    if (!table) return;
+    const sanitized = parseDatesInArray(dataArr);
+    try {
+      await table.bulkPut(sanitized);
+    } catch {
+      for (const item of sanitized) {
+        try { await table.put(item); } catch {}
+      }
+    }
+  };
+
+  await safeBulkPutTable('rawMaterials', serverData.rawMaterials);
+  await safeBulkPutTable('productionRecipes', serverData.productionRecipes);
+  await safeBulkPutTable('kitchenProductions', serverData.kitchenProductions);
+  await safeBulkPutTable('inventoryTransactions', serverData.inventoryTransactions);
+  await safeBulkPutTable('cashClosures', serverData.cashClosures);
+  await safeBulkPutTable('bankAccounts', serverData.bankAccounts);
+  await safeBulkPutTable('persons', serverData.persons);
+  await safeBulkPutTable('cheques', serverData.cheques);
+  await safeBulkPutTable('accounts', serverData.accounts);
+
+  // 6. Settings
+  if (Array.isArray(serverData.settings) && serverData.settings.length > 0) {
+    const s = serverData.settings[0];
+    const localSetting = await db.settings.toCollection().first();
+    if (localSetting?.id) {
+      await db.settings.update(localSetting.id, s);
+    } else {
+      await db.settings.add(s);
+    }
+  }
+
+  // 7. AppUsers
+  if (Array.isArray(serverData.appUsers) && serverData.appUsers.length > 0) {
+    const sanitizedUsers = parseDatesInArray(serverData.appUsers);
+    for (const u of sanitizedUsers) {
+      try {
+        const existing = await db.appUsers.where('username').equals(u.username).first();
+        if (existing?.id) {
+          await db.appUsers.update(existing.id, u);
+        } else {
+          await db.appUsers.add(u);
+        }
+      } catch {}
+    }
+  }
+
+  return { hasUnsyncedLocalRecords };
+}
+
+/**
+ * Pulls the database state from the central server into local Dexie.
+ * Uses mergeServerDataIntoDexie to ensure local unsynced invoices are never cleared or deleted.
  */
 export async function pullFromCentralServer(isStartup: boolean = false): Promise<boolean> {
   if (isApplyingRemoteChange) return false;
@@ -201,15 +435,21 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
     const payload = await res.json();
 
     if (payload.ok && payload.data) {
-      // If server has data, import it into local Dexie
       isApplyingRemoteChange = true;
       try {
-        await importDB(JSON.stringify(payload.data));
+        const mergeResult = await mergeServerDataIntoDexie(payload.data);
         currentSyncState.localRevision = Number(payload.rev) || 1;
         currentSyncState.serverRevision = currentSyncState.localRevision;
         currentSyncState.lastSyncTime = new Date();
         currentSyncState.lastError = null;
         currentSyncState.isOnline = true;
+
+        // If local has new orders that server doesn't have, immediately push them so server records them!
+        if (mergeResult.hasUnsyncedLocalRecords) {
+          setTimeout(() => {
+            pushToCentralServer(false);
+          }, 150);
+        }
       } finally {
         isApplyingRemoteChange = false;
       }

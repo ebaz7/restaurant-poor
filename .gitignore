@@ -1,5 +1,9 @@
 node_modules/
 build/
+dist/
+dist-electron/
+dist-windows-server/
+data/
 coverage/
 .DS_Store
 *.log
