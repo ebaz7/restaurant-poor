@@ -4,9 +4,11 @@ dist/
 dist-electron/
 dist-windows-server/
 data/
+db_backups/
+central_db.json
+latest_db_backup.json
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
-

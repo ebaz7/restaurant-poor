@@ -14,21 +14,17 @@ const TABLES: &[&str] = &[
     "menuItems",
     "customers",
     "orders",
-    "expenses",
-    "rawMaterials",
-    "warehouses",
-    "recipes",
-    "suppliers",
-    "purchaseInvoices",
-    "employees",
-    "shifts",
-    "appUsers",
-    "auditLogs",
-    "settlements",
     "accounts",
+    "bankAccounts",
+    "persons",
     "journalVouchers",
-    "bankCheques",
-    "cashRegisters",
+    "cheques",
+    "rawMaterials",
+    "inventoryTransactions",
+    "productionRecipes",
+    "kitchenProductions",
+    "cashClosures",
+    "appUsers",
 ];
 
 struct AppServerState {
@@ -59,33 +55,47 @@ fn value_to_key_str(v: &Value) -> Option<String> {
 
 fn get_record_key(table_name: &str, item: &Value) -> Option<String> {
     let obj = item.as_object()?;
-    if table_name == "settings" {
-        return Some("settings_singleton".to_string());
+    match table_name {
+        "settings" => Some("settings_singleton".to_string()),
+        "orders" => obj
+            .get("invoiceNumber")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "journalVouchers" => obj
+            .get("voucherNumber")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "customers" => obj
+            .get("phone")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "cashClosures" => obj
+            .get("dateLabel")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("closedAt").and_then(value_to_key_str))
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "kitchenProductions" => obj
+            .get("batchNumber")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "categories" | "menuItems" => obj
+            .get("id")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("name").and_then(value_to_key_str)),
+        "accounts" => obj
+            .get("code")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "appUsers" => obj
+            .get("username")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        _ => obj
+            .get("id")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("code").and_then(value_to_key_str))
+            .or_else(|| obj.get("name").and_then(value_to_key_str)),
     }
-    if table_name == "orders" {
-        if let Some(inv) = obj.get("invoiceNumber").and_then(value_to_key_str) {
-            return Some(format!("inv_{}", inv));
-        }
-    }
-    if table_name == "journalVouchers" {
-        if let Some(vnum) = obj.get("voucherNumber").and_then(value_to_key_str) {
-            return Some(format!("vch_{}", vnum));
-        }
-    }
-    if table_name == "accounts" {
-        if let Some(code) = obj.get("code").and_then(value_to_key_str) {
-            return Some(format!("acc_{}", code));
-        }
-    }
-    if table_name == "appUsers" {
-        if let Some(uname) = obj.get("username").and_then(value_to_key_str) {
-            return Some(format!("usr_{}", uname.to_lowercase()));
-        }
-    }
-    if let Some(id) = obj.get("id").and_then(value_to_key_str) {
-        return Some(format!("id_{}", id));
-    }
-    None
 }
 
 fn get_record_timestamp(item: &Value) -> u64 {
@@ -103,6 +113,7 @@ fn get_record_timestamp(item: &Value) -> u64 {
 }
 
 fn is_deleted_in_map(
+    table_name: &str,
     del_table: Option<&Map<String, Value>>,
     rec_key: &str,
     item: &Value,
@@ -112,17 +123,32 @@ fn is_deleted_in_map(
         return false;
     };
     let mut del_at = map.get(rec_key).and_then(|v| v.as_u64()).unwrap_or(0);
-    if del_at == 0 {
-        if let Some(id_str) = item
-            .as_object()
-            .and_then(|o| o.get("id"))
-            .and_then(value_to_key_str)
-        {
-            let id_key = format!("id_{}", id_str);
-            del_at = map.get(&id_key).and_then(|v| v.as_u64()).unwrap_or(0);
-            if del_at == 0 {
-                del_at = map.get(&id_str).and_then(|v| v.as_u64()).unwrap_or(0);
+    if let Some(obj) = item.as_object() {
+        if let Some(id_str) = obj.get("id").and_then(value_to_key_str) {
+            let id_colon = format!("id:{}", id_str);
+            let id_underscore = format!("id_{}", id_str);
+            del_at = del_at
+                .max(map.get(&id_colon).and_then(|v| v.as_u64()).unwrap_or(0))
+                .max(map.get(&id_underscore).and_then(|v| v.as_u64()).unwrap_or(0));
+            if table_name != "orders" && table_name != "journalVouchers" {
+                del_at = del_at.max(map.get(&id_str).and_then(|v| v.as_u64()).unwrap_or(0));
             }
+        }
+        if let Some(inv_str) = obj.get("invoiceNumber").and_then(value_to_key_str) {
+            let inv_pref = format!("inv_{}", inv_str);
+            del_at = del_at
+                .max(map.get(&inv_str).and_then(|v| v.as_u64()).unwrap_or(0))
+                .max(map.get(&inv_pref).and_then(|v| v.as_u64()).unwrap_or(0));
+        }
+        if let Some(vch_str) = obj.get("voucherNumber").and_then(value_to_key_str) {
+            let vch_pref = format!("vch_{}", vch_str);
+            del_at = del_at
+                .max(map.get(&vch_str).and_then(|v| v.as_u64()).unwrap_or(0))
+                .max(map.get(&vch_pref).and_then(|v| v.as_u64()).unwrap_or(0));
+        }
+        if let Some(name_str) = obj.get("name").and_then(value_to_key_str) {
+            let name_colon = format!("name:{}", name_str);
+            del_at = del_at.max(map.get(&name_colon).and_then(|v| v.as_u64()).unwrap_or(0));
         }
     }
     del_at > 0 && (item_ts == 0 || del_at >= item_ts)
@@ -232,7 +258,7 @@ fn merge_database_objects(existing_db: &Value, incoming_db: &Value) -> Value {
         for item in ex_arr {
             if let Some(k) = get_record_key(table_name, &item) {
                 let ts = get_record_timestamp(&item);
-                if is_deleted_in_map(del_table, &k, &item, ts) {
+                if is_deleted_in_map(table_name, del_table, &k, &item, ts) {
                     continue;
                 }
                 if !by_key.contains_key(&k) {
@@ -245,7 +271,7 @@ fn merge_database_objects(existing_db: &Value, incoming_db: &Value) -> Value {
         for item in inc_arr {
             if let Some(k) = get_record_key(table_name, &item) {
                 let inc_ts = get_record_timestamp(&item);
-                if is_deleted_in_map(del_table, &k, &item, inc_ts) {
+                if is_deleted_in_map(table_name, del_table, &k, &item, inc_ts) {
                     by_key.remove(&k);
                     continue;
                 }
@@ -524,6 +550,7 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                 &mut stream,
                 200,
                 &json!({
+                    "ok": true,
                     "rev": rev,
                     "updatedAt": updated_at,
                     "hasData": has_data,
@@ -539,6 +566,7 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
             };
             let mut resp = guard.db_state.clone();
             if let Some(obj) = resp.as_object_mut() {
+                obj.insert("ok".to_string(), json!(true));
                 obj.insert("serverTimeMs".to_string(), json!(now_ms()));
             }
             drop(guard);
@@ -573,8 +601,10 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                     merge_database_objects(&current_data, incoming_data)
                 };
 
+                let next_rev = current_rev + 1;
                 let new_state = json!({
-                    "rev": current_rev + 1,
+                    "ok": true,
+                    "rev": next_rev,
                     "updatedAt": format!("{}", now_ms()),
                     "data": new_data
                 });
@@ -590,6 +620,9 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                     200,
                     &json!({
                         "ok": true,
+                        "rev": next_rev,
+                        "merged": !force_overwrite,
+                        "data": new_data,
                         "state": new_state,
                         "serverTimeMs": now_ms()
                     }),
@@ -612,8 +645,10 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                 .get("rev")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let next_rev = current_rev + 1000;
             let new_state = json!({
-                "rev": current_rev + 100,
+                "ok": true,
+                "rev": next_rev,
                 "updatedAt": format!("{}", now_ms()),
                 "data": {
                     "settings": [{ "id": 1, "isRawInitialized": true, "_updatedAtMs": now_ms() }],
@@ -632,6 +667,7 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                 200,
                 &json!({
                     "ok": true,
+                    "rev": next_rev,
                     "state": new_state,
                     "serverTimeMs": now_ms()
                 }),

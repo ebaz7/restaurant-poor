@@ -605,6 +605,7 @@ setup_official_ssl() {
 server {
     listen 80 default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
+    client_max_body_size 100M;
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -619,6 +620,8 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
     }
 }
 EOF
@@ -668,6 +671,7 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
+    client_max_body_size 100M;
 
     location /.well-known/acme-challenge/ {
         root /var/www/html;
@@ -682,6 +686,7 @@ server {
     listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
+    client_max_body_size 100M;
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -698,6 +703,8 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
     }
 }
 EOF
@@ -759,6 +766,7 @@ configure_ssl_and_nginx() {
 server {
     listen 80 default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
+    client_max_body_size 100M;
 
     location / {
         proxy_pass http://127.0.0.1:${PORT};
@@ -770,12 +778,15 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
     }
 }
 
 server {
     listen 443 ssl default_server;
     server_name _ ${DOMAIN} www.${DOMAIN};
+    client_max_body_size 100M;
 
     ssl_certificate ${CERT_FILE};
     ssl_certificate_key ${KEY_FILE};
@@ -792,6 +803,8 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
     }
 }
 EOF
@@ -1192,7 +1205,15 @@ update_app() {
         local HOST_NAME
         HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
 
-        echo "[+] Step 4/4: Restarting services on active port ${ACTIVE_PORT}..."
+        echo "[+] Step 4/4: Restarting services & updating Nginx limits on active port ${ACTIVE_PORT}..."
+        # Ensure Nginx allows up to 100MB sync payloads (fixes HTTP 413 on large databases)
+        if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+            if ! grep -q "client_max_body_size" /etc/nginx/sites-available/arka-restaurant.conf; then
+                sed -i '/server_name/a \    client_max_body_size 100M;' /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null || true
+            fi
+            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+        fi
+
         if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
             cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
 services:
@@ -1212,7 +1233,15 @@ services:
       - .:/app
 EOF
         fi
-        docker compose restart 2>/dev/null || docker-compose restart 2>/dev/null || systemctl restart arka-restaurant 2>/dev/null || true
+
+        # Restart BOTH systemd service (if present) and Docker container (if present) without short-circuiting!
+        if [ -f "/etc/systemd/system/arka-restaurant.service" ] || systemctl list-unit-files 2>/dev/null | grep -q "arka-restaurant.service"; then
+            systemctl daemon-reload 2>/dev/null || true
+            systemctl restart arka-restaurant 2>/dev/null || true
+        fi
+        if command -v docker &> /dev/null && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "arka-restaurant"; then
+            docker compose up -d --force-recreate 2>/dev/null || docker-compose up -d --force-recreate 2>/dev/null || docker restart arka-restaurant 2>/dev/null || true
+        fi
 
         echo "================================================================"
         echo "[v] Update completed successfully on port ${ACTIVE_PORT}!"

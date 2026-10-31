@@ -186,7 +186,7 @@ export default function App() {
   // Auto-purge stale Service Worker and webview caches when upgrading versions
   useEffect(() => {
     try {
-      const CURRENT_VERSION = '1.2.0';
+      const CURRENT_VERSION = '1.3.0';
       const storedVersion = window.localStorage.getItem('arka_build_version');
       if (storedVersion !== CURRENT_VERSION) {
         window.localStorage.setItem('arka_build_version', CURRENT_VERSION);
@@ -213,8 +213,8 @@ export default function App() {
     let isMounted = true;
     async function startStartupSync() {
       try {
-        await initializeDefaultDatabase();
         await initNetworkSync();
+        await initializeDefaultDatabase();
       } catch (e) {
         console.warn('Startup sync error:', e);
       } finally {

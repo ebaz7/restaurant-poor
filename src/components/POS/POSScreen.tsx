@@ -883,8 +883,12 @@ export default function POSScreen({
         lines: voucherLines,
       });
 
-      // Immediately broadcast and push the new order and voucher to the central server so all other network clients sync instantly
-      pushToCentralServer(false).catch((e) => console.warn('Instant push order notice:', e));
+      // Immediately broadcast and push the new order and voucher to the central server BEFORE opening print preview
+      // so Chrome's synchronous window.print() dialog does not freeze the JS thread before the POST request is sent.
+      await Promise.race([
+        pushToCentralServer(false).catch((e) => console.warn('Instant push order notice:', e)),
+        new Promise((resolve) => setTimeout(resolve, 600)),
+      ]);
 
       // Trigger instant automatic thermal printing without opening the preview modal
       if (settings?.autoPrintReceipt !== false) {
@@ -934,7 +938,10 @@ export default function POSScreen({
     });
 
     // Immediately broadcast daily closure to central server so it persists permanently across all terminals
-    pushToCentralServer(false).catch((e) => console.warn('Instant push closure notice:', e));
+    await Promise.race([
+      pushToCentralServer(false).catch((e) => console.warn('Instant push closure notice:', e)),
+      new Promise((resolve) => setTimeout(resolve, 600)),
+    ]);
 
     setClosureSuccessMsg('بستن صندوق پایان روز و تطبیق حساب بانک‌ها با موفقیت در دیتابیس سرور ثبت شد.');
     setTimeout(() => setClosureSuccessMsg(''), 4000);
