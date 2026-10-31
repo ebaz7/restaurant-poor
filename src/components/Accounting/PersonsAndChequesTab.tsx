@@ -13,6 +13,7 @@ import {
 } from '../../lib/db';
 import { classifyChequeDueStatus } from '../../lib/accountingEngine';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { format } from 'date-fns-jalali';
 import {
@@ -272,6 +273,7 @@ export default function PersonsAndChequesTab({
 
     // Automatically generate monthly salary credit vouchers from employmentStartDate up to now
     const accruedCount = await syncStaffMonthlySalaries();
+    await pushToCentralServer(false);
 
     setPName('');
     setPPhone('');
@@ -310,6 +312,7 @@ export default function PersonsAndChequesTab({
 
     // Re-sync monthly salary vouchers so any updated salary or start date takes effect immediately
     await syncStaffMonthlySalaries();
+    await pushToCentralServer(false);
 
     showToast(
       `اطلاعات «${editingPerson.name}» به‌روزرسانی شد و اسناد حقوق ماهیانه اتوماتیک همگام‌سازی گردید.`
@@ -394,6 +397,7 @@ export default function PersonsAndChequesTab({
       );
     }
 
+    await pushToCentralServer(false);
     setQuickCreditPerson(null);
     setQuickTxAmount(0);
     setQuickTxDesc('');
@@ -419,6 +423,7 @@ export default function PersonsAndChequesTab({
       if (!confirm(`آیا از حذف شخص «${person.name}» اطمینان دارید؟`)) return;
     }
     await db.persons.delete(person.id);
+    await pushToCentralServer(false);
     showToast(`شخص «${person.name}» با موفقیت حذف گردید.`);
   };
 
@@ -440,6 +445,7 @@ export default function PersonsAndChequesTab({
       description: editingCheque.description || '',
       status: editingCheque.status,
     });
+    await pushToCentralServer(false);
     showToast(`اطلاعات چک شماره ${editingCheque.chequeNumber} با موفقیت ویرایش شد.`);
     setEditingCheque(null);
   };
@@ -465,6 +471,7 @@ export default function PersonsAndChequesTab({
     }
 
     await db.cheques.delete(ch.id);
+    await pushToCentralServer(false);
     showToast(`چک شماره ${ch.chequeNumber} و اسناد مرتبط با آن حذف شد.`);
   };
 
@@ -547,6 +554,7 @@ export default function PersonsAndChequesTab({
       });
     }
 
+    await pushToCentralServer(false);
     setCNumber('');
     setCAmount('');
     setCDesc('');
@@ -614,6 +622,7 @@ export default function PersonsAndChequesTab({
       });
     }
 
+    await pushToCentralServer(false);
     showToast(`چک شماره ${cheque.chequeNumber} پاس شد و از موجودی بانک کسر/به بانک واریز گردید.`);
   };
 

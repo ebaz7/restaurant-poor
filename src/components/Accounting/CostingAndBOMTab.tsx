@@ -12,6 +12,7 @@ import {
   ALL_MEASUREMENT_UNITS,
 } from '../../lib/accountingEngine';
 import { formatCurrency, getCurrencyLabel, getGlobalCurrencyUnit } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import {
   Calculator,
@@ -384,6 +385,7 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
       return;
     }
     await db.productionRecipes.delete(existing.id);
+    await pushToCentralServer(false);
     setIngredients([]);
     setSaveMessage(`فرمول تولید «${selectedMenuItem.name}» به طور کامل حذف شد.`);
     setTimeout(() => setSaveMessage(''), 3500);
@@ -418,6 +420,7 @@ export default function CostingAndBOMTab({ menuItems, materials, recipes }: Prop
       await db.menuItems.update(selectedMenuItemId, { price: sellingPriceInput });
     }
 
+    await pushToCentralServer(false);
     setSaveMessage('فرمول تولید (BOM) و محاسبه قیمت تمام شده با موفقیت ذخیره شد.');
     setTimeout(() => setSaveMessage(''), 3500);
   };

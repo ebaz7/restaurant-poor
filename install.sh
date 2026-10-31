@@ -11,17 +11,33 @@ INSTALL_DIR="/opt/arka-restaurant"
 REPO_URL="https://github.com/ebaz7/restaurant-poor.git"
 
 get_active_port() {
-    if [ -f "$INSTALL_DIR/data/server_port.conf" ]; then
-        local P
-        P=$(tr -d ' \r\n' < "$INSTALL_DIR/data/server_port.conf" 2>/dev/null)
-        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
-            echo "$P"
+    if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+        local NP
+        NP=$(grep -m1 "proxy_pass" /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null | grep -oP ':\K[0-9]+' | head -n1)
+        if [ -n "$NP" ] && [[ "$NP" =~ ^[0-9]+$ ]]; then
+            echo "$NP"
+            return 0
+        fi
+    fi
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+        local DP
+        DP=$(grep -m1 "PORT=" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null | cut -d= -f2 | tr -d ' "\r\n')
+        if [ -n "$DP" ] && [[ "$DP" =~ ^[0-9]+$ ]]; then
+            echo "$DP"
             return 0
         fi
     fi
     if [ -f "/opt/arka-backup/server_port.conf" ]; then
         local P
         P=$(tr -d ' \r\n' < "/opt/arka-backup/server_port.conf" 2>/dev/null)
+        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
+            echo "$P"
+            return 0
+        fi
+    fi
+    if [ -f "$INSTALL_DIR/data/server_port.conf" ]; then
+        local P
+        P=$(tr -d ' \r\n' < "$INSTALL_DIR/data/server_port.conf" 2>/dev/null)
         if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
             echo "$P"
             return 0
@@ -35,19 +51,21 @@ get_active_port() {
             return 0
         fi
     fi
-    if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
-        local P
-        P=$(grep -m1 "proxy_pass" /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null | grep -oP ':\K[0-9]+' | head -n1)
-        if [ -n "$P" ] && [[ "$P" =~ ^[0-9]+$ ]]; then
-            echo "$P"
-            return 0
-        fi
-    fi
     if [ -n "${PORT:-}" ] && [[ "$PORT" =~ ^[0-9]+$ ]]; then
         echo "$PORT"
         return 0
     fi
-    echo "3000"
+    echo "80"
+}
+
+get_public_port_display() {
+    local INTERNAL_PORT
+    INTERNAL_PORT=$(get_active_port)
+    if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+        echo "80 (HTTP) / 443 (HTTPS)"
+    else
+        echo "${INTERNAL_PORT}"
+    fi
 }
 
 save_active_port() {
@@ -88,12 +106,16 @@ print_banner() {
     local SERVER_IP
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     local ACTIVE_PORT
-    ACTIVE_PORT=$(get_active_port 2>/dev/null || echo "3000")
+    ACTIVE_PORT=$(get_active_port 2>/dev/null || echo "80")
     echo "================================================================"
     echo "   Arka Restaurant Management Software - Linux Installer & Manager"
     echo "   Networked Central Server, Multi-Terminal Live Sync & SSL"
     if [ -n "$SERVER_IP" ]; then
-        echo "   Active Server URL: http://${SERVER_IP}:${ACTIVE_PORT}"
+        if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ] || [ "$ACTIVE_PORT" = "80" ]; then
+            echo "   Active Server URL: http://${SERVER_IP} (Port 80 / 443)"
+        else
+            echo "   Active Server URL: http://${SERVER_IP}:${ACTIVE_PORT}"
+        fi
     fi
     echo "================================================================"
 }
@@ -131,8 +153,8 @@ EOF
 
 create_server_script() {
     mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/data/backups"
-    # If the repository already contains the full server.cjs with /api/network/info and deletedRecords, keep it!
-    if [ -f "$INSTALL_DIR/server.cjs" ] && grep -q "deletedRecords" "$INSTALL_DIR/server.cjs" && grep -q "/api/network/info" "$INSTALL_DIR/server.cjs"; then
+    # If the repository already contains the full v3 server.cjs with deletedRecordsV3 and selfHealCentralDbOnStartup, keep it!
+    if [ -f "$INSTALL_DIR/server.cjs" ] && grep -q "deletedRecordsV3" "$INSTALL_DIR/server.cjs" && grep -q "selfHealCentralDbOnStartup" "$INSTALL_DIR/server.cjs"; then
         echo "[v] Authoritative server.cjs verified in $INSTALL_DIR/server.cjs"
         return 0
     fi
@@ -150,8 +172,24 @@ const DB_FILE = path.join(DATA_DIR, 'central_db.json');
 const LICENSE_FILE = path.join(DATA_DIR, 'server_license.json');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
-const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
-const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
+const ALL_SYNC_TABLES = [
+  'settings',
+  'categories',
+  'menuItems',
+  'customers',
+  'orders',
+  'accounts',
+  'bankAccounts',
+  'persons',
+  'journalVouchers',
+  'cheques',
+  'rawMaterials',
+  'inventoryTransactions',
+  'productionRecipes',
+  'kitchenProductions',
+  'cashClosures',
+  'appUsers',
+];
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -172,8 +210,29 @@ function detectPort() {
 
 const PORT = detectPort();
 try {
-  fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
+  const confFile = path.join(DATA_DIR, 'server_port.conf');
+  if (process.env.PORT || !fs.existsSync(confFile)) {
+    fs.writeFileSync(confFile, String(PORT), 'utf8');
+  }
 } catch (e) {}
+
+function detectPublicPort(req) {
+  if (PORT === 80 || PORT === 443) return PORT;
+  try {
+    if (
+      os.platform() === 'linux' &&
+      (fs.existsSync('/etc/nginx/sites-enabled/arka-restaurant.conf') ||
+        fs.existsSync('/etc/nginx/sites-available/arka-restaurant.conf'))
+    ) {
+      return 80;
+    }
+  } catch (e) {}
+  if (req && req.headers && req.headers.host) {
+    const h = String(req.headers.host);
+    if (!h.includes(':')) return 80;
+  }
+  return PORT;
+}
 
 function getSavedDomain() {
   if (process.env.SERVER_DOMAIN && process.env.SERVER_DOMAIN.trim()) return process.env.SERVER_DOMAIN.trim();
@@ -232,10 +291,20 @@ function getLocalIpAddresses() {
   return Array.from(new Set(combined));
 }
 
+function hasDbData(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let totalCount = 0;
+  for (const t of ALL_SYNC_TABLES) {
+    if (Array.isArray(obj[t])) totalCount += obj[t].length;
+  }
+  const hasDel = obj.deletedRecordsV3 && typeof obj.deletedRecordsV3 === 'object' && Object.keys(obj.deletedRecordsV3).length > 0;
+  return totalCount > 0 || Boolean(hasDel);
+}
+
 function getItemTimestampMs(item) {
   if (!item || typeof item !== 'object') return 1;
-  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) return Number(item._updatedAtMs);
-  for (const f of ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate']) {
+  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs)) && Number(item._updatedAtMs) > 0) return Number(item._updatedAtMs);
+  for (const f of ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate', 'employmentStartDate']) {
     if (item[f]) {
       const t = new Date(item[f]).getTime();
       if (Number.isFinite(t) && t > 0) return t;
@@ -246,17 +315,25 @@ function getItemTimestampMs(item) {
 
 function getCanonicalKey(tableName, item) {
   if (!item || typeof item !== 'object') return '';
+  const effId = item.id !== undefined && item.id !== null ? item.id : '';
   switch (tableName) {
-    case 'orders': return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : item.id || '');
-    case 'journalVouchers': return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : item.id || '');
-    case 'customers': return String(item.phone || item.id || '');
-    case 'cashClosures': return String(item.dateLabel || item.closedAt || item.id || '');
-    case 'kitchenProductions': return String(item.batchNumber || item.id || '');
+    case 'settings': return 'settings_singleton';
+    case 'orders': return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : effId || '');
+    case 'journalVouchers': return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : effId || '');
+    case 'customers': return String(item.phone || effId || '');
+    case 'cashClosures': return String(item.dateLabel || item.closedAt || effId || '');
+    case 'kitchenProductions': return String(item.batchNumber || effId || '');
     case 'categories':
-    case 'menuItems': return String(item.id || item.name || '');
-    case 'appUsers': return String(item.username || item.id || '');
-    case 'accounts': return String(item.code || item.id || '');
-    default: return String(item.id || item.code || item.name || '');
+    case 'menuItems': return String(effId || item.name || '');
+    case 'bankAccounts': return String(effId || (item.bankName ? `${item.bankName}_${item.cardNumber || ''}` : ''));
+    case 'persons': return String(effId || (item.name ? `${item.name}_${item.role || ''}` : ''));
+    case 'cheques': return String(item.chequeNumber || effId || '');
+    case 'rawMaterials': return String(effId || item.name || '');
+    case 'productionRecipes': return String(item.menuItemId || effId || '');
+    case 'inventoryTransactions': return String(effId || `${item.materialId || ''}_${item.date || ''}_${item.type || ''}`);
+    case 'appUsers': return String(item.username || effId || '');
+    case 'accounts': return String(item.code || effId || '');
+    default: return String(effId || item.code || item.name || '');
   }
 }
 
@@ -273,6 +350,7 @@ function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
     if (item.voucherNumber !== undefined && item.voucherNumber !== null) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.voucherNumber)]) || 0);
     if (item.phone) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.phone)]) || 0);
     if (item.name) maxDelTs = Math.max(maxDelTs, Number(tableDel['name:' + item.name]) || 0);
+    if (item.bankName) maxDelTs = Math.max(maxDelTs, Number(tableDel['bank:' + item.bankName]) || 0);
     if (item.username) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.username)]) || 0);
   }
   if (maxDelTs <= 0) return false;
@@ -283,8 +361,10 @@ function mergeDatabaseObjects(existing, incoming) {
   if (!existing || typeof existing !== 'object') return incoming || {};
   if (!incoming || typeof incoming !== 'object') return existing || {};
   const result = { ...existing };
+  delete result.deletedRecords;
+  const nowTs = Date.now();
   const mergedDeleted = {};
-  for (const src of [existing.deletedRecords, incoming.deletedRecords]) {
+  for (const src of [existing.deletedRecordsV3, incoming.deletedRecordsV3]) {
     if (!src || typeof src !== 'object') continue;
     for (const [table, keyMap] of Object.entries(src)) {
       if (!keyMap || typeof keyMap !== 'object') continue;
@@ -295,7 +375,7 @@ function mergeDatabaseObjects(existing, incoming) {
       }
     }
   }
-  result.deletedRecords = mergedDeleted;
+  result.deletedRecordsV3 = mergedDeleted;
 
   const mergeTable = (tableName, sortFn) => {
     const map = new Map();
@@ -303,7 +383,9 @@ function mergeDatabaseObjects(existing, incoming) {
       for (const item of existing[tableName]) {
         if (!item) continue;
         const k = getCanonicalKey(tableName, item);
-        if (k && !isRecordDeletedInMap(tableName, item, k, mergedDeleted)) map.set(k, item);
+        if (k && !isRecordDeletedInMap(tableName, item, k, mergedDeleted)) {
+          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
+        }
       }
     }
     if (Array.isArray(incoming[tableName])) {
@@ -319,9 +401,9 @@ function mergeDatabaseObjects(existing, incoming) {
         if (prev) {
           const prevTs = getItemTimestampMs(prev);
           const incTs = getItemTimestampMs(item);
-          if (incTs >= prevTs) map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs) });
+          if (incTs >= prevTs) map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs, 1) });
         } else {
-          map.set(k, item);
+          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
         }
       }
     }
@@ -353,6 +435,48 @@ function mergeDatabaseObjects(existing, incoming) {
   result.exportedAt = new Date().toISOString();
   return result;
 }
+
+(function selfHealCentralDbOnStartup() {
+  if (!fs.existsSync(DB_FILE)) return;
+  try {
+    const currentDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (!currentDb || typeof currentDb !== 'object') return;
+    let modified = false;
+    const nowTs = Date.now();
+    if (currentDb.deletedRecords) {
+      delete currentDb.deletedRecords;
+      modified = true;
+    }
+    const backupCandidates = [
+      path.join(DATA_DIR, 'latest_db_backup.json'),
+      path.join(BACKUP_DIR, 'central_db_autobackup.json'),
+    ];
+    try {
+      if (fs.existsSync('/opt/arka-backup')) {
+        const files = fs.readdirSync('/opt/arka-backup').filter((f) => f.startsWith('arka_db_') && f.endsWith('.json')).sort().reverse();
+        for (const f of files.slice(0, 5)) backupCandidates.push(path.join('/opt/arka-backup', f));
+      }
+    } catch (e) {}
+    for (const table of ALL_SYNC_TABLES) {
+      if (table === 'settings') continue;
+      const curArr = Array.isArray(currentDb[table]) ? currentDb[table] : [];
+      if (curArr.length === 0) {
+        for (const candPath of backupCandidates) {
+          if (!fs.existsSync(candPath)) continue;
+          try {
+            const candObj = JSON.parse(fs.readFileSync(candPath, 'utf8'));
+            if (candObj && Array.isArray(candObj[table]) && candObj[table].length > 0) {
+              currentDb[table] = candObj[table].map((r) => (r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r));
+              modified = true;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    if (modified) fs.writeFileSync(DB_FILE, JSON.stringify(currentDb, null, 2), 'utf8');
+  } catch (e) {}
+})();
 
 let currentRev = 1;
 let lastRawResetRev = 0;
@@ -418,6 +542,8 @@ const server = http.createServer((req, res) => {
       const localIps = getLocalIpAddresses();
       const customDomain = getSavedDomain();
       const activePort = detectPort();
+      const publicPort = detectPublicPort(req);
+      const portSuffix = publicPort === 80 || publicPort === 443 ? '' : `:${publicPort}`;
       let domainUrl = customDomain ? (customDomain.startsWith('http') ? customDomain : `https://${customDomain}`) : '';
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, no-store' });
       res.end(JSON.stringify({
@@ -425,11 +551,13 @@ const server = http.createServer((req, res) => {
         hostname: getEffectiveHostname(),
         platform: os.platform(),
         isLinuxServer: os.platform() === 'linux',
-        port: activePort,
+        port: publicPort,
+        internalPort: activePort,
+        publicPort,
         localIps,
         customDomain,
         domainUrl,
-        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${activePort}` : `http://localhost:${activePort}`,
+        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}${portSuffix}` : `http://localhost${portSuffix}`,
         serverTime: new Date().toISOString(),
         serverTimeMs: Date.now(),
         rev: currentRev,
@@ -443,19 +571,7 @@ const server = http.createServer((req, res) => {
       req.on('end', () => {
         try {
           const payload = JSON.parse(body || '{}');
-          const clientRev = Number(payload.clientRevision) || 0;
-          function hasDbData(obj) {
-            if (!obj || typeof obj !== 'object') return false;
-            const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
-            const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
-            const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
-            const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
-            const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
-            const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
-            const hasDel = obj.deletedRecords && typeof obj.deletedRecords === 'object' && Object.keys(obj.deletedRecords).length > 0;
-            return (c + m + o + s + cc + jv) > 0 || Boolean(hasDel);
-          }
-
+          const forceOverwrite = Boolean(payload.forceOverwrite);
           let existingData = null;
           if (fs.existsSync(DB_FILE)) {
             try { existingData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (e) {}
@@ -463,12 +579,7 @@ const server = http.createServer((req, res) => {
           const serverHasData = hasDbData(existingData);
           const clientHasData = hasDbData(payload.data);
 
-          if (serverHasData && !clientHasData) {
-            res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ ok: false, isOutdated: true, rev: currentRev, serverTimeMs: Date.now() }));
-            return;
-          }
-          if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
+          if (serverHasData && !clientHasData && !forceOverwrite) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: false, isOutdated: true, rev: currentRev, serverTimeMs: Date.now() }));
             return;
@@ -476,18 +587,23 @@ const server = http.createServer((req, res) => {
 
           let finalDataToSave = payload.data;
           let wasMerged = false;
-          if (payload.data && clientHasData) {
+          if (payload.data && (clientHasData || forceOverwrite)) {
             if (serverHasData && existingData) {
               try {
                 fs.writeFileSync(path.join(BACKUP_DIR, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
               } catch (e) {}
-              finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
-              wasMerged = true;
+              if (!forceOverwrite) {
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+                wasMerged = true;
+              } else {
+                finalDataToSave = { ...payload.data, deletedRecordsV3: payload.data.deletedRecordsV3 || {} };
+                delete finalDataToSave.deletedRecords;
+              }
             }
             const tmpFile = DB_FILE + '.tmp';
             fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
-            currentRev += 1;
+            currentRev += forceOverwrite ? 100 : 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, rev: currentRev, serverTimeMs: Date.now(), merged: wasMerged, data: wasMerged ? finalDataToSave : undefined }));
@@ -506,9 +622,11 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           if (payload.data) {
-            const cleanData = { ...payload.data, deletedRecords: {} };
+            const cleanData = { ...payload.data, deletedRecordsV3: {} };
+            delete cleanData.deletedRecords;
             const jsonContent = JSON.stringify(cleanData, null, 2);
             fs.writeFileSync(DB_FILE, jsonContent, 'utf8');
+            try { fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), jsonContent, 'utf8'); } catch (e) {}
           }
           currentRev += 1000;
           lastRawResetRev = currentRev;
@@ -517,6 +635,45 @@ const server = http.createServer((req, res) => {
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/sync-backup') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          if (payload.backupJson) {
+            fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), payload.backupJson, 'utf8');
+            if (payload.overwriteCentral || !fs.existsSync(DB_FILE)) {
+              try {
+                const parsedBackup = JSON.parse(payload.backupJson);
+                const nowTs = Date.now();
+                delete parsedBackup.deletedRecords;
+                parsedBackup.deletedRecordsV3 = {};
+                for (const t of ALL_SYNC_TABLES) {
+                  if (Array.isArray(parsedBackup[t])) {
+                    parsedBackup[t] = parsedBackup[t].map((r) => (r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r));
+                  }
+                }
+                const cleanJson = JSON.stringify(parsedBackup, null, 2);
+                fs.writeFileSync(DB_FILE, cleanJson, 'utf8');
+                fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), cleanJson, 'utf8');
+                currentRev += 1000;
+              } catch (e) {
+                fs.writeFileSync(DB_FILE, payload.backupJson, 'utf8');
+                currentRev += 1000;
+              }
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false }));
         }
       });
       return;
@@ -1155,6 +1312,8 @@ update_app() {
     echo "[+] Starting Safe Update Process for Arka Restaurant..."
     local ACTIVE_PORT
     ACTIVE_PORT=$(get_active_port)
+    local PUBLIC_PORT_DISPLAY
+    PUBLIC_PORT_DISPLAY=$(get_public_port_display)
     if [ -d "$INSTALL_DIR" ]; then
         echo "[+] Step 1/4: Creating automatic pre-update backup & sending to Bale/Telegram bots..."
         backup_app "Automatic Pre-Update Backup"
@@ -1205,7 +1364,7 @@ update_app() {
         local HOST_NAME
         HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
 
-        echo "[+] Step 4/4: Restarting services & updating Nginx limits on active port ${ACTIVE_PORT}..."
+        echo "[+] Step 4/4: Restarting services & updating Nginx limits (Public Port: ${PUBLIC_PORT_DISPLAY})..."
         # Ensure Nginx allows up to 100MB sync payloads (fixes HTTP 413 on large databases)
         if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
             if ! grep -q "client_max_body_size" /etc/nginx/sites-available/arka-restaurant.conf; then
@@ -1244,7 +1403,7 @@ EOF
         fi
 
         echo "================================================================"
-        echo "[v] Update completed successfully on port ${ACTIVE_PORT}!"
+        echo "[v] Update completed successfully! Active Public Port: ${PUBLIC_PORT_DISPLAY}"
         echo "[v] Pre-update backup saved & sent to configured bots."
         echo "[i] Tip: In your browser, press Ctrl+F5 (or clear cache in mobile) to load the new version immediately."
         echo "================================================================"

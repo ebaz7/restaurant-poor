@@ -10,6 +10,7 @@ import {
 } from '../../lib/db';
 import { calculateWeightedAveragePurchase } from '../../lib/accountingEngine';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { format } from 'date-fns-jalali';
 import {
@@ -136,6 +137,7 @@ export default function InventoryAndKardexTab({
       });
     }
 
+    await pushToCentralServer(false);
     setMatName('');
     setMatInitQty('0');
     setMatAvgCost('');
@@ -213,6 +215,7 @@ export default function InventoryAndKardexTab({
       }
     }
 
+    await pushToCentralServer(false);
     setEditingMaterial(null);
     showToast(`اطلاعات و موجودی «${newName}» با موفقیت ویرایش شد.`);
   };
@@ -232,6 +235,7 @@ export default function InventoryAndKardexTab({
       if (tx.id) await db.inventoryTransactions.delete(tx.id);
     }
     await db.rawMaterials.delete(mat.id);
+    await pushToCentralServer(false);
     showToast(`ماده اولیه «${mat.name}» از انبار حذف شد.`);
   };
 
@@ -266,6 +270,7 @@ export default function InventoryAndKardexTab({
     });
 
     await recalculateMaterialKardex(editingTx.materialId);
+    await pushToCentralServer(false);
     setEditingTx(null);
     showToast('فاکتور / گردش انبار ویرایش شد و موجودی و میانگین موزون کاردکس بازمحاسبه گردید.');
   };
@@ -301,6 +306,7 @@ export default function InventoryAndKardexTab({
       });
     }
 
+    await pushToCentralServer(false);
     showToast('گردش انبار / فاکتور خرید حذف شد و موجودی انبار بروزرسانی گردید.');
   };
 
@@ -424,6 +430,7 @@ export default function InventoryAndKardexTab({
       });
     }
 
+    await pushToCentralServer(false);
     setBuyQty('10');
     setBuyUnitPrice('');
     setBuyDescription('');
@@ -487,6 +494,7 @@ export default function InventoryAndKardexTab({
       ],
     });
 
+    await pushToCentralServer(false);
     showToast(`خروج ${actualOut} ${mat.unit} ${mat.name} در کاردکس و سند هزینه ضایعات ثبت شد.`);
   };
 

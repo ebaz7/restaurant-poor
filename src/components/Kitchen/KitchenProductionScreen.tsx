@@ -9,6 +9,7 @@ import {
 } from '../../lib/db';
 import { calculateKitchenBatchProduction } from '../../lib/accountingEngine';
 import { formatCurrency, formatNumber } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { format } from 'date-fns-jalali';
 import {
@@ -208,6 +209,7 @@ export default function KitchenProductionScreen({
     }
     try {
       await deleteKitchenProductionBatch(batch.id);
+      await pushToCentralServer(false);
       if (editingBatch?.id === batch.id) {
         setEditingBatch(null);
         setQuantities({});
@@ -262,6 +264,7 @@ export default function KitchenProductionScreen({
 
       if (editingBatch && editingBatch.id) {
         await updateKitchenProductionBatch(editingBatch.id, payload);
+        await pushToCentralServer(false);
         showNotice(
           'success',
           `ویرایش پارت تولید #${editingBatch.batchNumber} (${formatNumber(
@@ -271,6 +274,7 @@ export default function KitchenProductionScreen({
         setEditingBatch(null);
       } else {
         await recordKitchenProductionBatch(payload);
+        await pushToCentralServer(false);
         showNotice(
           'success',
           `تولید ${formatNumber(

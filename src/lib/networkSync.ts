@@ -28,10 +28,10 @@ export interface SyncState {
 
 type SyncListener = (state: SyncState) => void;
 
-const DELETED_RECORDS_STORAGE_KEY = 'arka_deleted_records_v2';
-const KNOWN_SYNCED_KEYS_STORAGE_KEY = 'arka_known_synced_keys_v2';
-const DIRTY_RECORDS_STORAGE_KEY = 'arka_dirty_records_v2';
-const PENDING_PUSH_STORAGE_KEY = 'arka_has_pending_push_v2';
+const DELETED_RECORDS_STORAGE_KEY = 'arka_deleted_records_v3';
+const KNOWN_SYNCED_KEYS_STORAGE_KEY = 'arka_known_synced_keys_v3';
+const DIRTY_RECORDS_STORAGE_KEY = 'arka_dirty_records_v3';
+const PENDING_PUSH_STORAGE_KEY = 'arka_has_pending_push_v3';
 
 // Tombstone map: { [tableName]: { [recordKey]: deletedAtTimestampMs } }
 let localDeletedRecords: Record<string, Record<string, number>> = {};
@@ -50,6 +50,13 @@ let serverTimeOffsetMs = 0;
 
 function loadPersistedSyncMetadata() {
   if (typeof window === 'undefined') return;
+  try {
+    // Purge legacy v2 poisoned tombstones so auto-increment IDs (1, 2, 3...) are never falsely blocked
+    window.localStorage.removeItem('arka_deleted_records_v2');
+    window.localStorage.removeItem('arka_known_synced_keys_v2');
+  } catch {
+    // ignore
+  }
   try {
     const rawDel = window.localStorage.getItem(DELETED_RECORDS_STORAGE_KEY);
     if (rawDel) {
@@ -146,6 +153,9 @@ function markRecordDirty(tableName: string, item?: any, primKey?: any) {
   if (k) {
     dirtyRecordKeys[tableName].add(k);
   }
+  if (primKey !== undefined && primKey !== null) {
+    dirtyRecordKeys[tableName].add(String(primKey));
+  }
   savePersistedDirtyState();
 }
 
@@ -222,7 +232,7 @@ export function getRecordTimestampMs(item: any): number {
   if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) {
     return Number(item._updatedAtMs);
   }
-  const dateFields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate'];
+  const dateFields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate', 'dueDate', 'employmentStartDate'];
   for (const field of dateFields) {
     if (item[field]) {
       const t = item[field] instanceof Date ? item[field].getTime() : new Date(item[field]).getTime();
@@ -233,40 +243,53 @@ export function getRecordTimestampMs(item: any): number {
 }
 
 /**
- * Computes canonical synchronization key for a record in a given table
+ * Computes canonical synchronization key for a record in a given table across all 16 tables
  */
 export function getRecordCanonicalKey(tableName: string, item: any, fallbackPrimKey?: any): string {
   if (!item || typeof item !== 'object') {
     return fallbackPrimKey !== undefined && fallbackPrimKey !== null ? String(fallbackPrimKey) : '';
   }
+  const effId = item.id !== undefined && item.id !== null ? item.id : fallbackPrimKey;
   switch (tableName) {
     case 'orders':
       return String(
         item.invoiceNumber !== undefined && item.invoiceNumber !== null
           ? item.invoiceNumber
-          : item.id ?? fallbackPrimKey ?? ''
+          : effId ?? ''
       );
     case 'journalVouchers':
       return String(
         item.voucherNumber !== undefined && item.voucherNumber !== null
           ? item.voucherNumber
-          : item.id ?? fallbackPrimKey ?? ''
+          : effId ?? ''
       );
     case 'customers':
-      return String(item.phone || item.id || fallbackPrimKey || '');
+      return String(item.phone || effId || '');
     case 'cashClosures':
-      return String(item.dateLabel || item.closedAt || item.id || fallbackPrimKey || '');
+      return String(item.dateLabel || item.closedAt || effId || '');
     case 'kitchenProductions':
-      return String(item.batchNumber || item.id || fallbackPrimKey || '');
+      return String(item.batchNumber || effId || '');
+    case 'bankAccounts':
+      return String(effId ?? item.bankName ?? item.cardNumber ?? '');
     case 'categories':
     case 'menuItems':
-      return String(item.id || item.name || fallbackPrimKey || '');
+      return String(effId ?? item.name ?? '');
+    case 'persons':
+      return String(effId ?? item.name ?? '');
+    case 'cheques':
+      return String(effId ?? item.chequeNumber ?? '');
+    case 'rawMaterials':
+      return String(effId ?? item.name ?? '');
+    case 'productionRecipes':
+      return String(effId ?? item.menuItemId ?? item.menuItemName ?? '');
+    case 'inventoryTransactions':
+      return String(effId ?? '');
     case 'appUsers':
-      return String(item.username || item.id || fallbackPrimKey || '');
+      return String(item.username || effId || '');
     case 'accounts':
-      return String(item.code || item.id || fallbackPrimKey || '');
+      return String(item.code || effId || '');
     default:
-      return String(item.id || item.code || item.name || fallbackPrimKey || '');
+      return String(effId ?? item.code ?? item.name ?? '');
   }
 }
 
@@ -282,8 +305,7 @@ export function recordRecordDeletion(tableName: string, objOrKey: any, primKey?:
 
   const obj = objOrKey && typeof objOrKey === 'object' ? objOrKey : null;
   const itemTs = obj ? getRecordTimestampMs(obj) : 0;
-  // Ensure deletion timestamp is strictly greater than the item's own timestamp (immune to clock skew)
-  const deletedAt = Math.max(getNetworkNow(), itemTs + 5000);
+  const deletedAt = Math.max(getNetworkNow(), itemTs + 2000);
 
   const setMaxTs = (key: string) => {
     if (!key) return;
@@ -297,9 +319,9 @@ export function recordRecordDeletion(tableName: string, objOrKey: any, primKey?:
   if (obj) {
     const canonical = getRecordCanonicalKey(tableName, obj, primKey);
     if (canonical) setMaxTs(canonical);
-    if (obj.id !== undefined && obj.id !== null) {
-      setMaxTs(`id:${obj.id}`);
-      setMaxTs(String(obj.id));
+    const effId = obj.id !== undefined && obj.id !== null ? obj.id : primKey;
+    if (effId !== undefined && effId !== null) {
+      setMaxTs(`id:${effId}`);
     }
     if (obj.invoiceNumber !== undefined && obj.invoiceNumber !== null) {
       setMaxTs(String(obj.invoiceNumber));
@@ -309,6 +331,9 @@ export function recordRecordDeletion(tableName: string, objOrKey: any, primKey?:
     }
     if (obj.phone) {
       setMaxTs(String(obj.phone));
+    }
+    if (obj.bankName) {
+      setMaxTs(`bank:${obj.bankName}`);
     }
     if (obj.name) {
       setMaxTs(`name:${obj.name}`);
@@ -350,11 +375,7 @@ export function isRecordDeletedInMap(
   }
   if (item && typeof item === 'object') {
     if (item.id !== undefined && item.id !== null) {
-      maxDelTs = Math.max(
-        maxDelTs,
-        Number(tableDel[`id:${item.id}`]) || 0,
-        tableName !== 'orders' && tableName !== 'journalVouchers' ? Number(tableDel[String(item.id)]) || 0 : 0
-      );
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[`id:${item.id}`]) || 0);
     }
     if (item.invoiceNumber !== undefined && item.invoiceNumber !== null) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.invoiceNumber)]) || 0);
@@ -364,6 +385,9 @@ export function isRecordDeletedInMap(
     }
     if (item.phone) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.phone)]) || 0);
+    }
+    if (item.bankName) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[`bank:${item.bankName}`]) || 0);
     }
     if (item.name) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel[`name:${item.name}`]) || 0);
@@ -375,23 +399,31 @@ export function isRecordDeletedInMap(
 
   if (maxDelTs <= 0) return false;
   const itemTs = getRecordTimestampMs(item);
+  // If an item has no timestamp yet (legacy record), only consider it deleted if a named tombstone or current session deletion exists
+  if (itemTs <= 1) {
+    return maxDelTs > 1700000000000;
+  }
   return maxDelTs >= itemTs;
 }
 
 function clearTombstoneForCreatedOrUpdatedItem(tableName: string, item: any, primKey?: any) {
   const tableDel = localDeletedRecords[tableName];
-  if (!tableDel || !item || typeof item !== 'object') return;
-  const canonical = getRecordCanonicalKey(tableName, item, primKey);
-  if (canonical) delete tableDel[canonical];
-  if (item.id !== undefined) {
-    delete tableDel[`id:${item.id}`];
-    delete tableDel[String(item.id)];
+  if (!tableDel) return;
+  const effId = item?.id !== undefined && item?.id !== null ? item.id : primKey;
+  if (effId !== undefined && effId !== null) {
+    delete tableDel[`id:${effId}`];
+    delete tableDel[String(effId)];
   }
-  if (item.invoiceNumber !== undefined) delete tableDel[String(item.invoiceNumber)];
-  if (item.voucherNumber !== undefined) delete tableDel[String(item.voucherNumber)];
-  if (item.phone) delete tableDel[String(item.phone)];
-  if (item.name) delete tableDel[`name:${item.name}`];
-  if (item.username) delete tableDel[String(item.username)];
+  if (item && typeof item === 'object') {
+    const canonical = getRecordCanonicalKey(tableName, item, effId);
+    if (canonical) delete tableDel[canonical];
+    if (item.invoiceNumber !== undefined) delete tableDel[String(item.invoiceNumber)];
+    if (item.voucherNumber !== undefined) delete tableDel[String(item.voucherNumber)];
+    if (item.phone) delete tableDel[String(item.phone)];
+    if (item.bankName) delete tableDel[`bank:${item.bankName}`];
+    if (item.name) delete tableDel[`name:${item.name}`];
+    if (item.username) delete tableDel[String(item.username)];
+  }
   savePersistedDeletedRecords();
 }
 
@@ -560,15 +592,16 @@ export async function initNetworkSync(customServerUrl?: string) {
           clearTombstoneForCreatedOrUpdatedItem(tableName, obj, primKey);
           markRecordDirty(tableName, obj, primKey);
           const self: any = this;
-          if (self && typeof self.onsuccess === 'function') {
-            const origOnSuccess = self.onsuccess;
+          const prevOnSuccess = self && typeof self.onsuccess === 'function' ? self.onsuccess : null;
+          if (self) {
             self.onsuccess = function (generatedKey: any) {
-              markRecordDirty(tableName, obj, generatedKey);
-              return origOnSuccess.apply(this, arguments);
-            };
-          } else if (self) {
-            self.onsuccess = function (generatedKey: any) {
-              markRecordDirty(tableName, obj, generatedKey);
+              const itemWithId = { ...obj, id: generatedKey ?? obj.id ?? primKey };
+              clearTombstoneForCreatedOrUpdatedItem(tableName, itemWithId, generatedKey);
+              markRecordDirty(tableName, itemWithId, generatedKey);
+              notifyDataChanged();
+              if (prevOnSuccess) {
+                return prevOnSuccess.apply(this, arguments);
+              }
             };
           }
           notifyDataChanged();
@@ -579,9 +612,19 @@ export async function initNetworkSync(customServerUrl?: string) {
         if (!isApplyingRemoteChange && obj && typeof obj === 'object') {
           const prevTs = getRecordTimestampMs(obj);
           const nextTs = Math.max(getNetworkNow(), prevTs + 1000);
-          const mergedObj = { ...obj, ...modifications, _updatedAtMs: nextTs };
+          const mergedObj = { ...obj, ...modifications, id: obj.id ?? primKey, _updatedAtMs: nextTs };
           clearTombstoneForCreatedOrUpdatedItem(tableName, mergedObj, primKey);
           markRecordDirty(tableName, mergedObj, primKey);
+          const self: any = this;
+          const prevOnSuccess = self && typeof self.onsuccess === 'function' ? self.onsuccess : null;
+          if (self) {
+            self.onsuccess = function () {
+              notifyDataChanged();
+              if (prevOnSuccess) {
+                return prevOnSuccess.apply(this, arguments);
+              }
+            };
+          }
           notifyDataChanged();
           return {
             _updatedAtMs: nextTs,
@@ -593,6 +636,16 @@ export async function initNetworkSync(customServerUrl?: string) {
       table.hook('deleting', function (primKey, obj) {
         if (!isApplyingRemoteChange) {
           recordRecordDeletion(tableName, obj, primKey);
+          const self: any = this;
+          const prevOnSuccess = self && typeof self.onsuccess === 'function' ? self.onsuccess : null;
+          if (self) {
+            self.onsuccess = function () {
+              notifyDataChanged();
+              if (prevOnSuccess) {
+                return prevOnSuccess.apply(this, arguments);
+              }
+            };
+          }
           notifyDataChanged();
         }
       });
@@ -604,7 +657,7 @@ export async function initNetworkSync(customServerUrl?: string) {
   // Initial pull from server
   await pullFromCentralServer(true);
 
-  // If this browser had pending unpushed changes before reload, push them now
+  // If this browser had pending unpushed changes or unsynced local tables, push them now
   if (hasPendingPush) {
     await pushToCentralServer(false);
   }
@@ -697,10 +750,10 @@ async function checkServerRevision() {
 }
 
 /**
- * Synchronizes server database state into local Dexie with full support for:
- * - Deleting records that were deleted on another terminal (via deletedRecords tombstones or knownSyncedKeys)
+ * Synchronizes server database state into local Dexie across ALL 16 tables with full support for:
+ * - Deleting records that were explicitly deleted on another terminal (via deletedRecordsV3 tombstones)
  * - Chronological ordering of edits (_updatedAtMs comparison so newer edits win)
- * - Preserving genuinely new offline local records created on this terminal that haven't been pushed yet
+ * - Preserving local records (banks, menu items, categories, orders, vouchers, etc.) that are not yet on the server and marking them to push
  */
 export async function mergeServerDataIntoDexie(
   serverData: any,
@@ -712,9 +765,9 @@ export async function mergeServerDataIntoDexie(
 
   let hasUnsyncedLocalRecords = false;
 
-  // 0. Merge tombstones from server
-  if (serverData.deletedRecords && typeof serverData.deletedRecords === 'object') {
-    mergeDeletedRecordsMap(serverData.deletedRecords);
+  // 0. Merge v3 tombstones from server (ignore poisoned legacy deletedRecords)
+  if (serverData.deletedRecordsV3 && typeof serverData.deletedRecordsV3 === 'object') {
+    mergeDeletedRecordsMap(serverData.deletedRecordsV3);
   }
 
   const parseDatesInItem = (item: any): any => {
@@ -735,14 +788,8 @@ export async function mergeServerDataIntoDexie(
     return arr.map(parseDatesInItem);
   };
 
-  const serverHasAnyData =
-    (Array.isArray(serverData.orders) && serverData.orders.length > 0) ||
-    (Array.isArray(serverData.categories) && serverData.categories.length > 0) ||
-    (Array.isArray(serverData.menuItems) && serverData.menuItems.length > 0) ||
-    (Array.isArray(serverData.settings) && serverData.settings.length > 0);
-
   /**
-   * Generic chronological table synchronizer with tombstone & deletion propagation
+   * Generic chronological table synchronizer across all 16 tables
    */
   const syncTableChronologically = async (
     tableName: string,
@@ -767,7 +814,7 @@ export async function mergeServerDataIntoDexie(
     const dirtySet = dirtyRecordKeys[tableName] || new Set<string>();
     const localItems = await table.toArray();
 
-    // 1. Check local items: if deleted on server, delete locally! If genuinely new local item on this terminal, keep & push.
+    // 1. Check local items: ONLY delete if explicitly tombstoned in deletedRecordsV3 or previously synced & removed on a non-empty server table
     for (const lItem of localItems) {
       if (!lItem) continue;
       const k = getRecordCanonicalKey(tableName, lItem);
@@ -784,23 +831,26 @@ export async function mergeServerDataIntoDexie(
       }
 
       if (!serverKeyMap.has(k)) {
-        // Server does NOT have this record.
-        // Is it a genuinely new local record created on THIS terminal that hasn't been pushed yet?
+        // Also check if server has the same record under a business match (e.g. same bankName or menu name)
+        const matchingServerItem = findExistingLocal(lItem, serverItems);
+        if (matchingServerItem) {
+          continue;
+        }
+
         const isLocallyDirty =
           dirtySet.has(k) ||
           (lItem.id !== undefined && dirtySet.has(String(lItem.id))) ||
-          (hasPendingPush && dirtyTables.has(tableName) && getRecordTimestampMs(lItem) > Date.now() - 120000);
+          (hasPendingPush && dirtyTables.has(tableName));
 
-        if (isLocallyDirty && !previouslySyncedSet.has(k)) {
-          hasUnsyncedLocalRecords = true;
-        } else if (previouslySyncedSet.has(k) || serverHasAnyData) {
-          // Record was previously on server (deleted by another terminal) OR is stale local seed data when server has authoritative DB
+        if (!isLocallyDirty && previouslySyncedSet.has(k) && serverItems.length > 0) {
+          // Record was previously synced with the server and removed on another client
           if (lItem.id !== undefined) {
             try {
               await table.delete(lItem.id);
             } catch {}
           }
         } else {
+          // Local record is not yet on the server (e.g., newly added bank, menu item, category, voucher, or restored backup) -> keep it and push to server!
           hasUnsyncedLocalRecords = true;
         }
       }
@@ -819,10 +869,11 @@ export async function mergeServerDataIntoDexie(
         if (existingLocal) {
           const sTime = getRecordTimestampMs(sItem);
           const lTime = getRecordTimestampMs(existingLocal);
-          const isLocalEdited = dirtySet.has(k) && lTime > sTime;
+          const isLocalEdited =
+            (dirtySet.has(k) || (existingLocal.id !== undefined && dirtySet.has(String(existingLocal.id)))) &&
+            lTime > sTime;
 
           if (isLocalEdited) {
-            // Local has a newer unpushed edit on this terminal
             hasUnsyncedLocalRecords = true;
           } else {
             await table.put({ ...sItem, id: existingLocal.id });
@@ -842,8 +893,12 @@ export async function mergeServerDataIntoDexie(
       }
     }
 
-    // 3. Record current server keys as known synced keys
-    knownSyncedKeys[tableName] = new Set(serverKeyMap.keys());
+    // 3. Record current keys as known synced keys
+    const finalLocalItems = await table.toArray();
+    knownSyncedKeys[tableName] = new Set([
+      ...Array.from(serverKeyMap.keys()),
+      ...finalLocalItems.map((it: any) => getRecordCanonicalKey(tableName, it)).filter(Boolean),
+    ]);
   };
 
   // 1. Orders
@@ -907,16 +962,27 @@ export async function mergeServerDataIntoDexie(
     localAll.find((lm) => (sMat.id && lm.id === sMat.id) || (sMat.name && lm.name === sMat.name))
   );
   await syncTableChronologically('productionRecipes', serverData.productionRecipes, (sRec, localAll) =>
-    localAll.find((lr) => (sRec.id && lr.id === sRec.id) || (sRec.name && lr.name === sRec.name))
+    localAll.find(
+      (lr) =>
+        (sRec.id && lr.id === sRec.id) ||
+        (sRec.menuItemId !== undefined && lr.menuItemId === sRec.menuItemId) ||
+        (sRec.menuItemName && lr.menuItemName === sRec.menuItemName)
+    )
   );
   await syncTableChronologically('bankAccounts', serverData.bankAccounts, (sBank, localAll) =>
-    localAll.find((lb) => sBank.id && lb.id === sBank.id)
+    localAll.find(
+      (lb) =>
+        (sBank.id && lb.id === sBank.id) ||
+        (sBank.bankName && lb.bankName === sBank.bankName && (!sBank.cardNumber || lb.cardNumber === sBank.cardNumber))
+    )
   );
   await syncTableChronologically('persons', serverData.persons, (sPerson, localAll) =>
     localAll.find((lp) => (sPerson.id && lp.id === sPerson.id) || (sPerson.name && lp.name === sPerson.name))
   );
   await syncTableChronologically('cheques', serverData.cheques, (sChq, localAll) =>
-    localAll.find((lc) => sChq.id && lc.id === sChq.id)
+    localAll.find(
+      (lc) => (sChq.id && lc.id === sChq.id) || (sChq.chequeNumber && lc.chequeNumber === sChq.chequeNumber)
+    )
   );
   await syncTableChronologically('accounts', serverData.accounts, (sAcc, localAll) =>
     localAll.find((la) => (sAcc.code && la.code === sAcc.code) || (sAcc.id && la.id === sAcc.id))
@@ -999,7 +1065,7 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
     currentSyncState.isSyncing = isPushInFlight;
     notifyListeners();
 
-    // If a local change occurred while pull was in flight, push it immediately now!
+    // If a local change occurred while pull was in flight or unsynced local records were detected, push immediately!
     if (hasPendingPush && !isPushInFlight) {
       setTimeout(() => {
         pushToCentralServer(false);
@@ -1011,7 +1077,7 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
 /**
  * Builds a compact delta payload (< 150 KB) when the full database exceeds Nginx's default 1MB body limit.
  * Because server.cjs and Tauri lib.rs merge incoming records by canonical key into central_db.json
- * and only remove records listed in deletedRecords, sending recent/dirty records + core config tables
+ * and only remove records listed in deletedRecordsV3, sending recent/dirty records + core config tables
  * is 100% lossless and 50x faster over the network.
  */
 function buildCompactDeltaPayload(fullData: any, ultraCompact: boolean = false): any {
@@ -1057,12 +1123,12 @@ function buildCompactDeltaPayload(fullData: any, ultraCompact: boolean = false):
     inventoryTransactions: filterLargeTable('inventoryTransactions', fullData.inventoryTransactions),
     customers: ultraCompact ? filterLargeTable('customers', fullData.customers) : fullData.customers,
     menuItems: compactMenuItems,
-    deletedRecords: localDeletedRecords,
+    deletedRecordsV3: localDeletedRecords,
   };
 }
 
 /**
- * Pushes the local database state (including deletedRecords tombstones and _updatedAtMs)
+ * Pushes the local database state across all 16 tables (including deletedRecordsV3 tombstones and _updatedAtMs)
  * to the central server, and immediately applies the merged authoritative server state if returned.
  * Never drops a push if another sync is in flight — queues and executes immediately after.
  */
@@ -1075,7 +1141,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
   hasPendingPush = true;
   savePersistedDirtyState();
 
-  // If a remote pull is currently applying changes or another push is in flight, queue and wait
+  // If a remote pull is currently applying changes, let pull's finally block trigger pushToCentralServer immediately after
   if (isApplyingRemoteChange || isPullInFlight) {
     return false;
   }
@@ -1095,18 +1161,35 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
       const baseUrl = resolveEffectiveServerUrl();
       const jsonString = await exportDB();
       const fullData = JSON.parse(jsonString);
-      fullData.deletedRecords = localDeletedRecords;
+      fullData.deletedRecordsV3 = localDeletedRecords;
 
-      const catCount = Array.isArray(fullData?.categories) ? fullData.categories.length : 0;
-      const menuCount = Array.isArray(fullData?.menuItems) ? fullData.menuItems.length : 0;
-      const orderCount = Array.isArray(fullData?.orders) ? fullData.orders.length : 0;
-      const closureCount = Array.isArray(fullData?.cashClosures) ? fullData.cashClosures.length : 0;
-      const voucherCount = Array.isArray(fullData?.journalVouchers) ? fullData.journalVouchers.length : 0;
-      const settingsCount = Array.isArray(fullData?.settings) ? fullData.settings.length : 0;
+      const allTableNames = [
+        'categories',
+        'menuItems',
+        'orders',
+        'settings',
+        'customers',
+        'accounts',
+        'bankAccounts',
+        'persons',
+        'journalVouchers',
+        'cheques',
+        'rawMaterials',
+        'inventoryTransactions',
+        'productionRecipes',
+        'kitchenProductions',
+        'cashClosures',
+        'appUsers',
+      ];
+      let totalMeaningful = 0;
+      for (const tName of allTableNames) {
+        if (Array.isArray(fullData?.[tName])) {
+          totalMeaningful += fullData[tName].length;
+        }
+      }
       const hasDeletions = Object.keys(localDeletedRecords).some(
         (k) => Object.keys(localDeletedRecords[k] || {}).length > 0
       );
-      const totalMeaningful = catCount + menuCount + orderCount + closureCount + voucherCount + settingsCount;
 
       if (totalMeaningful === 0 && !hasDeletions && !isInitialSeed) {
         clearDirtyStateAfterSuccessfulPush();
@@ -1181,24 +1264,8 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
         currentSyncState.isOnline = true;
 
         // Update knownSyncedKeys from fullData so we know all current local records are on the server
-        const syncedTables = [
-          'orders',
-          'journalVouchers',
-          'customers',
-          'categories',
-          'menuItems',
-          'cashClosures',
-          'kitchenProductions',
-          'inventoryTransactions',
-          'rawMaterials',
-          'productionRecipes',
-          'bankAccounts',
-          'persons',
-          'cheques',
-          'accounts',
-          'appUsers',
-        ];
-        for (const t of syncedTables) {
+        for (const t of allTableNames) {
+          if (t === 'settings') continue;
           if (Array.isArray(fullData[t])) {
             knownSyncedKeys[t] = new Set(
               fullData[t].filter(Boolean).map((item: any) => getRecordCanonicalKey(t, item)).filter(Boolean)
@@ -1217,7 +1284,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
           crossTabChannel?.postMessage({ type: 'DB_UPDATED', rev: nextRev });
         } catch {}
 
-        // If another client ALSO pushed changes to the server in the meantime, merge server's state into local Dexie
+        // If server merged data from other clients, apply merged state into local Dexie
         const mergedServerData = result.data || result.state?.data;
         if (result.merged && mergedServerData) {
           isApplyingRemoteChange = true;
@@ -1255,7 +1322,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
 }
 
 /**
- * Triggers a fast debounced push (250ms) to central server whenever a local user creates,
+ * Triggers a fast debounced push (180ms) to central server whenever a local user creates,
  * edits, or deletes any record.
  */
 export function notifyDataChanged() {
@@ -1265,12 +1332,12 @@ export function notifyDataChanged() {
   if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
   syncDebounceTimer = setTimeout(() => {
     pushToCentralServer(false);
-  }, 250);
+  }, 180);
 }
 
 /**
- * Explicitly notifies central server that a 100% factory raw reset was performed,
- * wiping server data and advancing revision so no client pulls old data back.
+ * Explicitly overwrites the central server database (used on Full Backup Restore or Factory Raw Reset),
+ * clearing all deletion tombstones and advancing revision so all connected clients receive the exact new database state.
  */
 export async function notifyRawResetToCentralServer(): Promise<boolean> {
   if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
@@ -1279,11 +1346,13 @@ export async function notifyRawResetToCentralServer(): Promise<boolean> {
   notifyListeners();
 
   try {
+    const baseUrl = resolveEffectiveServerUrl();
     const jsonString = await exportDB();
     const data = JSON.parse(jsonString);
     data.deletedRecords = {};
+    data.deletedRecordsV3 = {};
 
-    const res = await fetch(`${currentSyncState.serverUrl}/api/db/raw-reset`, {
+    const res = await fetch(`${baseUrl}/api/db/raw-reset`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1297,18 +1366,22 @@ export async function notifyRawResetToCentralServer(): Promise<boolean> {
 
     if (res.ok) {
       const result = await res.json();
-      currentSyncState.localRevision = Number(result.rev) || currentSyncState.localRevision + 1000;
-      currentSyncState.serverRevision = currentSyncState.localRevision;
+      const nextRev = Number(result.rev) || currentSyncState.localRevision + 1000;
+      currentSyncState.localRevision = nextRev;
+      currentSyncState.serverRevision = nextRev;
       currentSyncState.lastSyncTime = new Date();
       currentSyncState.lastError = null;
       currentSyncState.isOnline = true;
+      try {
+        crossTabChannel?.postMessage({ type: 'DB_UPDATED', rev: nextRev });
+      } catch {}
       return true;
     } else {
-      return await pushToCentralServer(false);
+      return await pushToCentralServer(true);
     }
   } catch (err: any) {
     console.warn('Central server raw-reset sync warning:', err);
-    return false;
+    return await pushToCentralServer(true);
   } finally {
     currentSyncState.isSyncing = false;
     notifyListeners();
@@ -1443,6 +1516,7 @@ export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
     candidates.push(`http://127.0.0.1:${savedPort}`);
     candidates.push('http://127.0.0.1:4040');
     candidates.push('http://localhost:4040');
+    candidates.push('http://127.0.0.1:80');
     candidates.push('http://127.0.0.1:3000');
   }
 
@@ -1465,7 +1539,14 @@ export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
         const data = await res.json();
         if (data && data.ok) {
           const isLinux = data.platform === 'linux' || Boolean(data.isLinuxServer);
-          const detectedPort = Number(data.port) || 4040;
+          // If accessed in browser on default port 80/443 (window.location.port === '') or server reports publicPort 80, reflect port 80 accurately
+          const browserImplicitPort =
+            typeof window !== 'undefined' && !isTauri && window.location.port === ''
+              ? 80
+              : typeof window !== 'undefined' && !isTauri && Number(window.location.port) > 0
+              ? Number(window.location.port)
+              : 0;
+          const detectedPort = Number(data.publicPort || browserImplicitPort || data.port) || 4040;
 
           if (typeof window !== 'undefined' && detectedPort) {
             try {
@@ -1495,10 +1576,11 @@ export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
             ipsList.unshift(window.location.hostname);
           }
 
+          const formatIpUrl = (ip: string, portNum: number) =>
+            portNum === 80 ? `http://${ip}` : portNum === 443 ? `https://${ip}` : `http://${ip}:${portNum}`;
+
           const effectivePrimaryUrl =
-            ipsList.length > 0
-              ? `http://${ipsList[0]}:${detectedPort}`
-              : data.primaryUrl || `${target}`;
+            ipsList.length > 0 ? formatIpUrl(ipsList[0], detectedPort) : data.primaryUrl || `${target}`;
 
           return {
             ...data,

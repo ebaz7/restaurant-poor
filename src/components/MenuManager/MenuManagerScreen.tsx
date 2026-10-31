@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, Category, MenuItem, getDefaultQuickBeverages } from '../../lib/db';
 import { formatCurrency, getCurrencyLabel, autoSyncBeveragesToMenuIfEmpty } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import {
   Plus,
@@ -30,6 +31,7 @@ export default function MenuManagerScreen() {
     try {
       const count = await autoSyncBeveragesToMenuIfEmpty();
       if (count > 0) {
+        await pushToCentralServer(false);
         setSyncMsg(`${count} آیتم نوشیدنی و نرخ‌های پایگاه داده با موفقیت به منو اضافه شد.`);
         const cats = await db.categories.toArray();
         if (cats.length > 0) setSelectedCategoryId(cats[0].id!);
@@ -62,6 +64,7 @@ export default function MenuManagerScreen() {
       setSelectedCategoryId(id);
     }
     setEditingCategory(null);
+    await pushToCentralServer(false);
   };
 
   const handleDeleteCategory = async (id: number) => {
@@ -70,6 +73,7 @@ export default function MenuManagerScreen() {
     const itemIds = itemsToDelete.map((i) => i.id).filter((i) => i !== undefined) as number[];
     await db.menuItems.bulkDelete(itemIds);
     if (selectedCategoryId === id) setSelectedCategoryId(null);
+    await pushToCentralServer(false);
   };
 
   const handleSaveItem = async () => {
@@ -156,6 +160,7 @@ export default function MenuManagerScreen() {
     }
 
     setEditingItem(null);
+    await pushToCentralServer(false);
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -173,11 +178,13 @@ export default function MenuManagerScreen() {
 
   const handleDeleteItem = async (id: number) => {
     await db.menuItems.delete(id);
+    await pushToCentralServer(false);
   };
 
   const toggleItemActive = async (item: MenuItem) => {
     if (item.id) {
       await db.menuItems.update(item.id, { isActive: !item.isActive });
+      await pushToCentralServer(false);
     }
   };
 

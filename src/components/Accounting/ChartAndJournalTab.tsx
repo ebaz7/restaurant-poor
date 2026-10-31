@@ -14,6 +14,7 @@ import {
   validateDoubleEntryLines,
 } from '../../lib/accountingEngine';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import AccountAutocompleteSelect from '../Common/AccountAutocompleteSelect';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import { format } from 'date-fns-jalali';
@@ -206,6 +207,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       return;
     }
     await deleteJournalVoucherAndSyncBanks(v.id);
+    await pushToCentralServer(false);
     if (editingVoucher?.id === v.id) {
       handleCancelEditVoucher();
     }
@@ -225,6 +227,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
         description: voucherDesc.trim() || editingVoucher.description,
         lines,
       });
+      await pushToCentralServer(false);
       showToast(`تغییرات سند حسابداری شماره #${editingVoucher.voucherNumber} با موفقیت ذخیره شد.`);
       handleCancelEditVoucher();
       setSubView('ledger');
@@ -235,6 +238,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
         type: 'manual',
         lines,
       });
+      await pushToCentralServer(false);
       setVoucherDesc('');
       showToast('سند حسابداری دوبل با موفقیت در دفتر روزنامه و کل ثبت شد.');
     }
@@ -284,6 +288,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
         newAccDesc.trim() ||
         `سطح ${newAccLevel === 'general' ? 'کل' : newAccLevel === 'subsidiary' ? 'معین' : 'تفصیلی'} - ${typeLabel(newAccType)}`,
     });
+    await pushToCentralServer(false);
     setNewAccCode('');
     setNewAccName('');
     setNewAccDesc('');
@@ -334,6 +339,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       }
     }
 
+    await pushToCentralServer(false);
     setEditingAccount(null);
     showToast(`سرفصل حسابداری «${newCode} - ${newName}» با موفقیت ویرایش شد.`);
   };
@@ -348,6 +354,7 @@ export default function ChartAndJournalTab({ accounts, persons, vouchers }: Prop
       return;
     }
     await db.accounts.delete(acc.id);
+    await pushToCentralServer(false);
     showToast(`سرفصل «${acc.code} - ${acc.name}» حذف شد.`);
   };
 

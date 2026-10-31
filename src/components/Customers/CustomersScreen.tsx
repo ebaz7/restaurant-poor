@@ -1,6 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, Customer } from '../../lib/db';
 import { formatCurrency } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import {
   Users,
   Search,
@@ -126,12 +127,14 @@ export default function CustomersScreen() {
       });
     }
 
+    await pushToCentralServer(false);
     setIsModalOpen(false);
     setEditingCustomer(null);
   };
 
   const handleDeleteCustomer = async (id: number) => {
     await db.customers.delete(id);
+    await pushToCentralServer(false);
   };
 
   return (

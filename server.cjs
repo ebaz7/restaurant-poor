@@ -39,8 +39,29 @@ function detectPort() {
 
 const PORT = detectPort();
 try {
-  fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
+  const confFile = path.join(DATA_DIR, 'server_port.conf');
+  if (process.env.PORT || !fs.existsSync(confFile)) {
+    fs.writeFileSync(confFile, String(PORT), 'utf8');
+  }
 } catch (e) {}
+
+function detectPublicPort(req) {
+  if (PORT === 80 || PORT === 443) return PORT;
+  try {
+    if (
+      os.platform() === 'linux' &&
+      (fs.existsSync('/etc/nginx/sites-enabled/arka-restaurant.conf') ||
+        fs.existsSync('/etc/nginx/sites-available/arka-restaurant.conf'))
+    ) {
+      return 80;
+    }
+  } catch (e) {}
+  if (req && req.headers && req.headers.host) {
+    const h = String(req.headers.host);
+    if (!h.includes(':')) return 80;
+  }
+  return PORT;
+}
 
 function getSavedDomain() {
   if (process.env.SERVER_DOMAIN && process.env.SERVER_DOMAIN.trim()) {
@@ -218,6 +239,25 @@ function getOrCreateServerLicenseRecord() {
   return initialRecord;
 }
 
+const ALL_SYNC_TABLES = [
+  'settings',
+  'categories',
+  'menuItems',
+  'customers',
+  'orders',
+  'accounts',
+  'bankAccounts',
+  'persons',
+  'journalVouchers',
+  'cheques',
+  'rawMaterials',
+  'inventoryTransactions',
+  'productionRecipes',
+  'kitchenProductions',
+  'cashClosures',
+  'appUsers',
+];
+
 if (!fs.existsSync(DB_FILE)) {
   const seedBackup = path.join(DATA_DIR, 'latest_db_backup.json');
   if (fs.existsSync(seedBackup)) {
@@ -229,6 +269,79 @@ if (!fs.existsSync(DB_FILE)) {
     }
   }
 }
+
+// Self-heal central_db.json on startup: purge poisoned legacy deletedRecords and recover any wiped tables from backups
+(function selfHealCentralDbOnStartup() {
+  if (!fs.existsSync(DB_FILE)) return;
+  try {
+    const currentDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    if (!currentDb || typeof currentDb !== 'object') return;
+    let modified = false;
+    const nowTs = Date.now();
+
+    if (currentDb.deletedRecords) {
+      delete currentDb.deletedRecords;
+      modified = true;
+    }
+
+    // Collect candidate backup files to recover any accidentally emptied tables (e.g. bankAccounts, categories, menuItems)
+    const backupCandidates = [
+      path.join(DATA_DIR, 'latest_db_backup.json'),
+      path.join(BACKUP_DIR, 'central_db_autobackup.json'),
+    ];
+    try {
+      if (fs.existsSync('/opt/arka-backup')) {
+        const files = fs
+          .readdirSync('/opt/arka-backup')
+          .filter((f) => f.startsWith('arka_db_') && f.endsWith('.json'))
+          .sort()
+          .reverse();
+        for (const f of files.slice(0, 5)) {
+          backupCandidates.push(path.join('/opt/arka-backup', f));
+        }
+      }
+    } catch (e) {}
+
+    for (const table of ALL_SYNC_TABLES) {
+      if (table === 'settings') continue;
+      const curArr = Array.isArray(currentDb[table]) ? currentDb[table] : [];
+      if (curArr.length === 0) {
+        for (const candPath of backupCandidates) {
+          if (!fs.existsSync(candPath)) continue;
+          try {
+            const candObj = JSON.parse(fs.readFileSync(candPath, 'utf8'));
+            if (candObj && Array.isArray(candObj[table]) && candObj[table].length > 0) {
+              currentDb[table] = candObj[table].map((r) =>
+                r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r
+              );
+              modified = true;
+              console.log(`[+] Self-healed table "${table}" (${candObj[table].length} records) from ${candPath}`);
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    // Ensure every record has a valid _updatedAtMs
+    for (const table of ALL_SYNC_TABLES) {
+      if (Array.isArray(currentDb[table])) {
+        for (const rec of currentDb[table]) {
+          if (rec && typeof rec === 'object' && !rec._updatedAtMs) {
+            rec._updatedAtMs = nowTs;
+            modified = true;
+          }
+        }
+      }
+    }
+
+    if (modified) {
+      fs.writeFileSync(DB_FILE, JSON.stringify(currentDb, null, 2), 'utf8');
+    }
+  } catch (e) {
+    console.warn('[-] Startup self-heal check error:', e.message);
+  }
+})();
 
 let currentRev = 1;
 let lastRawResetRev = 0;
@@ -300,22 +413,25 @@ function getLocalIpAddresses() {
 
 function hasDbData(obj) {
   if (!obj || typeof obj !== 'object') return false;
-  const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
-  const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
-  const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
-  const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
-  const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
-  const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
-  const hasDel = obj.deletedRecords && typeof obj.deletedRecords === 'object' && Object.keys(obj.deletedRecords).length > 0;
-  return (c + m + o + s + cc + jv) > 0 || Boolean(hasDel);
+  let totalCount = 0;
+  for (const t of ALL_SYNC_TABLES) {
+    if (Array.isArray(obj[t])) {
+      totalCount += obj[t].length;
+    }
+  }
+  const hasDel =
+    obj.deletedRecordsV3 &&
+    typeof obj.deletedRecordsV3 === 'object' &&
+    Object.keys(obj.deletedRecordsV3).length > 0;
+  return totalCount > 0 || Boolean(hasDel);
 }
 
 function getItemTimestampMs(item) {
   if (!item || typeof item !== 'object') return 1;
-  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) {
+  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs)) && Number(item._updatedAtMs) > 0) {
     return Number(item._updatedAtMs);
   }
-  const fields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate'];
+  const fields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate', 'employmentStartDate'];
   for (const f of fields) {
     if (item[f]) {
       const t = new Date(item[f]).getTime();
@@ -327,26 +443,41 @@ function getItemTimestampMs(item) {
 
 function getCanonicalKey(tableName, item) {
   if (!item || typeof item !== 'object') return '';
+  const effId = item.id !== undefined && item.id !== null ? item.id : '';
   switch (tableName) {
+    case 'settings':
+      return 'settings_singleton';
     case 'orders':
-      return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : item.id || '');
+      return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : effId || '');
     case 'journalVouchers':
-      return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : item.id || '');
+      return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : effId || '');
     case 'customers':
-      return String(item.phone || item.id || '');
+      return String(item.phone || effId || '');
     case 'cashClosures':
-      return String(item.dateLabel || item.closedAt || item.id || '');
+      return String(item.dateLabel || item.closedAt || effId || '');
     case 'kitchenProductions':
-      return String(item.batchNumber || item.id || '');
+      return String(item.batchNumber || effId || '');
     case 'categories':
     case 'menuItems':
-      return String(item.id || item.name || '');
+      return String(effId || item.name || '');
+    case 'bankAccounts':
+      return String(effId || (item.bankName ? `${item.bankName}_${item.cardNumber || ''}` : ''));
+    case 'persons':
+      return String(effId || (item.name ? `${item.name}_${item.role || ''}` : ''));
+    case 'cheques':
+      return String(item.chequeNumber || effId || '');
+    case 'rawMaterials':
+      return String(effId || item.name || '');
+    case 'productionRecipes':
+      return String(item.menuItemId || effId || '');
+    case 'inventoryTransactions':
+      return String(effId || `${item.materialId || ''}_${item.date || ''}_${item.type || ''}`);
     case 'appUsers':
-      return String(item.username || item.id || '');
+      return String(item.username || effId || '');
     case 'accounts':
-      return String(item.code || item.id || '');
+      return String(item.code || effId || '');
     default:
-      return String(item.id || item.code || item.name || '');
+      return String(effId || item.code || item.name || '');
   }
 }
 
@@ -378,6 +509,9 @@ function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
     if (item.name) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel['name:' + item.name]) || 0);
     }
+    if (item.bankName) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel['bank:' + item.bankName]) || 0);
+    }
     if (item.username) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.username)]) || 0);
     }
@@ -393,10 +527,12 @@ function mergeDatabaseObjects(existing, incoming) {
   if (!incoming || typeof incoming !== 'object') return existing || {};
 
   const result = { ...existing };
+  delete result.deletedRecords;
+  const nowTs = Date.now();
 
-  // 0. Merge deletedRecords tombstones from both existing and incoming
+  // Merge deletedRecordsV3 tombstones from both existing and incoming
   const mergedDeleted = {};
-  const sourceDelMaps = [existing.deletedRecords, incoming.deletedRecords];
+  const sourceDelMaps = [existing.deletedRecordsV3, incoming.deletedRecordsV3];
   for (const src of sourceDelMaps) {
     if (!src || typeof src !== 'object') continue;
     for (const [table, keyMap] of Object.entries(src)) {
@@ -410,7 +546,7 @@ function mergeDatabaseObjects(existing, incoming) {
       }
     }
   }
-  result.deletedRecords = mergedDeleted;
+  result.deletedRecordsV3 = mergedDeleted;
 
   const mergeTableChronologically = (tableName, sortComparator) => {
     const map = new Map();
@@ -420,7 +556,7 @@ function mergeDatabaseObjects(existing, incoming) {
         const k = getCanonicalKey(tableName, item);
         if (!k) continue;
         if (!isRecordDeletedInMap(tableName, item, k, mergedDeleted)) {
-          map.set(k, item);
+          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
         }
       }
     }
@@ -438,10 +574,10 @@ function mergeDatabaseObjects(existing, incoming) {
           const prevTs = getItemTimestampMs(prev);
           const incTs = getItemTimestampMs(item);
           if (incTs >= prevTs) {
-            map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs) });
+            map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs, 1) });
           }
         } else {
-          map.set(k, item);
+          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
         }
       }
     }
@@ -476,7 +612,7 @@ function mergeDatabaseObjects(existing, incoming) {
       const prevTs = getItemTimestampMs(prevS);
       const incTs = getItemTimestampMs(incS);
       if (incTs >= prevTs) {
-        result.settings = [{ ...prevS, ...incS, centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo }];
+        result.settings = [{ ...prevS, ...incS, centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo, _updatedAtMs: Math.max(incTs, prevTs, 1) }];
       } else {
         result.settings = existing.settings;
       }
@@ -652,6 +788,7 @@ const server = http.createServer((req, res) => {
       const localIps = getLocalIpAddresses();
       const customDomain = getSavedDomain();
       const activePort = detectPort();
+      const publicPort = detectPublicPort(req);
       let domainUrl = '';
       if (customDomain) {
         if (customDomain.startsWith('http://') || customDomain.startsWith('https://')) {
@@ -659,9 +796,10 @@ const server = http.createServer((req, res) => {
         } else if (customDomain.includes(':')) {
           domainUrl = `http://${customDomain}`;
         } else {
-          domainUrl = os.platform() === 'linux' ? `https://${customDomain}` : `http://${customDomain}:${activePort}`;
+          domainUrl = os.platform() === 'linux' ? `https://${customDomain}` : `http://${customDomain}:${publicPort}`;
         }
       }
+      const portSuffix = publicPort === 80 || publicPort === 443 ? '' : `:${publicPort}`;
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-cache, no-store',
@@ -671,11 +809,13 @@ const server = http.createServer((req, res) => {
         hostname: getEffectiveHostname(),
         platform: os.platform(),
         isLinuxServer: os.platform() === 'linux',
-        port: activePort,
+        port: publicPort,
+        internalPort: activePort,
+        publicPort,
         localIps,
         customDomain,
         domainUrl,
-        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${activePort}` : `http://localhost:${activePort}`,
+        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}${portSuffix}` : `http://localhost${portSuffix}`,
         serverTime: new Date().toISOString(),
         serverTimeMs: Date.now(),
         rev: currentRev,
@@ -708,7 +848,7 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           const newPort = Number(payload.port);
-          if (newPort && newPort > 1000 && newPort < 65535) {
+          if (newPort && newPort >= 80 && newPort < 65535) {
             fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(newPort), 'utf8');
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true, port: newPort, message: 'پورت سرور ذخیره گردید.' }));
@@ -776,8 +916,9 @@ const server = http.createServer((req, res) => {
 
           const serverHasData = hasDbData(existingData);
           const clientHasData = hasDbData(payload.data);
+          const forceOverwrite = Boolean(payload.forceOverwrite);
 
-          if (serverHasData && !clientHasData) {
+          if (serverHasData && !clientHasData && !forceOverwrite) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({
               ok: false,
@@ -789,21 +930,9 @@ const server = http.createServer((req, res) => {
             return;
           }
 
-          if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
-            res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({
-              ok: false,
-              isOutdated: true,
-              rev: currentRev,
-              serverTimeMs: Date.now(),
-              error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
-            }));
-            return;
-          }
-
           let finalDataToSave = payload.data;
           let wasMerged = false;
-          if (payload.data && clientHasData) {
+          if (payload.data && (clientHasData || forceOverwrite)) {
             if (serverHasData && existingData) {
               try {
                 fs.writeFileSync(
@@ -813,14 +942,19 @@ const server = http.createServer((req, res) => {
                 );
               } catch (e) {}
 
-              finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
-              wasMerged = true;
+              if (!forceOverwrite) {
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+                wasMerged = true;
+              } else {
+                finalDataToSave = { ...payload.data, deletedRecordsV3: payload.data.deletedRecordsV3 || {} };
+                delete finalDataToSave.deletedRecords;
+              }
             }
 
             const tmpFile = DB_FILE + '.tmp';
             fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
-            currentRev += 1;
+            currentRev += forceOverwrite ? 100 : 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({
@@ -845,7 +979,8 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           if (payload.data) {
-            const cleanData = { ...payload.data, deletedRecords: {} };
+            const cleanData = { ...payload.data, deletedRecords: {}, deletedRecordsV3: {} };
+            delete cleanData.deletedRecords;
             const jsonContent = JSON.stringify(cleanData, null, 2);
             fs.writeFileSync(DB_FILE, jsonContent, 'utf8');
             try {
@@ -898,8 +1033,27 @@ const server = http.createServer((req, res) => {
           const payload = JSON.parse(body || '{}');
           if (payload.backupJson) {
             fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), payload.backupJson, 'utf8');
-            if (!fs.existsSync(DB_FILE)) {
-              fs.writeFileSync(DB_FILE, payload.backupJson, 'utf8');
+            if (payload.overwriteCentral || !fs.existsSync(DB_FILE)) {
+              try {
+                const parsedBackup = JSON.parse(payload.backupJson);
+                const nowTs = Date.now();
+                delete parsedBackup.deletedRecords;
+                parsedBackup.deletedRecordsV3 = {};
+                for (const t of ALL_SYNC_TABLES) {
+                  if (Array.isArray(parsedBackup[t])) {
+                    parsedBackup[t] = parsedBackup[t].map((r) =>
+                      r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r
+                    );
+                  }
+                }
+                const cleanJson = JSON.stringify(parsedBackup, null, 2);
+                fs.writeFileSync(DB_FILE, cleanJson, 'utf8');
+                fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), cleanJson, 'utf8');
+                currentRev += 1000;
+              } catch (e) {
+                fs.writeFileSync(DB_FILE, payload.backupJson, 'utf8');
+                currentRev += 1000;
+              }
             }
           }
           if (payload.settings) {
@@ -914,7 +1068,7 @@ const server = http.createServer((req, res) => {
             fs.writeFileSync(path.join(DATA_DIR, 'bot_config.env'), envLines.join('\n') + '\n', 'utf8');
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false }));

@@ -1651,16 +1651,6 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         isActive: true,
       },
     ]);
-  } else {
-    // Deduplicate banks by bankName if StrictMode created duplicates
-    const seenBankNames = new Set<string>();
-    for (const b of existingBanks) {
-      if (seenBankNames.has(b.bankName)) {
-        if (b.id) await db.bankAccounts.delete(b.id);
-      } else {
-        seenBankNames.add(b.bankName);
-      }
-    }
   }
 
   // 4. Categories & Menu Items

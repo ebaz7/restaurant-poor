@@ -1,5 +1,6 @@
 import { db, AppSettings } from './db';
 import { formatNumberThreeDigits, parseThreeDigitNumber } from './accountingEngine';
+import { clearAllDeletedRecordsOnRawReset, notifyRawResetToCentralServer } from './networkSync';
 
 let activeCurrencyUnit: 'toman' | 'rial' = (() => {
   try {
@@ -70,38 +71,42 @@ export const exportDB = async (): Promise<string> => {
 
 export const importDB = async (jsonString: string): Promise<void> => {
   try {
-    let raw = JSON.parse(jsonString);
+    const raw = JSON.parse(jsonString);
     // Support nested json containers from central server or old versions ({ data: ... })
-    const data = raw && typeof raw === 'object' && raw.data ? raw.data : raw;
+    const data = raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object' ? raw.data : raw;
 
     if (!data || typeof data !== 'object') {
       throw new Error('ساختار فایل پشتیبان نامعتبر است.');
     }
 
-    // Helper function to safely parse dates in records
+    const restoreNowMs = Date.now();
+    const restoreDate = new Date(restoreNowMs);
+
+    // Clear all local tombstones before restoring so no restored record is blocked by old deletions
+    clearAllDeletedRecordsOnRawReset();
+
+    // Helper function to safely parse all date fields and stamp fresh _updatedAtMs on restored records
     const parseDatesInArray = (arr: any[]): any[] => {
       if (!Array.isArray(arr)) return [];
+      const dateFields = ['createdAt', 'updatedAt', 'date', 'closedAt', 'issueDate', 'dueDate', 'employmentStartDate'];
       return arr.map((item) => {
         if (!item || typeof item !== 'object') return item;
         const copy = { ...item };
-        if (copy.createdAt && typeof copy.createdAt === 'string') {
-          const parsed = new Date(copy.createdAt);
-          if (!isNaN(parsed.getTime())) copy.createdAt = parsed;
+        for (const f of dateFields) {
+          if (copy[f] && typeof copy[f] === 'string') {
+            const parsed = new Date(copy[f]);
+            if (!isNaN(parsed.getTime())) copy[f] = parsed;
+          }
         }
-        if (copy.updatedAt && typeof copy.updatedAt === 'string') {
-          const parsed = new Date(copy.updatedAt);
-          if (!isNaN(parsed.getTime())) copy.updatedAt = parsed;
-        }
-        if (copy.date && typeof copy.date === 'string') {
-          const parsed = new Date(copy.date);
-          if (!isNaN(parsed.getTime())) copy.date = parsed;
+        copy._updatedAtMs = restoreNowMs;
+        if (!copy.updatedAt) {
+          copy.updatedAt = restoreDate;
         }
         return copy;
       });
     };
 
     await db.transaction('rw', db.tables, async () => {
-      // Version-agnostic table restoration: clear and bulkPut each known table
       const tableMap: Record<string, string> = {
         categories: 'categories',
         menuItems: 'menuItems',
@@ -123,28 +128,39 @@ export const importDB = async (jsonString: string): Promise<void> => {
       for (const [key, tableName] of Object.entries(tableMap)) {
         const table = (db as any)[tableName];
         if (!table) continue;
-        await table.clear();
-        if (Array.isArray(data[key]) && data[key].length > 0) {
-          const sanitized = parseDatesInArray(data[key]);
-          try {
-            await table.bulkPut(sanitized);
-          } catch {
-            // Fallback item by item if bulk error occurs
-            for (const item of sanitized) {
-              try {
-                await table.put(item);
-              } catch {
-                // ignore faulty record
+        // Only clear & overwrite if the key exists in the backup object (or is an array)
+        if (key in data && Array.isArray(data[key])) {
+          await table.clear();
+          if (data[key].length > 0) {
+            const sanitized = parseDatesInArray(data[key]);
+            try {
+              await table.bulkPut(sanitized);
+            } catch {
+              for (const item of sanitized) {
+                try {
+                  await table.put(item);
+                } catch {
+                  // ignore faulty record
+                }
               }
             }
           }
         }
       }
 
-      // AppUsers: Only overwrite if present in backup, otherwise preserve or ensure at least one active user
+      // AppUsers: Restore all users & passwords from backup
       if (Array.isArray(data.appUsers) && data.appUsers.length > 0) {
         await db.appUsers.clear();
-        await db.appUsers.bulkPut(data.appUsers);
+        const sanitizedUsers = parseDatesInArray(data.appUsers);
+        try {
+          await db.appUsers.bulkPut(sanitizedUsers);
+        } catch {
+          for (const u of sanitizedUsers) {
+            try {
+              await db.appUsers.put(u);
+            } catch {}
+          }
+        }
       }
 
       // Immediately synchronize global currency unit from imported settings
@@ -156,7 +172,21 @@ export const importDB = async (jsonString: string): Promise<void> => {
       }
     });
 
-    // Auto-recover/sync menu if categories or menuItems are empty in the imported backup
+    // If the restored backup has data, disable raw mode so standard operations work seamlessly
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const totalRestored =
+          (await db.categories.count()) +
+          (await db.menuItems.count()) +
+          (await db.bankAccounts.count()) +
+          (await db.orders.count());
+        if (totalRestored > 0) {
+          window.localStorage.removeItem('arka_raw_mode');
+        }
+      }
+    } catch {}
+
+    // Auto-recover/sync menu if categories or menuItems are empty in an old POS-only backup
     try {
       const catCount = await db.categories.count();
       const menuCount = await db.menuItems.count();
@@ -166,6 +196,11 @@ export const importDB = async (jsonString: string): Promise<void> => {
     } catch (e) {
       console.warn('Auto-sync menu notice:', e);
     }
+
+    // Immediately overwrite central_db.json and latest_db_backup.json on the central server
+    // so all connected clients receive the restored backup and old server state never overwrites it!
+    await notifyRawResetToCentralServer();
+    await syncBackupToServer(undefined, true);
   } catch (err: any) {
     console.error('Failed to import database', err);
     throw new Error(err?.message || 'فرمت یا محتوای فایل بکاپ نامعتبر است.');
@@ -351,7 +386,10 @@ function compressBase64Image(base64Str: string, maxDim: number, quality: number)
  * Syncs the current DB backup JSON + Bot settings to the Linux server's /api/sync-backup endpoint
  * so that when `install.sh` runs an update, it can automatically send the latest backup to Bale & Telegram.
  */
-export async function syncBackupToServer(overrideSettings?: Partial<AppSettings>): Promise<void> {
+export async function syncBackupToServer(
+  overrideSettings?: Partial<AppSettings>,
+  overwriteCentral: boolean = false
+): Promise<void> {
   try {
     const json = await exportDB();
     const currentSettings = overrideSettings || (await db.settings.toCollection().first()) || {};
@@ -360,6 +398,7 @@ export async function syncBackupToServer(overrideSettings?: Partial<AppSettings>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         backupJson: json,
+        overwriteCentral,
         settings: {
           restaurantName: currentSettings.restaurantName || 'Arka Restaurant',
           baleBotToken: currentSettings.baleBotToken || '',
@@ -389,16 +428,21 @@ export async function sendBackupToMessengers(
   const json = await exportDB();
   const ordersCount = await db.orders.count();
   const vouchersCount = await db.journalVouchers.count();
+  const menuCount = await db.menuItems.count();
+  const bankCount = await db.bankAccounts.count();
+  const usersCount = await db.appUsers.count();
+  const materialsCount = await db.rawMaterials.count();
   const nowStr = new Date().toLocaleString('fa-IR');
   const fileName = `arka_backup_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
 
   const caption =
-    `📦 فایل پشتیبان سیستم رستورانی و حسابداری آرکا\n` +
+    `📦 فایل پشتیبان جامع کل نرم‌افزار آرکا\n` +
     `🏢 نام مجموعه: ${settings.restaurantName || 'آرکا'}\n` +
     `⏰ زمان بکاپ: ${nowStr}\n` +
     `🔔 نوع ارسال: ${triggerLabel}\n` +
-    `🧾 تعداد کل فاکتورها: ${ordersCount}\n` +
-    `📒 تعداد اسناد حسابداری: ${vouchersCount}`;
+    `🧾 فاکتورها: ${ordersCount} | 📒 اسناد حسابداری: ${vouchersCount}\n` +
+    `🍽️ اقلام منو: ${menuCount} | 🏦 بانک‌ها: ${bankCount}\n` +
+    `📦 مواد انبار: ${materialsCount} | 👤 کاربران و رمزها: ${usersCount}`;
 
   const results: string[] = [];
   let anySuccess = false;

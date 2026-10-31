@@ -805,17 +805,19 @@ pause
     }
 
     await db.settings.update(settings.id, formData);
+    await pushToCentralServer(false);
     await syncBackupToServer(formData);
     setIsSaving(false);
     showNotice(
       'success',
-      'تنظیمات فروشگاه، واحد پول، دکمه‌های میانبر نوشیدنی و انبار کالا ذخیره و همگام‌سازی شد.'
+      'تنظیمات فروشگاه، واحد پول، دکمه‌های میانبر نوشیدنی و انبار کالا ذخیره و در سرور مرکزی همگام‌سازی شد.'
     );
   };
 
   const handleTestAndSendBotBackup = async (customLabel?: string) => {
     if (!settings?.id) return;
     await db.settings.update(settings.id, formData);
+    await pushToCentralServer(false);
     setIsSendingBot(true);
     const res = await sendBackupToMessengers(
       formData,
@@ -878,7 +880,7 @@ pause
 
       setFormData(pristineRawSettings);
       await notifyRawResetToCentralServer();
-      await syncBackupToServer(pristineRawSettings);
+      await syncBackupToServer(pristineRawSettings, true);
 
       try {
         window.sessionStorage.clear();
@@ -901,6 +903,7 @@ pause
   };
 
   const handleExport = async () => {
+    await pushToCentralServer(false);
     await syncBackupToServer(formData);
     const json = await exportDB();
     const blob = new Blob([json], { type: 'application/json' });
@@ -910,7 +913,10 @@ pause
     a.download = `backup_arka_pos_${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showNotice('success', 'فایل پشتیبان کامل (شامل منو، فاکتورها، کاربران و حسابداری) دانلود شد.');
+    showNotice(
+      'success',
+      'فایل پشتیبان جامع کل نرم‌افزار (شامل منو، بانک‌ها، حسابداری، انبار، کاربران و رمزها، مشتریان و فاکتورها) دانلود شد.'
+    );
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -922,8 +928,15 @@ pause
       try {
         const jsonString = event.target?.result as string;
         await importDB(jsonString);
-        await syncBackupToServer();
-        showNotice('success', 'بازیابی اطلاعات از فایل پشتیبان با موفقیت انجام شد.');
+        const restoredOrders = await db.orders.count();
+        const restoredMenu = await db.menuItems.count();
+        const restoredBanks = await db.bankAccounts.count();
+        const restoredVouchers = await db.journalVouchers.count();
+        const restoredUsers = await db.appUsers.count();
+        showNotice(
+          'success',
+          `بازگردانی جامع اطلاعات با موفقیت انجام و روی سرور مرکزی ثبت شد (${restoredOrders} فاکتور، ${restoredMenu} قلم منو، ${restoredBanks} حساب بانکی، ${restoredVouchers} سند حسابداری و ${restoredUsers} کاربر).`
+        );
       } catch (err) {
         showNotice('error', 'خطا در بازیابی اطلاعات: فرمت فایل نامعتبر است.');
       }
@@ -1037,6 +1050,7 @@ pause
         showNotice('success', `کاربر جدید «${cleanName}» با سطح دسترسی انتخاب‌شده ایجاد شد.`);
       }
       resetUserForm();
+      await pushToCentralServer(false);
       await syncBackupToServer(formData);
     } catch (err) {
       showNotice('error', 'خطا در ذخیره اطلاعات کاربر.');
@@ -1065,6 +1079,8 @@ pause
     }
     await db.appUsers.delete(u.id);
     if (editingUserId === u.id) resetUserForm();
+    await pushToCentralServer(false);
+    await syncBackupToServer(formData);
     showNotice('success', `کاربر «${u.fullName}» حذف شد.`);
   };
 

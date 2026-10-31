@@ -78,10 +78,49 @@ fn get_record_key(table_name: &str, item: &Value) -> Option<String> {
             .get("batchNumber")
             .and_then(value_to_key_str)
             .or_else(|| obj.get("id").and_then(value_to_key_str)),
-        "categories" | "menuItems" => obj
+        "categories" | "menuItems" | "rawMaterials" => obj
             .get("id")
             .and_then(value_to_key_str)
             .or_else(|| obj.get("name").and_then(value_to_key_str)),
+        "bankAccounts" => obj.get("id").and_then(value_to_key_str).or_else(|| {
+            let b_name = obj.get("bankName").and_then(value_to_key_str)?;
+            let card = obj
+                .get("cardNumber")
+                .and_then(value_to_key_str)
+                .unwrap_or_default();
+            Some(format!("{}_{}", b_name, card))
+        }),
+        "persons" => obj.get("id").and_then(value_to_key_str).or_else(|| {
+            let p_name = obj.get("name").and_then(value_to_key_str)?;
+            let role = obj
+                .get("role")
+                .and_then(value_to_key_str)
+                .unwrap_or_default();
+            Some(format!("{}_{}", p_name, role))
+        }),
+        "cheques" => obj
+            .get("chequeNumber")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "productionRecipes" => obj
+            .get("menuItemId")
+            .and_then(value_to_key_str)
+            .or_else(|| obj.get("id").and_then(value_to_key_str)),
+        "inventoryTransactions" => obj.get("id").and_then(value_to_key_str).or_else(|| {
+            let m_id = obj
+                .get("materialId")
+                .and_then(value_to_key_str)
+                .unwrap_or_default();
+            let dt = obj
+                .get("date")
+                .and_then(value_to_key_str)
+                .unwrap_or_default();
+            let tp = obj
+                .get("type")
+                .and_then(value_to_key_str)
+                .unwrap_or_default();
+            Some(format!("{}_{}_{}", m_id, dt, tp))
+        }),
         "accounts" => obj
             .get("code")
             .and_then(value_to_key_str)
@@ -150,6 +189,10 @@ fn is_deleted_in_map(
             let name_colon = format!("name:{}", name_str);
             del_at = del_at.max(map.get(&name_colon).and_then(|v| v.as_u64()).unwrap_or(0));
         }
+        if let Some(bank_str) = obj.get("bankName").and_then(value_to_key_str) {
+            let bank_colon = format!("bank:{}", bank_str);
+            del_at = del_at.max(map.get(&bank_colon).and_then(|v| v.as_u64()).unwrap_or(0));
+        }
     }
     del_at > 0 && (item_ts == 0 || del_at >= item_ts)
 }
@@ -160,14 +203,14 @@ fn merge_database_objects(existing_db: &Value, incoming_db: &Value) -> Value {
     let ex_obj = existing_db.as_object().unwrap_or(&empty_map);
     let inc_obj = incoming_db.as_object().unwrap_or(&empty_map);
 
-    // 1. Merge deletedRecords tombstones
+    // 1. Merge deletedRecordsV3 tombstones
     let mut merged_deleted = Map::new();
     let ex_deleted = ex_obj
-        .get("deletedRecords")
+        .get("deletedRecordsV3")
         .and_then(|v| v.as_object())
         .unwrap_or(&empty_map);
     let inc_deleted = inc_obj
-        .get("deletedRecords")
+        .get("deletedRecordsV3")
         .and_then(|v| v.as_object())
         .unwrap_or(&empty_map);
 
@@ -315,7 +358,7 @@ fn merge_database_objects(existing_db: &Value, incoming_db: &Value) -> Value {
     }
 
     merged.insert(
-        "deletedRecords".to_string(),
+        "deletedRecordsV3".to_string(),
         Value::Object(merged_deleted),
     );
     Value::Object(merged)
@@ -636,6 +679,7 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
             }
         }
         ("POST", "/api/db/raw-reset") => {
+            let parsed: Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| json!({}));
             let mut guard = match shared_state.lock() {
                 Ok(g) => g,
                 Err(p) => p.into_inner(),
@@ -646,14 +690,19 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let next_rev = current_rev + 1000;
+            let mut new_data = parsed
+                .get("data")
+                .cloned()
+                .unwrap_or_else(|| json!({ "settings": [{ "id": 1, "isRawInitialized": true, "_updatedAtMs": now_ms() }] }));
+            if let Some(obj) = new_data.as_object_mut() {
+                obj.remove("deletedRecords");
+                obj.insert("deletedRecordsV3".to_string(), json!({}));
+            }
             let new_state = json!({
                 "ok": true,
                 "rev": next_rev,
                 "updatedAt": format!("{}", now_ms()),
-                "data": {
-                    "settings": [{ "id": 1, "isRawInitialized": true, "_updatedAtMs": now_ms() }],
-                    "deletedRecords": {}
-                }
+                "data": new_data
             });
             guard.db_state = new_state.clone();
             let _ = fs::create_dir_all(&guard.data_dir);
@@ -669,6 +718,70 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                     "ok": true,
                     "rev": next_rev,
                     "state": new_state,
+                    "serverTimeMs": now_ms()
+                }),
+            );
+        }
+        ("POST", "/api/sync-backup") => {
+            let parsed: Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| json!({}));
+            let overwrite_central = parsed
+                .get("overwriteCentral")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mut guard = match shared_state.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let current_rev = guard
+                .db_state
+                .get("rev")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let mut next_rev = current_rev;
+
+            if let Some(backup_str) = parsed.get("backupJson").and_then(|v| v.as_str()) {
+                let _ = fs::create_dir_all(&guard.data_dir);
+                let latest_backup_path = guard.data_dir.join("latest_db_backup.json");
+                let _ = fs::write(&latest_backup_path, backup_str.as_bytes());
+
+                if overwrite_central {
+                    if let Ok(mut parsed_backup) = serde_json::from_str::<Value>(backup_str) {
+                        let ts = now_ms();
+                        if let Some(obj) = parsed_backup.as_object_mut() {
+                            obj.remove("deletedRecords");
+                            obj.insert("deletedRecordsV3".to_string(), json!({}));
+                            for &t in TABLES {
+                                if let Some(arr) = obj.get_mut(t).and_then(|v| v.as_array_mut()) {
+                                    for rec in arr {
+                                        if let Some(r_obj) = rec.as_object_mut() {
+                                            r_obj.insert("_updatedAtMs".to_string(), json!(ts));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        next_rev = current_rev + 1000;
+                        let new_state = json!({
+                            "ok": true,
+                            "rev": next_rev,
+                            "updatedAt": format!("{}", ts),
+                            "data": parsed_backup
+                        });
+                        guard.db_state = new_state;
+                        if let Ok(bytes) = serde_json::to_vec(&guard.db_state) {
+                            let _ = fs::write(&guard.db_file, bytes);
+                        }
+                    }
+                }
+            }
+            drop(guard);
+
+            send_json_response(
+                &mut stream,
+                200,
+                &json!({
+                    "ok": true,
+                    "rev": next_rev,
                     "serverTimeMs": now_ms()
                 }),
             );

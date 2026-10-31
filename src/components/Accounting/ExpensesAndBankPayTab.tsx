@@ -10,6 +10,7 @@ import {
   updateJournalVoucherAndSyncBanks,
 } from '../../lib/db';
 import { formatCurrency, getCurrencyLabel } from '../../lib/utils';
+import { pushToCentralServer } from '../../lib/networkSync';
 import FormattedNumberInput from '../Common/FormattedNumberInput';
 import AccountAutocompleteSelect from '../Common/AccountAutocompleteSelect';
 import { format } from 'date-fns-jalali';
@@ -141,13 +142,15 @@ export default function ExpensesAndBankPayTab({
       chequeBookPages: Number(editBankChequePages) || 50,
     });
     setEditingBank(null);
-    showToast(`اطلاعات و موجودی «${updatedName}» با موفقیت ویرایش شد.`);
+    await pushToCentralServer(false);
+    showToast(`اطلاعات و موجودی «${updatedName}» با موفقیت ویرایش و در سرور مرکزی همگام‌سازی شد.`);
   };
 
   const handleDeleteBank = async (bank: BankAccount) => {
     if (!bank.id) return;
     if (!window.confirm(`آیا از حذف حساب بانکی «${bank.bankName}» اطمینان دارید؟`)) return;
     await db.bankAccounts.delete(bank.id);
+    await pushToCentralServer(false);
     showToast(`حساب بانکی «${bank.bankName}» حذف شد.`);
   };
 
@@ -176,6 +179,7 @@ export default function ExpensesAndBankPayTab({
       lines: updatedLines,
     });
     setEditingVoucher(null);
+    await pushToCentralServer(false);
     showToast(`سند شماره #${editingVoucher.voucherNumber} ویرایش شد و موجودی بانک اصلاح گردید.`);
   };
 
@@ -190,6 +194,7 @@ export default function ExpensesAndBankPayTab({
       return;
     }
     await deleteJournalVoucherAndSyncBanks(v.id);
+    await pushToCentralServer(false);
     showToast(`تراکنش سند #${v.voucherNumber} حذف شد و موجودی اصلاح گردید.`);
   };
 
@@ -240,6 +245,7 @@ export default function ExpensesAndBankPayTab({
       });
       setExpAmount(0);
       setExpDesc('');
+      await pushToCentralServer(false);
       showToast(
         `مبلغ ${formatCurrency(amount)} به عنوان طلب (بستانکار) در حساب «${person.name}» و سرفصل «${expAcc.name}» ثبت شد.`
       );
@@ -349,6 +355,7 @@ export default function ExpensesAndBankPayTab({
 
     setExpAmount(0);
     setExpDesc('');
+    await pushToCentralServer(false);
     showToast(`هزینه «${expAcc.name}» به مبلغ ${formatCurrency(amount)} ثبت و سند دوبل صادر شد.`);
   };
 
@@ -429,6 +436,7 @@ export default function ExpensesAndBankPayTab({
 
     setPayAmount(0);
     setPayDesc('');
+    await pushToCentralServer(false);
   };
 
   const handleAddBank = async (e: React.FormEvent) => {
@@ -482,7 +490,8 @@ export default function ExpensesAndBankPayTab({
     setNewHasPos(true);
     setNewHasChequeBook(false);
     setNewChequeSeries('');
-    showToast('حساب بانکی، دستگاه پوز و دسته چک جدید اضافه شد.');
+    await pushToCentralServer(false);
+    showToast('حساب بانکی، دستگاه پوز و دسته چک جدید اضافه و روی سرور مرکزی همگام‌سازی شد.');
   };
 
   // ---------------- Bank Statement Data Computation ----------------
