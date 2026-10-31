@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -13,9 +14,11 @@ const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
 const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
 
-// Ensure data and backup directories exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(BACKUP_DIR)) {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
 
 function detectPort() {
@@ -31,18 +34,18 @@ function detectPort() {
   } catch (e) {
     // ignore
   }
-  return 4040;
+  return os.platform() === 'linux' ? 3000 : 4040;
 }
 
 const PORT = detectPort();
 try {
   fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
 } catch (e) {}
-if (!fs.existsSync(BACKUP_DIR)) {
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
-}
 
 function getSavedDomain() {
+  if (process.env.SERVER_DOMAIN && process.env.SERVER_DOMAIN.trim()) {
+    return process.env.SERVER_DOMAIN.trim();
+  }
   try {
     const domainFile = path.join(DATA_DIR, 'server_domain.conf');
     if (fs.existsSync(domainFile)) {
@@ -50,6 +53,78 @@ function getSavedDomain() {
     }
   } catch (e) {}
   return '';
+}
+
+function getEffectiveHostname() {
+  if (process.env.HOST_HOSTNAME && process.env.HOST_HOSTNAME.trim()) {
+    return process.env.HOST_HOSTNAME.trim();
+  }
+  try {
+    const hostFile = path.join(DATA_DIR, 'server_hostname.conf');
+    if (fs.existsSync(hostFile)) {
+      const h = fs.readFileSync(hostFile, 'utf8').trim();
+      if (h) return h;
+    }
+  } catch (e) {}
+  return os.hostname();
+}
+
+function sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain) {
+  return new Promise((resolve) => {
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+    const host = hostDomain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+    let bodyHead = '';
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`;
+    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/json\r\n\r\n`;
+
+    const bodyTail = `\r\n--${boundary}--\r\n`;
+    const fileBuf = Buffer.from(backupJson, 'utf8');
+    const contentLength = Buffer.byteLength(bodyHead) + fileBuf.length + Buffer.byteLength(bodyTail);
+
+    const req = https.request(
+      {
+        hostname: host,
+        port: 443,
+        path: `/bot${token}/sendDocument`,
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': contentLength,
+        },
+      },
+      (res) => {
+        let resData = '';
+        res.on('data', (chunk) => { resData += chunk; });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(resData || '{}');
+            if (parsed.ok) {
+              resolve({ ok: true });
+            } else {
+              let errText = parsed.description || `کد ${res.statusCode}`;
+              if (errText.includes('chat not found') || errText.includes('blocked') || errText.includes('deactivated')) {
+                errText = `کاربر/ادمین با شناسه چت (${chatId}) هنوز ربات را استارت نکرده است. لطفاً در بله به ربات پیام دهید و دکمه /start را بزنید.`;
+              }
+              resolve({ ok: false, error: errText });
+            }
+          } catch {
+            resolve({ ok: false, error: `پاسخ نامعتبر از سرور (کد ${res.statusCode})` });
+          }
+        });
+      }
+    );
+
+    req.on('error', (e) => {
+      resolve({ ok: false, error: `خطای شبکه‌ای: ${e.message}` });
+    });
+
+    req.write(bodyHead);
+    req.write(fileBuf);
+    req.write(bodyTail);
+    req.end();
+  });
 }
 
 function fnvFallbackHex(str) {
@@ -92,7 +167,6 @@ function getOrCreateServerLicenseRecord() {
     } catch (e) {}
   }
 
-  // Also check if central_db.json already has a valid centralLicenseInfo
   if ((!record || !record.isActivated) && fs.existsSync(DB_FILE)) {
     try {
       const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -127,9 +201,8 @@ function getOrCreateServerLicenseRecord() {
     return record;
   }
 
-  // Generate deterministic Central Server System Code
   const cpuModel = (os.cpus() && os.cpus()[0] && os.cpus()[0].model) || 'CPU';
-  const rawHw = `ARKA_CENTRAL_SRV_${os.hostname()}_${os.platform()}_${os.arch()}_${cpuModel}`;
+  const rawHw = `ARKA_CENTRAL_SRV_${getEffectiveHostname()}_${os.platform()}_${os.arch()}_${cpuModel}`;
   const hash = crypto.createHash('sha256').update(rawHw, 'utf8').digest('hex').toUpperCase();
   const systemCode = `ARKA-${hash.substring(0, 4)}-${hash.substring(4, 8)}-${hash.substring(8, 12)}`;
 
@@ -145,7 +218,6 @@ function getOrCreateServerLicenseRecord() {
   return initialRecord;
 }
 
-// Auto-seed central_db.json from backup if missing
 if (!fs.existsSync(DB_FILE)) {
   const seedBackup = path.join(DATA_DIR, 'latest_db_backup.json');
   if (fs.existsSync(seedBackup)) {
@@ -166,23 +238,40 @@ try {
     const stat = fs.statSync(DB_FILE);
     currentRev = Math.max(1, Math.floor(stat.mtimeMs / 1000));
   }
-} catch (e) {
-  // ignore
-}
+} catch (e) {}
 
-// Get all non-internal IPv4 addresses for LAN sharing (prioritizing physical adapters like Wi-Fi/Ethernet)
 function getLocalIpAddresses() {
+  const hostConfiguredIps = [];
+  if (process.env.HOST_IP && process.env.HOST_IP.trim()) {
+    process.env.HOST_IP.trim().split(/[\s,]+/).forEach((ip) => {
+      if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) hostConfiguredIps.push(ip);
+    });
+  }
+  try {
+    const hostIpFile = path.join(DATA_DIR, 'server_host_ip.conf');
+    if (fs.existsSync(hostIpFile)) {
+      const content = fs.readFileSync(hostIpFile, 'utf8').trim();
+      content.split(/[\s,]+/).forEach((ip) => {
+        if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip) && !hostConfiguredIps.includes(ip)) {
+          hostConfiguredIps.push(ip);
+        }
+      });
+    }
+  } catch (e) {}
+
   const interfaces = os.networkInterfaces();
   const physicalIps = [];
   const virtualIps = [];
 
   for (const name of Object.keys(interfaces)) {
-    const isVirtual = /virtual|vmware|vbox|docker|loopback|tap|hyper-v|vethernet|tailscale|zerotier|wsl/i.test(name);
+    const isVirtual = /virtual|vmware|vbox|docker|br-|veth|loopback|tap|hyper-v|vethernet|tailscale|zerotier|wsl/i.test(name);
     const ifaceList = interfaces[name];
     if (!ifaceList) continue;
     for (const iface of ifaceList) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        if (isVirtual) {
+        // Skip internal Docker bridge subnets 172.17.x.x - 172.31.x.x if host IPs exist
+        const isDockerBridge = /^172\.(1[7-9]|2\d|3[0-1])\./.test(iface.address);
+        if (isVirtual || isDockerBridge) {
           virtualIps.push(iface.address);
         } else {
           physicalIps.push(iface.address);
@@ -202,7 +291,11 @@ function getLocalIpAddresses() {
   physicalIps.sort(sortFn);
   virtualIps.sort(sortFn);
 
-  return [...physicalIps, ...virtualIps];
+  const combined = [...hostConfiguredIps, ...physicalIps];
+  if (combined.length === 0) {
+    combined.push(...virtualIps);
+  }
+  return Array.from(new Set(combined));
 }
 
 function hasDbData(obj) {
@@ -213,7 +306,86 @@ function hasDbData(obj) {
   const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
   const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
   const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
-  return (c + m + o + s + cc + jv) > 0;
+  const hasDel = obj.deletedRecords && typeof obj.deletedRecords === 'object' && Object.keys(obj.deletedRecords).length > 0;
+  return (c + m + o + s + cc + jv) > 0 || Boolean(hasDel);
+}
+
+function getItemTimestampMs(item) {
+  if (!item || typeof item !== 'object') return 1;
+  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) {
+    return Number(item._updatedAtMs);
+  }
+  const fields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate'];
+  for (const f of fields) {
+    if (item[f]) {
+      const t = new Date(item[f]).getTime();
+      if (Number.isFinite(t) && t > 0) return t;
+    }
+  }
+  return 1;
+}
+
+function getCanonicalKey(tableName, item) {
+  if (!item || typeof item !== 'object') return '';
+  switch (tableName) {
+    case 'orders':
+      return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : item.id || '');
+    case 'journalVouchers':
+      return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : item.id || '');
+    case 'customers':
+      return String(item.phone || item.id || '');
+    case 'cashClosures':
+      return String(item.dateLabel || item.closedAt || item.id || '');
+    case 'kitchenProductions':
+      return String(item.batchNumber || item.id || '');
+    case 'categories':
+    case 'menuItems':
+      return String(item.id || item.name || '');
+    case 'appUsers':
+      return String(item.username || item.id || '');
+    case 'accounts':
+      return String(item.code || item.id || '');
+    default:
+      return String(item.id || item.code || item.name || '');
+  }
+}
+
+function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
+  const tableDel = deletedMap && deletedMap[tableName];
+  if (!tableDel || typeof tableDel !== 'object') return false;
+
+  let maxDelTs = 0;
+  if (canonicalKey && tableDel[canonicalKey]) {
+    maxDelTs = Math.max(maxDelTs, Number(tableDel[canonicalKey]) || 0);
+  }
+  if (item && typeof item === 'object') {
+    if (item.id !== undefined && item.id !== null) {
+      maxDelTs = Math.max(
+        maxDelTs,
+        Number(tableDel['id:' + item.id]) || 0,
+        tableName !== 'orders' && tableName !== 'journalVouchers' ? (Number(tableDel[String(item.id)]) || 0) : 0
+      );
+    }
+    if (item.invoiceNumber !== undefined && item.invoiceNumber !== null) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.invoiceNumber)]) || 0);
+    }
+    if (item.voucherNumber !== undefined && item.voucherNumber !== null) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.voucherNumber)]) || 0);
+    }
+    if (item.phone) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.phone)]) || 0);
+    }
+    if (item.name) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel['name:' + item.name]) || 0);
+    }
+    if (item.username) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.username)]) || 0);
+    }
+  }
+
+  if (maxDelTs <= 0) return false;
+  const itemTs = getItemTimestampMs(item);
+  return maxDelTs >= itemTs;
 }
 
 function mergeDatabaseObjects(existing, incoming) {
@@ -222,153 +394,95 @@ function mergeDatabaseObjects(existing, incoming) {
 
   const result = { ...existing };
 
-  // 1. Orders: merge by invoiceNumber or id (keep existing orders and append/update incoming)
-  const ordersMap = new Map();
-  if (Array.isArray(existing.orders)) {
-    for (const o of existing.orders) {
-      if (o) {
-        const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
-        ordersMap.set(k, o);
-      }
-    }
-  }
-  if (Array.isArray(incoming.orders)) {
-    for (const o of incoming.orders) {
-      if (o) {
-        const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
-        const prev = ordersMap.get(k);
-        if (prev) {
-          ordersMap.set(k, { ...prev, ...o });
-        } else {
-          ordersMap.set(k, o);
+  // 0. Merge deletedRecords tombstones from both existing and incoming
+  const mergedDeleted = {};
+  const sourceDelMaps = [existing.deletedRecords, incoming.deletedRecords];
+  for (const src of sourceDelMaps) {
+    if (!src || typeof src !== 'object') continue;
+    for (const [table, keyMap] of Object.entries(src)) {
+      if (!keyMap || typeof keyMap !== 'object') continue;
+      if (!mergedDeleted[table]) mergedDeleted[table] = {};
+      for (const [k, ts] of Object.entries(keyMap)) {
+        const numTs = Number(ts) || 0;
+        if (numTs > (mergedDeleted[table][k] || 0)) {
+          mergedDeleted[table][k] = numTs;
         }
       }
     }
   }
-  result.orders = Array.from(ordersMap.values()).sort(
-    (a, b) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0)
-  );
+  result.deletedRecords = mergedDeleted;
 
-  // 2. Customers: merge by phone or id
-  const customersMap = new Map();
-  if (Array.isArray(existing.customers)) {
-    for (const c of existing.customers) {
-      if (c) customersMap.set(c.phone || c.id, c);
-    }
-  }
-  if (Array.isArray(incoming.customers)) {
-    for (const c of incoming.customers) {
-      if (c) customersMap.set(c.phone || c.id, c);
-    }
-  }
-  result.customers = Array.from(customersMap.values());
-
-  // 3. Journal Vouchers: merge by voucherNumber or id
-  const vouchersMap = new Map();
-  if (Array.isArray(existing.journalVouchers)) {
-    for (const v of existing.journalVouchers) {
-      if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
-    }
-  }
-  if (Array.isArray(incoming.journalVouchers)) {
-    for (const v of incoming.journalVouchers) {
-      if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
-    }
-  }
-  result.journalVouchers = Array.from(vouchersMap.values());
-
-  // 4. Inventory Transactions: merge by id
-  const invMap = new Map();
-  if (Array.isArray(existing.inventoryTransactions)) {
-    for (const it of existing.inventoryTransactions) {
-      if (it && it.id) invMap.set(it.id, it);
-    }
-  }
-  if (Array.isArray(incoming.inventoryTransactions)) {
-    for (const it of incoming.inventoryTransactions) {
-      if (it && it.id) invMap.set(it.id, it);
-    }
-  }
-  result.inventoryTransactions = Array.from(invMap.values());
-
-  // 5. Kitchen Productions: merge by batchNumber or id
-  const kpMap = new Map();
-  if (Array.isArray(existing.kitchenProductions)) {
-    for (const kp of existing.kitchenProductions) {
-      if (kp) kpMap.set(String(kp.batchNumber || kp.id), kp);
-    }
-  }
-  if (Array.isArray(incoming.kitchenProductions)) {
-    for (const kp of incoming.kitchenProductions) {
-      if (kp) kpMap.set(String(kp.batchNumber || kp.id), kp);
-    }
-  }
-  result.kitchenProductions = Array.from(kpMap.values());
-
-  // 6. Cash Closures: merge by dateLabel or closedAt or id
-  const ccMap = new Map();
-  if (Array.isArray(existing.cashClosures)) {
-    for (const cc of existing.cashClosures) {
-      if (cc) ccMap.set(String(cc.dateLabel || cc.closedAt || cc.id), cc);
-    }
-  }
-  if (Array.isArray(incoming.cashClosures)) {
-    for (const cc of incoming.cashClosures) {
-      if (cc) ccMap.set(String(cc.dateLabel || cc.closedAt || cc.id), cc);
-    }
-  }
-  result.cashClosures = Array.from(ccMap.values());
-
-  // 7. Categories: merge by id or name
-  const catMap = new Map();
-  if (Array.isArray(existing.categories)) {
-    for (const c of existing.categories) {
-      if (c) catMap.set(c.id || c.name, c);
-    }
-  }
-  if (Array.isArray(incoming.categories)) {
-    for (const c of incoming.categories) {
-      if (c) catMap.set(c.id || c.name, c);
-    }
-  }
-  result.categories = Array.from(catMap.values());
-
-  // 8. Menu Items: merge by id or name
-  const menuMap = new Map();
-  if (Array.isArray(existing.menuItems)) {
-    for (const m of existing.menuItems) {
-      if (m) menuMap.set(m.id || m.name, m);
-    }
-  }
-  if (Array.isArray(incoming.menuItems)) {
-    for (const m of incoming.menuItems) {
-      if (m) menuMap.set(m.id || m.name, m);
-    }
-  }
-  result.menuItems = Array.from(menuMap.values());
-
-  // 9. Other tables: merge by key
-  const mergeTable = (key) => {
+  const mergeTableChronologically = (tableName, sortComparator) => {
     const map = new Map();
-    if (Array.isArray(existing[key])) {
-      for (const item of existing[key]) if (item) map.set(item.id || item.code || item.name, item);
+    if (Array.isArray(existing[tableName])) {
+      for (const item of existing[tableName]) {
+        if (!item) continue;
+        const k = getCanonicalKey(tableName, item);
+        if (!k) continue;
+        if (!isRecordDeletedInMap(tableName, item, k, mergedDeleted)) {
+          map.set(k, item);
+        }
+      }
     }
-    if (Array.isArray(incoming[key])) {
-      for (const item of incoming[key]) if (item) map.set(item.id || item.code || item.name, item);
+    if (Array.isArray(incoming[tableName])) {
+      for (const item of incoming[tableName]) {
+        if (!item) continue;
+        const k = getCanonicalKey(tableName, item);
+        if (!k) continue;
+        if (isRecordDeletedInMap(tableName, item, k, mergedDeleted)) {
+          map.delete(k);
+          continue;
+        }
+        const prev = map.get(k);
+        if (prev) {
+          const prevTs = getItemTimestampMs(prev);
+          const incTs = getItemTimestampMs(item);
+          if (incTs >= prevTs) {
+            map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs) });
+          }
+        } else {
+          map.set(k, item);
+        }
+      }
     }
-    result[key] = Array.from(map.values());
+    const arr = Array.from(map.values());
+    if (sortComparator) {
+      arr.sort(sortComparator);
+    }
+    result[tableName] = arr;
   };
-  mergeTable('bankAccounts');
-  mergeTable('persons');
-  mergeTable('cheques');
-  mergeTable('rawMaterials');
-  mergeTable('productionRecipes');
-  mergeTable('accounts');
-  mergeTable('appUsers');
 
-  // 10. Settings: prefer non-empty incoming settings
+  mergeTableChronologically('orders', (a, b) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0));
+  mergeTableChronologically('customers');
+  mergeTableChronologically('journalVouchers', (a, b) => (Number(a.voucherNumber) || 0) - (Number(b.voucherNumber) || 0));
+  mergeTableChronologically('inventoryTransactions');
+  mergeTableChronologically('kitchenProductions');
+  mergeTableChronologically('cashClosures');
+  mergeTableChronologically('categories');
+  mergeTableChronologically('menuItems');
+  mergeTableChronologically('bankAccounts');
+  mergeTableChronologically('persons');
+  mergeTableChronologically('cheques');
+  mergeTableChronologically('rawMaterials');
+  mergeTableChronologically('productionRecipes');
+  mergeTableChronologically('accounts');
+  mergeTableChronologically('appUsers');
+
+  // Settings: prefer newer settings based on timestamp
   if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
-    result.settings = incoming.settings;
+    if (Array.isArray(existing.settings) && existing.settings.length > 0) {
+      const prevS = existing.settings[0];
+      const incS = incoming.settings[0];
+      const prevTs = getItemTimestampMs(prevS);
+      const incTs = getItemTimestampMs(incS);
+      if (incTs >= prevTs) {
+        result.settings = [{ ...prevS, ...incS, centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo }];
+      } else {
+        result.settings = existing.settings;
+      }
+    } else {
+      result.settings = incoming.settings;
+    }
   } else if (Array.isArray(existing.settings)) {
     result.settings = existing.settings;
   }
@@ -401,7 +515,6 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
-  // Set standard CORS headers for LAN clients & Tauri Desktop App
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Access-Control-Request-Private-Network');
@@ -416,7 +529,6 @@ const server = http.createServer((req, res) => {
   try {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-    // Central Server License Status (Single activation for the entire LAN)
     if (parsedUrl.pathname === '/api/license/status' && req.method === 'GET') {
       const record = getOrCreateServerLicenseRecord();
       res.writeHead(200, {
@@ -430,7 +542,7 @@ const server = http.createServer((req, res) => {
         licenseKey: record.isActivated ? record.licenseKey : undefined,
         activatedAt: record.activatedAt || undefined,
         isEmergencyOverride: Boolean(record.isEmergencyOverride),
-        serverHostname: os.hostname(),
+        serverHostname: getEffectiveHostname(),
       }));
       return;
     }
@@ -448,7 +560,6 @@ const server = http.createServer((req, res) => {
           let targetCode = record.systemCode;
           let check = isKeyValidForCode(userKey, record.systemCode);
 
-          // Also accept if the user generated the key for the clientSystemCode displayed on their screen
           if (!check.valid && clientSystemCode) {
             const clientCheck = isKeyValidForCode(userKey, clientSystemCode);
             if (clientCheck.valid) {
@@ -476,7 +587,6 @@ const server = http.createServer((req, res) => {
 
           fs.writeFileSync(LICENSE_FILE, JSON.stringify(updatedRecord, null, 2), 'utf8');
 
-          // Also persist in central_db.json settings so DB sync carries it too
           if (fs.existsSync(DB_FILE)) {
             try {
               const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -502,7 +612,6 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // Central Server REST API for Multi-Terminal Network Sync
     if (parsedUrl.pathname === '/api/db/version' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -512,6 +621,7 @@ const server = http.createServer((req, res) => {
         ok: true,
         rev: currentRev,
         lastRawResetRev,
+        serverTimeMs: Date.now(),
         lastModified: new Date().toISOString(),
       }));
       return;
@@ -525,19 +635,23 @@ const server = http.createServer((req, res) => {
       if (fs.existsSync(DB_FILE)) {
         try {
           const content = fs.readFileSync(DB_FILE, 'utf8');
-          res.end(JSON.stringify({ ok: true, rev: currentRev, data: JSON.parse(content) }));
+          res.end(JSON.stringify({
+            ok: true,
+            rev: currentRev,
+            serverTimeMs: Date.now(),
+            data: JSON.parse(content),
+          }));
           return;
-        } catch (e) {
-          // ignore error
-        }
+        } catch (e) {}
       }
-      res.end(JSON.stringify({ ok: false, rev: currentRev, data: null }));
+      res.end(JSON.stringify({ ok: false, rev: currentRev, serverTimeMs: Date.now(), data: null }));
       return;
     }
 
     if (parsedUrl.pathname === '/api/network/info' && req.method === 'GET') {
       const localIps = getLocalIpAddresses();
       const customDomain = getSavedDomain();
+      const activePort = detectPort();
       let domainUrl = '';
       if (customDomain) {
         if (customDomain.startsWith('http://') || customDomain.startsWith('https://')) {
@@ -545,7 +659,7 @@ const server = http.createServer((req, res) => {
         } else if (customDomain.includes(':')) {
           domainUrl = `http://${customDomain}`;
         } else {
-          domainUrl = `http://${customDomain}:${PORT}`;
+          domainUrl = os.platform() === 'linux' ? `https://${customDomain}` : `http://${customDomain}:${activePort}`;
         }
       }
       res.writeHead(200, {
@@ -554,14 +668,16 @@ const server = http.createServer((req, res) => {
       });
       res.end(JSON.stringify({
         ok: true,
-        hostname: os.hostname(),
+        hostname: getEffectiveHostname(),
         platform: os.platform(),
-        port: PORT,
+        isLinuxServer: os.platform() === 'linux',
+        port: activePort,
         localIps,
         customDomain,
         domainUrl,
-        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${PORT}` : `http://localhost:${PORT}`,
+        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${activePort}` : `http://localhost:${activePort}`,
         serverTime: new Date().toISOString(),
+        serverTimeMs: Date.now(),
         rev: currentRev,
       }));
       return;
@@ -661,32 +777,33 @@ const server = http.createServer((req, res) => {
           const serverHasData = hasDbData(existingData);
           const clientHasData = hasDbData(payload.data);
 
-          // SAFEGUARD: If server has existing data and incoming push is empty, REJECT!
           if (serverHasData && !clientHasData) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({
               ok: false,
               isOutdated: true,
               rev: currentRev,
+              serverTimeMs: Date.now(),
               error: 'دیتابیس سرور دارای اطلاعات موجود است و کلاینت خالی مجاز به پاک کردن آن نیست.'
             }));
             return;
           }
 
-          // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
           if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({
               ok: false,
               isOutdated: true,
               rev: currentRev,
+              serverTimeMs: Date.now(),
               error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
             }));
             return;
           }
 
+          let finalDataToSave = payload.data;
+          let wasMerged = false;
           if (payload.data && clientHasData) {
-            let finalDataToSave = payload.data;
             if (serverHasData && existingData) {
               try {
                 fs.writeFileSync(
@@ -696,8 +813,8 @@ const server = http.createServer((req, res) => {
                 );
               } catch (e) {}
 
-              // Smart merge incoming orders, customers, vouchers, and transactions with existing server data
               finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+              wasMerged = true;
             }
 
             const tmpFile = DB_FILE + '.tmp';
@@ -706,7 +823,13 @@ const server = http.createServer((req, res) => {
             currentRev += 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+          res.end(JSON.stringify({
+            ok: true,
+            rev: currentRev,
+            serverTimeMs: Date.now(),
+            merged: wasMerged,
+            data: wasMerged ? finalDataToSave : undefined,
+          }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -722,7 +845,8 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           if (payload.data) {
-            const jsonContent = JSON.stringify(payload.data, null, 2);
+            const cleanData = { ...payload.data, deletedRecords: {} };
+            const jsonContent = JSON.stringify(cleanData, null, 2);
             fs.writeFileSync(DB_FILE, jsonContent, 'utf8');
             try {
               fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), jsonContent, 'utf8');
@@ -731,7 +855,7 @@ const server = http.createServer((req, res) => {
           currentRev += 1000;
           lastRawResetRev = currentRev;
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev, serverTimeMs: Date.now() }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -740,7 +864,66 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // Static file serving
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/send-bot-backup') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const { token, chatId, caption, fileName, backupJson, platform } = payload;
+          const hostDomain = platform === 'bale' ? 'https://tapi.bale.ai' : 'https://api.telegram.org';
+
+          if (!token || !chatId || !backupJson) {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ ok: false, error: 'توکن، چت‌آیدی یا دیتای بکاپ ارسال نشده است.' }));
+            return;
+          }
+
+          const result = await sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/sync-backup') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          if (payload.backupJson) {
+            fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), payload.backupJson, 'utf8');
+            if (!fs.existsSync(DB_FILE)) {
+              fs.writeFileSync(DB_FILE, payload.backupJson, 'utf8');
+            }
+          }
+          if (payload.settings) {
+            const s = payload.settings;
+            const envLines = [
+              `RESTAURANT_NAME="${String(s.restaurantName || 'Arka').replace(/"/g, '')}"`,
+              `BALE_BOT_TOKEN="${String(s.baleBotToken || '').trim()}"`,
+              `BALE_CHAT_ID="${String(s.baleChatId || '').trim()}"`,
+              `TELEGRAM_BOT_TOKEN="${String(s.telegramBotToken || '').trim()}"`,
+              `TELEGRAM_CHAT_ID="${String(s.telegramChatId || '').trim()}"`,
+            ];
+            fs.writeFileSync(path.join(DATA_DIR, 'bot_config.env'), envLines.join('\n') + '\n', 'utf8');
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false }));
+        }
+      });
+      return;
+    }
+
+    // Static file serving with anti-cache headers for HTML & Service Workers
     let safePath = path.normalize(decodeURIComponent(parsedUrl.pathname)).replace(/^(\.\.[/\\])+/, '');
     if (safePath === '/' || safePath === '\\') {
       safePath = '/index.html';
@@ -761,10 +944,19 @@ const server = http.createServer((req, res) => {
         res.end('Internal Server Error');
         return;
       }
-      res.writeHead(200, {
-        'Content-Type': contentType,
-        'Cache-Control': ext === '.html' ? 'no-cache, no-store, must-revalidate' : 'public, max-age=31536000',
-      });
+      if (ext === '.html' || safePath.includes('sw.js') || safePath.includes('registerSW')) {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        });
+      } else {
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Cache-Control': 'public, max-age=31536000',
+        });
+      }
       res.end(content);
     });
   } catch (e) {
@@ -786,10 +978,6 @@ server.listen(PORT, '0.0.0.0', () => {
     localIps.forEach((ip) => {
       console.log(`    👉 http://${ip}:${PORT}`);
     });
-    console.log('\n[📱] تبلت‌ها، موبایل‌های گارسون، پنل آشپزخانه و وب‌اپلیکیشن (PWA)');
-    console.log(`     می‌توانند با وارد کردن آدرس فوق در مرورگر به سرور وصل شوند.`);
-  } else {
-    console.log('[!] هیچ کارت شبکه فعال دارای IP محلی شناسایی نشد (فقط لوکال‌هاست فعال است).');
   }
   console.log('═'.repeat(66) + '\n');
 });

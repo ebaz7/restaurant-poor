@@ -129,88 +129,146 @@ function centralServerDbPlugin(): Plugin {
     }
   } catch {}
 
+  function getItemTimestampMsNode(item: any): number {
+    if (!item || typeof item !== 'object') return 1;
+    if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) {
+      return Number(item._updatedAtMs);
+    }
+    const fields = ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate'];
+    for (const f of fields) {
+      if (item[f]) {
+        const t = new Date(item[f]).getTime();
+        if (Number.isFinite(t) && t > 0) return t;
+      }
+    }
+    return 1;
+  }
+
+  function getCanonicalKeyNode(tableName: string, item: any): string {
+    if (!item || typeof item !== 'object') return '';
+    switch (tableName) {
+      case 'orders':
+        return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : item.id || '');
+      case 'journalVouchers':
+        return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : item.id || '');
+      case 'customers':
+        return String(item.phone || item.id || '');
+      case 'cashClosures':
+        return String(item.dateLabel || item.closedAt || item.id || '');
+      case 'kitchenProductions':
+        return String(item.batchNumber || item.id || '');
+      case 'categories':
+      case 'menuItems':
+        return String(item.id || item.name || '');
+      case 'appUsers':
+        return String(item.username || item.id || '');
+      case 'accounts':
+        return String(item.code || item.id || '');
+      default:
+        return String(item.id || item.code || item.name || '');
+    }
+  }
+
+  function isRecordDeletedInMapNode(tableName: string, item: any, canonicalKey: string, deletedMap: any): boolean {
+    const tableDel = deletedMap && deletedMap[tableName];
+    if (!tableDel || typeof tableDel !== 'object') return false;
+
+    let maxDelTs = 0;
+    if (canonicalKey && tableDel[canonicalKey]) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel[canonicalKey]) || 0);
+    }
+    if (item && typeof item === 'object') {
+      if (item.id !== undefined && item.id !== null) {
+        maxDelTs = Math.max(
+          maxDelTs,
+          Number(tableDel['id:' + item.id]) || 0,
+          tableName !== 'orders' && tableName !== 'journalVouchers' ? (Number(tableDel[String(item.id)]) || 0) : 0
+        );
+      }
+      if (item.invoiceNumber !== undefined && item.invoiceNumber !== null) {
+        maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.invoiceNumber)]) || 0);
+      }
+      if (item.voucherNumber !== undefined && item.voucherNumber !== null) {
+        maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.voucherNumber)]) || 0);
+      }
+      if (item.phone) {
+        maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.phone)]) || 0);
+      }
+      if (item.name) {
+        maxDelTs = Math.max(maxDelTs, Number(tableDel['name:' + item.name]) || 0);
+      }
+      if (item.username) {
+        maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.username)]) || 0);
+      }
+    }
+
+    if (maxDelTs <= 0) return false;
+    const itemTs = getItemTimestampMsNode(item);
+    return maxDelTs >= itemTs;
+  }
+
   function mergeDatabaseObjectsNode(existing: any, incoming: any) {
     if (!existing || typeof existing !== 'object') return incoming || {};
     if (!incoming || typeof incoming !== 'object') return existing || {};
 
     const result = { ...existing };
 
-    // 1. Orders: merge by invoiceNumber or id
-    const ordersMap = new Map();
-    if (Array.isArray(existing.orders)) {
-      for (const o of existing.orders) {
-        if (o) {
-          const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
-          ordersMap.set(k, o);
-        }
-      }
-    }
-    if (Array.isArray(incoming.orders)) {
-      for (const o of incoming.orders) {
-        if (o) {
-          const k = String(o.invoiceNumber !== undefined && o.invoiceNumber !== null ? o.invoiceNumber : o.id);
-          const prev = ordersMap.get(k);
-          if (prev) {
-            ordersMap.set(k, { ...prev, ...o });
-          } else {
-            ordersMap.set(k, o);
+    const mergedDeleted: Record<string, Record<string, number>> = {};
+    for (const src of [existing.deletedRecords, incoming.deletedRecords]) {
+      if (!src || typeof src !== 'object') continue;
+      for (const [table, keyMap] of Object.entries(src)) {
+        if (!keyMap || typeof keyMap !== 'object') continue;
+        if (!mergedDeleted[table]) mergedDeleted[table] = {};
+        for (const [k, ts] of Object.entries(keyMap as Record<string, any>)) {
+          const numTs = Number(ts) || 0;
+          if (numTs > (mergedDeleted[table][k] || 0)) {
+            mergedDeleted[table][k] = numTs;
           }
         }
       }
     }
-    result.orders = Array.from(ordersMap.values()).sort(
-      (a: any, b: any) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0)
-    );
+    result.deletedRecords = mergedDeleted;
 
-    // 2. Customers: merge by phone or id
-    const customersMap = new Map();
-    if (Array.isArray(existing.customers)) {
-      for (const c of existing.customers) {
-        if (c) customersMap.set(c.phone || c.id, c);
-      }
-    }
-    if (Array.isArray(incoming.customers)) {
-      for (const c of incoming.customers) {
-        if (c) customersMap.set(c.phone || c.id, c);
-      }
-    }
-    result.customers = Array.from(customersMap.values());
-
-    // 3. Journal Vouchers: merge by voucherNumber or id
-    const vouchersMap = new Map();
-    if (Array.isArray(existing.journalVouchers)) {
-      for (const v of existing.journalVouchers) {
-        if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
-      }
-    }
-    if (Array.isArray(incoming.journalVouchers)) {
-      for (const v of incoming.journalVouchers) {
-        if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
-      }
-    }
-    result.journalVouchers = Array.from(vouchersMap.values());
-
-    // 4. Other tables: merge by key
-    const mergeTable = (key: string) => {
+    const mergeTable = (tableName: string, sortFn?: (a: any, b: any) => number) => {
       const map = new Map();
-      if (Array.isArray(existing[key])) {
-        for (const item of existing[key]) {
-          if (item) {
-            const k = String(item.dateLabel || item.closedAt || item.batchNumber || item.id || item.code || item.name);
+      if (Array.isArray(existing[tableName])) {
+        for (const item of existing[tableName]) {
+          if (!item) continue;
+          const k = getCanonicalKeyNode(tableName, item);
+          if (k && !isRecordDeletedInMapNode(tableName, item, k, mergedDeleted)) {
             map.set(k, item);
           }
         }
       }
-      if (Array.isArray(incoming[key])) {
-        for (const item of incoming[key]) {
-          if (item) {
-            const k = String(item.dateLabel || item.closedAt || item.batchNumber || item.id || item.code || item.name);
+      if (Array.isArray(incoming[tableName])) {
+        for (const item of incoming[tableName]) {
+          if (!item) continue;
+          const k = getCanonicalKeyNode(tableName, item);
+          if (!k) continue;
+          if (isRecordDeletedInMapNode(tableName, item, k, mergedDeleted)) {
+            map.delete(k);
+            continue;
+          }
+          const prev = map.get(k);
+          if (prev) {
+            const prevTs = getItemTimestampMsNode(prev);
+            const incTs = getItemTimestampMsNode(item);
+            if (incTs >= prevTs) {
+              map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs) });
+            }
+          } else {
             map.set(k, item);
           }
         }
       }
-      result[key] = Array.from(map.values());
+      const arr = Array.from(map.values());
+      if (sortFn) arr.sort(sortFn);
+      result[tableName] = arr;
     };
+
+    mergeTable('orders', (a: any, b: any) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0));
+    mergeTable('customers');
+    mergeTable('journalVouchers', (a: any, b: any) => (Number(a.voucherNumber) || 0) - (Number(b.voucherNumber) || 0));
     mergeTable('inventoryTransactions');
     mergeTable('kitchenProductions');
     mergeTable('cashClosures');
@@ -443,10 +501,12 @@ function centralServerDbPlugin(): Plugin {
             ok: true,
             hostname: os.hostname(),
             platform: os.platform(),
+            isLinuxServer: os.platform() === 'linux',
             port: 3000,
             localIps: ips,
             primaryUrl: ips.length > 0 ? `http://${ips[0]}:3000` : `http://localhost:3000`,
             serverTime: new Date().toISOString(),
+            serverTimeMs: Date.now(),
             rev: currentRev,
           }));
           return;
@@ -460,7 +520,6 @@ function centralServerDbPlugin(): Plugin {
               const payload = JSON.parse(body || '{}');
               const clientRev = Number(payload.clientRevision) || 0;
 
-              // Helper to check if a DB object contains any actual data records
               const hasData = (obj: any) => {
                 if (!obj || typeof obj !== 'object') return false;
                 const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
@@ -469,7 +528,8 @@ function centralServerDbPlugin(): Plugin {
                 const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
                 const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
                 const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
-                return (c + m + o + s + cc + jv) > 0;
+                const hasDel = obj.deletedRecords && typeof obj.deletedRecords === 'object' && Object.keys(obj.deletedRecords).length > 0;
+                return (c + m + o + s + cc + jv) > 0 || Boolean(hasDel);
               };
 
               let existingData: any = null;
@@ -482,7 +542,6 @@ function centralServerDbPlugin(): Plugin {
               const serverHasData = hasData(existingData);
               const clientHasData = hasData(payload.data);
 
-              // SAFEGUARD: If server already has data and incoming client push is empty, REJECT!
               if (serverHasData && !clientHasData) {
                 res.statusCode = 409;
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -490,12 +549,12 @@ function centralServerDbPlugin(): Plugin {
                   ok: false,
                   isOutdated: true,
                   rev: currentRev,
+                  serverTimeMs: Date.now(),
                   error: 'دیتابیس سرور دارای اطلاعات موجود است و کلاینت خالی مجاز به پاک کردن آن نیست.'
                 }));
                 return;
               }
 
-              // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
               if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
                 res.statusCode = 409;
                 res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -503,13 +562,15 @@ function centralServerDbPlugin(): Plugin {
                   ok: false,
                   isOutdated: true,
                   rev: currentRev,
+                  serverTimeMs: Date.now(),
                   error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
                 }));
                 return;
               }
 
+              let finalDataToSave = payload.data;
+              let wasMerged = false;
               if (payload.data && clientHasData) {
-                let finalDataToSave = payload.data;
                 if (serverHasData && existingData) {
                   try {
                     const backupDir = path.join(dataDir, 'backups');
@@ -517,8 +578,8 @@ function centralServerDbPlugin(): Plugin {
                     fs.writeFileSync(path.join(backupDir, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
                   } catch {}
 
-                  // Smart merge incoming orders, customers, vouchers, and transactions with existing server data
                   finalDataToSave = mergeDatabaseObjectsNode(existingData, payload.data);
+                  wasMerged = true;
                 }
 
                 const tmpFile = dbFile + '.tmp';
@@ -527,7 +588,13 @@ function centralServerDbPlugin(): Plugin {
                 currentRev += 1;
               }
               res.setHeader('Content-Type', 'application/json; charset=utf-8');
-              res.end(JSON.stringify({ ok: true, rev: currentRev }));
+              res.end(JSON.stringify({
+                ok: true,
+                rev: currentRev,
+                serverTimeMs: Date.now(),
+                merged: wasMerged,
+                data: wasMerged ? finalDataToSave : undefined,
+              }));
             } catch (err: any) {
               res.statusCode = 400;
               res.end(JSON.stringify({ ok: false, error: err?.message }));
@@ -543,7 +610,8 @@ function centralServerDbPlugin(): Plugin {
             try {
               const payload = JSON.parse(body || '{}');
               if (payload.data) {
-                const jsonContent = JSON.stringify(payload.data, null, 2);
+                const cleanData = { ...payload.data, deletedRecords: {} };
+                const jsonContent = JSON.stringify(cleanData, null, 2);
                 fs.writeFileSync(dbFile, jsonContent, 'utf8');
                 try {
                   fs.writeFileSync(path.join(dataDir, 'latest_db_backup.json'), jsonContent, 'utf8');

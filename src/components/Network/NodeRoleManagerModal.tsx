@@ -52,9 +52,12 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
   const [currentRole, setCurrentRole] = useState<'server' | 'client'>(getNodeRole());
   const [networkInfo, setNetworkInfo] = useState<{
     hostname?: string;
+    platform?: string;
+    isLinuxServer?: boolean;
     port?: number;
     localIps?: string[];
     primaryUrl?: string;
+    domainUrl?: string;
     rev?: number;
   }>({});
   const [isLoadingNetInfo, setIsLoadingNetInfo] = useState(false);
@@ -399,7 +402,11 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2 text-emerald-900 font-black text-sm">
                     <Radio size={18} className="animate-pulse text-emerald-600 shrink-0" />
-                    <span>این کامپیوتر «سرور مرکزی اصلی سیستم» است</span>
+                    <span>
+                      {networkInfo.isLinuxServer
+                        ? 'متصل به «سرور مرکزی لینوکس (Linux Server)»'
+                        : 'این کامپیوتر «سرور مرکزی اصلی سیستم (Windows Host)» است'}
+                    </span>
                   </div>
                   <span className="px-2.5 py-0.5 bg-emerald-600 text-white text-[10px] font-bold rounded-lg shrink-0">
                     پایگاه داده اصلی و توزیع‌کننده شبکه
@@ -407,7 +414,9 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                 </div>
 
                 <p className="text-slate-600 leading-relaxed text-[11px]">
-                  نرم‌افزار به‌صورت اتوماتیک آدرس‌های IP این دستگاه در شبکه محلی را شناسایی کرده است. تمام صندوق‌ها، تبلت‌ها و گوشی‌ها می‌توانند با آدرس زیر به این سرور وصل شوند:
+                  {networkInfo.isLinuxServer
+                    ? 'این سامانه روی سرور لینوکس اجرا شده و پورت و شبکه آن در محیط لینوکس تنظیم گردیده است. تمام صندوق‌ها، برنامه‌های ویندوز و موبایل‌ها می‌توانند با آدرس زیر به این سرور متصل شوند:'
+                    : 'نرم‌افزار به‌صورت اتوماتیک آدرس‌های IP این دستگاه در شبکه محلی را شناسایی کرده است. تمام صندوق‌ها، تبلت‌ها و گوشی‌ها می‌توانند با آدرس زیر به این سرور وصل شوند:'}
                 </p>
 
                 {/* Primary Detected Server Address */}
@@ -415,12 +424,12 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                   <div>
                     <span className="text-[10px] text-emerald-800 font-bold block mb-0.5">آدرس اصلی اشتراک‌گذاری در شبکه:</span>
                     <div className="font-mono text-xs sm:text-sm font-black text-emerald-950 truncate" dir="ltr">
-                      {effectiveServerUrl}
+                      {networkInfo.domainUrl || effectiveServerUrl}
                     </div>
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleCopy(effectiveServerUrl)}
+                    onClick={() => handleCopy(networkInfo.domainUrl || effectiveServerUrl)}
                     className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer shadow-xs"
                   >
                     {copiedUrl ? <Check size={14} /> : <Copy size={14} />}
@@ -433,7 +442,7 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                   <div className="text-[11px] text-emerald-900 space-y-1.5 pt-2 border-t border-emerald-200/80">
                     <span className="font-bold flex items-center gap-1">
                       <Wifi size={13} className="text-emerald-700" />
-                      <span>آی‌پی‌های شناسایی‌شده روی کارت‌های شبکه این کامپیوتر:</span>
+                      <span>آی‌پی‌های شناسایی‌شده روی سرور:</span>
                     </span>
                     <div className="flex flex-wrap gap-1.5">
                       {networkInfo.localIps.map((ip) => {
@@ -461,7 +470,11 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <label className="font-extrabold text-emerald-950 text-xs flex items-center gap-1.5">
                       <Settings2 size={15} className="text-emerald-700" />
-                      <span>تنظیم پورت دلخواه سرور (Server Port):</span>
+                      <span>
+                        {networkInfo.isLinuxServer
+                          ? 'پورت فعال سرور لینوکس (تنظیم‌شده در محیط لینوکس):'
+                          : 'تنظیم پورت دلخواه سرور ویندوز (Server Port):'}
+                      </span>
                     </label>
                     <div className="flex items-center gap-2">
                       <input
@@ -489,7 +502,9 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
                     </p>
                   )}
                   <span className="text-[10px] text-slate-500 block leading-relaxed">
-                    پورت پیش‌فرض نرم‌افزار ۴۰۴۰ یا ۳۰۰۰ است. در صورت تمایل می‌توانید پورت شبکه دلخواه خود را تنظیم فرمایید.
+                    {networkInfo.isLinuxServer
+                      ? `پورت سرور لینوکس (${networkInfo.port || serverCustomPort}) هنگام نصب در محیط لینوکس (install.sh) تنظیم شده است.`
+                      : 'در نسخه ویندوز (Tauri)، می‌توانید پورت شبکه سرور را از همین کادر تغییر دهید تا بلافاصله فعال شود.'}
                   </span>
                 </div>
               </div>

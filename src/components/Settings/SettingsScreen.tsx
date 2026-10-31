@@ -132,6 +132,9 @@ export default function SettingsScreen() {
 
   const [networkInfo, setNetworkInfo] = useState<{
     hostname?: string;
+    platform?: string;
+    isLinuxServer?: boolean;
+    isTauriApp?: boolean;
     port?: number;
     localIps?: string[];
     primaryUrl?: string;
@@ -1176,22 +1179,28 @@ pause
                       {nodeRole === 'server' ? <Server size={20} /> : <Radio size={20} />}
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
-                          نقش فعلی این دستگاه در شبکه:
+                          نقش فعلی در شبکه:
                         </span>
                         <span
                           className={`px-2.5 py-0.5 rounded-full text-white font-black text-[10.5px] ${
                             nodeRole === 'server' ? 'bg-emerald-600' : 'bg-blue-600'
                           }`}
                         >
-                          {nodeRole === 'server' ? '🟢 سرور مرکزی (Master Host)' : '🔵 کلاینت / صندوق فرعی'}
+                          {nodeRole === 'server'
+                            ? networkInfo.isLinuxServer
+                              ? '🐧 متصل به سرور مرکزی لینوکس (Linux Host)'
+                              : '🟢 سرور مرکزی ویندوز (Master Host)'
+                            : '🔵 کلاینت / صندوق فرعی'}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-600 mt-1 leading-relaxed">
                         {nodeRole === 'server'
-                          ? 'این دستگاه به عنوان سرور مرکزی سیستم فعال است و تمامی صندوق‌ها، تبلت‌ها و گوشی‌های شبکه به این آی‌پی متصل می‌شوند.'
-                          : 'این دستگاه به عنوان کلاینت فرعی به سرور مرکزی شبکه متصل است و اطلاعات را به صورت زنده سینک می‌کند.'}
+                          ? networkInfo.isLinuxServer
+                            ? 'این سامانه روی سرور لینوکس راه‌اندازی شده و تمام کلاینت‌ها (وب، ویندوز و موبایل) به صورت بلادرنگ با دیتابیس مرکزی این سرور همگام هستند.'
+                            : 'این کامپیوتر به عنوان سرور مرکزی سیستم فعال است و تمامی صندوق‌ها، تبلت‌ها و گوشی‌های شبکه به این آی‌پی و پورت متصل می‌شوند.'
+                          : 'این دستگاه به عنوان کلاینت فرعی به سرور مرکزی شبکه متصل است و اطلاعات را به صورت زنده و با تقدم و تأخر زمانی دقیق سینک می‌کند.'}
                       </p>
                     </div>
                   </div>
@@ -1202,19 +1211,23 @@ pause
                     className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
                   >
                     <ArrowRightLeft size={14} />
-                    <span>تغییر نقش سیستم (نیاز به پین مدیر)</span>
+                    <span>تنظیمات نقش سرور / کلاینت</span>
                   </button>
                 </div>
 
                 {/* IF SERVER MODE: SHOW AUTO IP DETECTION, PORT SETUP, DOMAIN & LAN SHARE URL */}
                 {nodeRole === 'server' && (
                   <div className="space-y-4 pt-2">
-                    {/* LAN SHARING & REAL WINDOWS IP CARD */}
+                    {/* LAN SHARING & REAL SERVER IP CARD */}
                     <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-3.5">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <h3 className="font-extrabold text-emerald-950 text-xs sm:text-sm flex items-center gap-2">
                           <Radio size={18} className="animate-pulse text-emerald-600" />
-                          <span>آدرس‌های شناسایی‌شده سرور در شبکه محلی (LAN)</span>
+                          <span>
+                            {networkInfo.isLinuxServer
+                              ? 'مشخصات شبکه، آی‌پی و پورت سرور لینوکس (تنظیم‌شده در محیط لینوکس)'
+                              : 'آدرس‌های شناسایی‌شده سرور در شبکه محلی (LAN)'}
+                          </span>
                         </h3>
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className={`text-[10.5px] font-bold px-2.5 py-0.5 rounded-md flex items-center gap-1 ${
@@ -1223,17 +1236,21 @@ pause
                               : 'bg-amber-100 text-amber-900 border border-amber-300'
                           }`}>
                             <span className={`w-2 h-2 rounded-full ${networkInfo.isServerRunning ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'}`} />
-                            <span>{networkInfo.isServerRunning ? 'سرویس سرور فعال روی شبکه' : 'سرویس پس‌زمینه خاموش (لوکال)'}</span>
+                            <span>
+                              {networkInfo.isServerRunning
+                                ? `سرویس مرکزی فعال (پورت ${networkInfo.port || serverCustomPort || 4040})`
+                                : 'سرویس پس‌زمینه خاموش (لوکال)'}
+                            </span>
                           </span>
                           <span className="text-[10.5px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-md border border-emerald-200">
-                            نام سیستم: {networkInfo.hostname || 'رایانه ویندوز'}
+                            میزبان: {networkInfo.hostname || (networkInfo.isLinuxServer ? 'سرور لینوکس' : 'رایانه ویندوز')}
                           </span>
                           <button
                             type="button"
                             onClick={loadNetworkInfo}
                             disabled={isRefreshingNetInfo}
                             className="px-2 py-0.5 bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-md text-[10.5px] font-bold cursor-pointer transition flex items-center gap-1"
-                            title="اسکن مجدد کارت‌های شبکه"
+                            title="استعلام مجدد اطلاعات شبکه از سرور"
                           >
                             <RefreshCw size={11} className={isRefreshingNetInfo ? 'animate-spin' : ''} />
                             <span>بروزرسانی</span>
@@ -1242,24 +1259,26 @@ pause
                       </div>
 
                       <p className="text-[11px] text-slate-600 leading-relaxed">
-                        نرم‌افزار کارت‌های شبکه ویندوز را بررسی و آی‌پی واقعی متصل به مودم/سوییچ را استخراج کرده است. تبلت‌ها، موبایل‌های گارسون، پنل آشپزخانه و سایر کامپیوترها می‌توانند از آدرس زیر متصل شوند:
+                        {networkInfo.isLinuxServer
+                          ? 'پورت و آدرس شبکه این سرور در زمان نصب در محیط لینوکس (install.sh) پیکربندی شده و به صورت خودکار شناسایی گردیده است. تمام کلاینت‌های ویندوز (Tauri)، مرورگرهای کامپیوتر و موبایل‌ها می‌توانند از آدرس زیر به این سرور متصل شوند:'
+                          : 'نرم‌افزار کارت‌های شبکه ویندوز را بررسی و آی‌پی واقعی متصل به مودم/سوییچ را استخراج کرده است. تبلت‌ها، موبایل‌های گارسون، پنل آشپزخانه و سایر کامپیوترها می‌توانند از آدرس زیر متصل شوند:'}
                       </p>
 
                       {/* Primary URL Banner */}
                       <div className="bg-white p-3 rounded-xl border border-emerald-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
                         <div>
-                          <span className="text-[10px] text-emerald-800 font-bold block mb-0.5">آدرس اصلی اشتراک‌گذاری در شبکه محلی:</span>
+                          <span className="text-[10px] text-emerald-800 font-bold block mb-0.5">آدرس اصلی اتصال کلاینت‌ها به این سرور:</span>
                           <div className="font-mono text-xs sm:text-sm font-black text-emerald-950 truncate" dir="ltr">
-                            {networkInfo.primaryUrl || (networkInfo.localIps?.[0] ? `http://${networkInfo.localIps[0]}:${serverCustomPort || 4040}` : `http://127.0.0.1:${serverCustomPort || 4040}`)}
+                            {networkInfo.domainUrl || networkInfo.primaryUrl || (networkInfo.localIps?.[0] ? `http://${networkInfo.localIps[0]}:${serverCustomPort || 4040}` : `http://127.0.0.1:${serverCustomPort || 4040}`)}
                           </div>
                         </div>
                         <button
                           type="button"
-                          onClick={() => handleCopyText(networkInfo.primaryUrl || (networkInfo.localIps?.[0] ? `http://${networkInfo.localIps[0]}:${serverCustomPort || 4040}` : `http://127.0.0.1:${serverCustomPort || 4040}`))}
+                          onClick={() => handleCopyText(networkInfo.domainUrl || networkInfo.primaryUrl || (networkInfo.localIps?.[0] ? `http://${networkInfo.localIps[0]}:${serverCustomPort || 4040}` : `http://127.0.0.1:${serverCustomPort || 4040}`))}
                           className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer"
                         >
                           {copiedUrl ? <Check size={14} /> : <Copy size={14} />}
-                          <span>{copiedUrl ? 'کپی شد!' : 'کپی آدرس شبکه'}</span>
+                          <span>{copiedUrl ? 'کپی شد!' : 'کپی آدرس سرور'}</span>
                         </button>
                       </div>
 
@@ -1267,12 +1286,12 @@ pause
                       <div className="space-y-1.5 pt-1">
                         <span className="text-[11px] font-bold text-emerald-900 flex items-center gap-1">
                           <Wifi size={13} className="text-emerald-700" />
-                          <span>لیست آی‌پی‌های شناسایی‌شده کارت‌های شبکه این کامپیوتر (جهت انتخاب کلیک فرمایید):</span>
+                          <span>لیست آی‌پی‌های شناسایی‌شده روی سرور (جهت انتخاب و کپی کلیک فرمایید):</span>
                         </span>
                         {networkInfo.localIps && networkInfo.localIps.length > 0 ? (
                           <div className="flex flex-wrap gap-1.5">
                             {networkInfo.localIps.map((ip) => {
-                              const port = serverCustomPort || networkInfo.port || 4040;
+                              const port = networkInfo.port || serverCustomPort || 4040;
                               const fullUrl = `http://${ip}:${port}`;
                               const isCurrentPrimary = networkInfo.primaryUrl === fullUrl;
                               return (
@@ -1297,7 +1316,7 @@ pause
                           </div>
                         ) : (
                           <p className="text-[10.5px] text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200">
-                            کارت شبکه LAN فعالی شناسایی نشد. در صورت تمایل آی‌پی دستی زیر را ثبت فرمایید.
+                            در صورت تمایل آی‌پی شبکه سرور را در کادر زیر ثبت فرمایید.
                           </p>
                         )}
 
@@ -1325,12 +1344,16 @@ pause
                         </div>
                       </div>
 
-                      {/* Custom Server Port Configuration Box */}
+                      {/* Platform-Aware Server Port Configuration Box */}
                       <div className="p-3.5 bg-white rounded-xl border border-emerald-300 space-y-2 pt-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                           <label className="font-extrabold text-emerald-950 text-xs flex items-center gap-1.5">
                             <Settings2 size={16} className="text-emerald-700" />
-                            <span>تنظیم پورت دلخواه سرور (Server Port):</span>
+                            <span>
+                              {networkInfo.isLinuxServer
+                                ? 'پورت فعال سرور لینوکس (تنظیم‌شده در محیط لینوکس):'
+                                : 'تنظیم پورت دلخواه سرور ویندوز (Server Port):'}
+                            </span>
                           </label>
                           <div className="flex items-center gap-2">
                             <input
@@ -1348,7 +1371,7 @@ pause
                               className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs shrink-0 cursor-pointer transition flex items-center gap-1"
                             >
                               {isSavingPort ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
-                              <span>ذخیره پورت سرور</span>
+                              <span>{networkInfo.isLinuxServer ? 'ثبت در تنظیمات' : 'ذخیره و فعال‌سازی پورت'}</span>
                             </button>
                           </div>
                         </div>
@@ -1358,7 +1381,9 @@ pause
                           </p>
                         )}
                         <span className="text-[10px] text-slate-500 block leading-relaxed">
-                          پورت پیش‌فرض نرم‌افزار ۴۰۴۰ است. می‌توانید شماره پورت دلخواه شبکه خود را ست کرده و ذخیره نمایید.
+                          {networkInfo.isLinuxServer
+                            ? `در سرور لینوکس، پورت اصلی (${networkInfo.port || serverCustomPort}) و ریورس‌پروکسی Nginx در محیط لینوکس موقع نصب (install.sh) تنظیم و ست شده است.`
+                            : 'در نسخه ویندوز (Tauri)، تغییر پورت از همین بخش بلافاصله سرویس سرور داخلی ویندوز را روی پورت جدید فعال می‌کند.'}
                         </span>
                       </div>
                     </div>
@@ -1368,7 +1393,7 @@ pause
                       <div className="flex items-center justify-between">
                         <h3 className="font-extrabold text-indigo-950 text-xs sm:text-sm flex items-center gap-2">
                           <Globe size={18} className="text-indigo-600" />
-                          <span>ثبت نام دامنه اختصاصی برای اشتراک در اینترنت (Domain / DDNS / Tunnel)</span>
+                          <span>ثبت نام دامنه اختصاصی برای اشتراک در اینترنت (Domain / SSL)</span>
                         </h3>
                         <span className="text-[10.5px] font-bold text-indigo-800 bg-indigo-100 px-2.5 py-0.5 rounded-md">
                           دسترسی از راه دور
@@ -1376,7 +1401,7 @@ pause
                       </div>
 
                       <p className="text-[11px] text-slate-600 leading-relaxed">
-                        جهت مشاهده گزارش‌ها، نظارت بر فروش یا اتصال شعبات خارج از رستوران از طریق اینترنت، می‌توانید نام دامنه اختصاصی خود (مانند pos.restaurant.ir یا سرویس‌های DDNS رایگان نظیر DuckDNS) را ثبت فرمایید:
+                        جهت مشاهده گزارش‌ها، نظارت بر فروش یا اتصال کلاینت‌ها و شعبات از طریق اینترنت، نام دامنه اختصاصی سرور (مانند foodmix.ir) در این بخش نمایش داده و تنظیم می‌شود:
                       </p>
 
                       <div className="bg-white p-3 rounded-xl border border-indigo-200 space-y-2.5">
@@ -1399,7 +1424,7 @@ pause
                               type="text"
                               value={serverDomainInput}
                               onChange={(e) => setServerDomainInput(e.target.value)}
-                              placeholder="مثال: pos.myrestaurant.ir یا restaurant.duckdns.org"
+                              placeholder="مثال: foodmix.ir یا pos.myrestaurant.ir"
                               className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-mono text-left text-xs font-bold text-slate-900 focus:outline-hidden focus:border-indigo-500"
                               dir="ltr"
                             />
@@ -1439,106 +1464,44 @@ pause
                           </div>
                         )}
                       </div>
-
-                      {/* 3 Simple Methods for Internet Sharing Guide */}
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1 text-[10.5px]">
-                        <div className="bg-white p-2.5 rounded-xl border border-indigo-200 space-y-1">
-                          <strong className="text-indigo-950 block font-black">روش ۱ (سریع و رایگان): Cloudflare Tunnel</strong>
-                          <p className="text-slate-600 leading-relaxed">
-                            بدون نیاز به آی‌پی استاتیک یا دستکاری مودم، نرم‌افزار cloudflared را اجرا کرده و دامنه دلخواه خود را به پورت ۴۰۴۰ سرور متصل کنید.
-                          </p>
-                        </div>
-                        <div className="bg-white p-2.5 rounded-xl border border-indigo-200 space-y-1">
-                          <strong className="text-indigo-950 block font-black">روش ۲: Port Forwarding روی مودم</strong>
-                          <p className="text-slate-600 leading-relaxed">
-                            در تنظیمات مودم اینترنت رستوران، پورت ورودی 4040 را به آی‌پی ویندوز سرور فوروارد کنید تا با آی‌پی استاتیک در دسترس باشد.
-                          </p>
-                        </div>
-                        <div className="bg-white p-2.5 rounded-xl border border-indigo-200 space-y-1">
-                          <strong className="text-indigo-950 block font-black">روش ۳: دی‌ان‌اس پویا (Dynamic DNS)</strong>
-                          <p className="text-slate-600 leading-relaxed">
-                            از سرویس‌های رایگان مانند DuckDNS یا No-IP جهت تبدیل آی‌پی متغیر اینترنت به یک دامنه ثابت استفاده فرمایید.
-                          </p>
-                        </div>
-                      </div>
                     </div>
 
-                    {/* 1-CLICK AUTOMATED WINDOWS LAN SHARING & FIREWALL MASTER CARD */}
-                    <div className="p-4 rounded-2xl bg-slate-900 text-white space-y-3.5 shadow-md">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                        <div className="space-y-0.5">
-                          <h3 className="font-extrabold text-amber-400 text-xs sm:text-sm flex items-center gap-2">
-                            <span>⚡ اسکریپت خودکار اشتراک‌گذاری در شبکه ویندوز (۱ کلیک - بدون نیاز به دانش فنی)</span>
-                          </h3>
-                          <p className="text-[11px] text-slate-300">
-                            این اسکریپت تمام تنظیمات ویندوز برای اشتراک‌گذاری بی‌نقص در شبکه محلی را در چند ثانیه اعمال می‌کند:
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleDownloadAutoShareBat}
-                          className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shrink-0 shadow-md cursor-pointer transition animate-pulse"
-                        >
-                          <Download size={15} />
-                          <span>دانلود اسکریپت خودکار شبکه (Start_LAN_Share.bat)</span>
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 text-[11px]">
-                        <div className="bg-slate-800/80 p-2.5 rounded-xl border border-slate-700 space-y-1">
-                          <div className="font-bold text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 size={13} />
-                            <span>۱. تنظیم شبکه به Private</span>
+                    {/* 1-CLICK AUTOMATED WINDOWS LAN SHARING & FIREWALL MASTER CARD (SHOWN WHEN ON WINDOWS) */}
+                    {!networkInfo.isLinuxServer && (
+                      <div className="p-4 rounded-2xl bg-slate-900 text-white space-y-3.5 shadow-md">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                          <div className="space-y-0.5">
+                            <h3 className="font-extrabold text-amber-400 text-xs sm:text-sm flex items-center gap-2">
+                              <span>⚡ اسکریپت خودکار اشتراک‌گذاری و فایروال در ویندوز (۱ کلیک)</span>
+                            </h3>
+                            <p className="text-[11px] text-slate-300">
+                              برای باز کردن خودکار پورت {serverCustomPort || networkInfo.port || 4040} در فایروال ویندوز جهت اتصال سایر سیستم‌ها:
+                            </p>
                           </div>
-                          <p className="text-slate-400 text-[10px] leading-relaxed">
-                            ویندوز ۱۰ و ۱۱ در حالت Public جلوی اتصالات را می‌گیرند؛ این اسکریپت کارت را به Private تبدیل می‌کند.
-                          </p>
+                          <button
+                            type="button"
+                            onClick={handleDownloadAutoShareBat}
+                            className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shrink-0 shadow-md cursor-pointer transition"
+                          >
+                            <Download size={15} />
+                            <span>دانلود اسکریپت فایروال و شبکه ویندوز (.bat)</span>
+                          </button>
                         </div>
 
-                        <div className="bg-slate-800/80 p-2.5 rounded-xl border border-slate-700 space-y-1">
-                          <div className="font-bold text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 size={13} />
-                            <span>۲. باز کردن پورت ۴۰۴۰ در فایروال</span>
-                          </div>
-                          <p className="text-slate-400 text-[10px] leading-relaxed">
-                            ایجاد قانون ورود و خروج در Windows Firewall برای پورت TCP ۴۰۴۰ جهت اتصال تبلت‌ها و کلاینت‌ها.
-                          </p>
-                        </div>
-
-                        <div className="bg-slate-800/80 p-2.5 rounded-xl border border-slate-700 space-y-1">
-                          <div className="font-bold text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 size={13} />
-                            <span>۳. جلوگیری از به خواب رفتن سیستم</span>
-                          </div>
-                          <p className="text-slate-400 text-[10px] leading-relaxed">
-                            غیرفعال کردن حالت Sleep ویندوز روی برق، تا سرور در ساعات کاری رستوران همیشه پاسخگو باشد.
-                          </p>
-                        </div>
-
-                        <div className="bg-slate-800/80 p-2.5 rounded-xl border border-slate-700 space-y-1">
-                          <div className="font-bold text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 size={13} />
-                            <span>۴. اجرای خودکار هنگام روشن شدن</span>
-                          </div>
-                          <p className="text-slate-400 text-[10px] leading-relaxed">
-                            ثبت در استارت‌آپ ویندوز (Startup) تا با روشن شدن کامپیوتر سرور آماده سرویس‌دهی باشد.
-                          </p>
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pt-1 text-[10.5px] text-slate-400">
+                          <span>
+                            💡 نحوه اجرا در ویندوز سرور: فایل دانلود شده را با کلیک راست و گزینه <strong>Run as Administrator</strong> اجرا کنید تا پورت در فایروال ویندوز باز شود.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleDownloadFirewallScript}
+                            className="text-amber-400 hover:text-amber-300 font-bold underline cursor-pointer shrink-0"
+                          >
+                            فقط دانلود قانون فایروال (Firewall Rule Only)
+                          </button>
                         </div>
                       </div>
-
-                      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pt-1 border-t border-slate-800 text-[10.5px] text-slate-400">
-                        <span>
-                          💡 نحوه اجرا در ویندوز: فایل دانلود شده را روی سرور قرار داده و با کلیک راست گزینه <strong>Run as Administrator</strong> را بزنید.
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleDownloadFirewallScript}
-                          className="text-amber-400 hover:text-amber-300 font-bold underline cursor-pointer shrink-0"
-                        >
-                          یا فقط دانلود اسکریپت فایروال (Firewall Rule Only)
-                        </button>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 )}
 

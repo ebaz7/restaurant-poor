@@ -82,6 +82,8 @@ export interface Order {
   cardAmount?: number;
   personId?: number; // If credit/person linked
   cogsAmount?: number; // Cost of Goods Sold calculated at checkout
+  updatedAt?: Date;
+  _updatedAtMs?: number;
 }
 
 export interface Customer {

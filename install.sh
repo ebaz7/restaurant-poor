@@ -58,6 +58,29 @@ save_active_port() {
         echo "$TARGET_PORT" > "/opt/arka-backup/server_port.conf"
         chmod 666 "$INSTALL_DIR/data/server_port.conf" 2>/dev/null || true
     fi
+    local HOST_IPS
+    HOST_IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^172\.' | grep -v '^127\.' | tr '\n' ' ' | xargs)
+    if [ -z "$HOST_IPS" ]; then
+        HOST_IPS=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -n "$HOST_IPS" ]; then
+        mkdir -p "$INSTALL_DIR/data"
+        echo "$HOST_IPS" > "$INSTALL_DIR/data/server_host_ip.conf"
+        chmod 666 "$INSTALL_DIR/data/server_host_ip.conf" 2>/dev/null || true
+    fi
+    local HOST_NAME
+    HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
+    echo "$HOST_NAME" > "$INSTALL_DIR/data/server_hostname.conf"
+}
+
+save_active_domain() {
+    local TARGET_DOMAIN="$1"
+    if [ -n "$TARGET_DOMAIN" ]; then
+        mkdir -p "$INSTALL_DIR/data" /opt/arka-backup
+        echo "$TARGET_DOMAIN" > "$INSTALL_DIR/data/server_domain.conf"
+        echo "$TARGET_DOMAIN" > "/opt/arka-backup/server_domain.conf"
+        chmod 666 "$INSTALL_DIR/data/server_domain.conf" 2>/dev/null || true
+    fi
 }
 
 print_banner() {
@@ -107,81 +130,31 @@ EOF
 }
 
 create_server_script() {
-    mkdir -p "$INSTALL_DIR/data"
+    mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/data/backups"
+    # If the repository already contains the full server.cjs with /api/network/info and deletedRecords, keep it!
+    if [ -f "$INSTALL_DIR/server.cjs" ] && grep -q "deletedRecords" "$INSTALL_DIR/server.cjs" && grep -q "/api/network/info" "$INSTALL_DIR/server.cjs"; then
+        echo "[v] Authoritative server.cjs verified in $INSTALL_DIR/server.cjs"
+        return 0
+    fi
     cat <<'EOF' > "$INSTALL_DIR/server.cjs"
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-
-function sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain) {
-  return new Promise((resolve) => {
-    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
-    const host = hostDomain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-
-    let bodyHead = '';
-    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
-    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`;
-    bodyHead += `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/json\r\n\r\n`;
-
-    const bodyTail = `\r\n--${boundary}--\r\n`;
-    const fileBuf = Buffer.from(backupJson, 'utf8');
-    const contentLength = Buffer.byteLength(bodyHead) + fileBuf.length + Buffer.byteLength(bodyTail);
-
-    const req = https.request(
-      {
-        hostname: host,
-        port: 443,
-        path: `/bot${token}/sendDocument`,
-        method: 'POST',
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          'Content-Length': contentLength,
-        },
-      },
-      (res) => {
-        let resData = '';
-        res.on('data', (chunk) => { resData += chunk; });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(resData || '{}');
-            if (parsed.ok) {
-              resolve({ ok: true });
-            } else {
-              let errText = parsed.description || `کد ${res.statusCode}`;
-              if (errText.includes('chat not found') || errText.includes('blocked') || errText.includes('deactivated')) {
-                errText = `کاربر/ادمین با شناسه چت (${chatId}) هنوز ربات را استارت نکرده است. لطفاً در بله به ربات پیام دهید و دکمه /start را بزنید.`;
-              }
-              resolve({ ok: false, error: errText });
-            }
-          } catch {
-            resolve({ ok: false, error: `پاسخ نامعتبر از سرور (کد ${res.statusCode})` });
-          }
-        });
-      }
-    );
-
-    req.on('error', (e) => {
-      resolve({ ok: false, error: `خطای شبکه‌ای: ${e.message}` });
-    });
-
-    req.write(bodyHead);
-    req.write(fileBuf);
-    req.write(bodyTail);
-    req.end();
-  });
-}
+const os = require('os');
+const crypto = require('crypto');
 
 const DIST_DIR = path.join(__dirname, 'dist');
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'central_db.json');
 const LICENSE_FILE = path.join(DATA_DIR, 'server_license.json');
-const os = require('os');
-const crypto = require('crypto');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
+const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 function detectPort() {
   if (process.env.PORT && !isNaN(Number(process.env.PORT)) && Number(process.env.PORT) > 0) {
@@ -193,10 +166,8 @@ function detectPort() {
       const p = parseInt(fs.readFileSync(confFile, 'utf8').trim(), 10);
       if (!isNaN(p) && p > 0) return p;
     }
-  } catch (e) {
-    // ignore
-  }
-  return 3000;
+  } catch (e) {}
+  return os.platform() === 'linux' ? 3000 : 4040;
 }
 
 const PORT = detectPort();
@@ -204,98 +175,183 @@ try {
   fs.writeFileSync(path.join(DATA_DIR, 'server_port.conf'), String(PORT), 'utf8');
 } catch (e) {}
 
-const MASTER_SECRET_SALT = 'ARKA_POS_OFFLINE_SECRET_SALT_2026_x987654321_REST_SYS';
-const MASTER_EMERGENCY_KEY = 'ARKA-9999-MASTER-OVERRIDE-KEY';
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+function getSavedDomain() {
+  if (process.env.SERVER_DOMAIN && process.env.SERVER_DOMAIN.trim()) return process.env.SERVER_DOMAIN.trim();
+  try {
+    const domainFile = path.join(DATA_DIR, 'server_domain.conf');
+    if (fs.existsSync(domainFile)) return fs.readFileSync(domainFile, 'utf8').trim();
+  } catch (e) {}
+  return '';
 }
 
-function fnvFallbackHex(str) {
-  let hash1 = 2166136261;
-  let hash2 = 30503041;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash1 ^= char;
-    hash1 = Math.imul(hash1, 16777619);
-    hash2 ^= char;
-    hash2 = Math.imul(hash2, 16777619);
-  }
-  const h1Hex = (hash1 >>> 0).toString(16).padStart(8, '0');
-  const h2Hex = (hash2 >>> 0).toString(16).padStart(8, '0');
-  return h1Hex + h2Hex + h1Hex + h2Hex;
+function getEffectiveHostname() {
+  if (process.env.HOST_HOSTNAME && process.env.HOST_HOSTNAME.trim()) return process.env.HOST_HOSTNAME.trim();
+  try {
+    const hostFile = path.join(DATA_DIR, 'server_hostname.conf');
+    if (fs.existsSync(hostFile)) {
+      const h = fs.readFileSync(hostFile, 'utf8').trim();
+      if (h) return h;
+    }
+  } catch (e) {}
+  return os.hostname();
 }
 
-function isKeyValidForCode(userKey, sysCode) {
-  if (!userKey || !sysCode) return { valid: false, isEmergency: false };
-  const cleanKey = String(userKey).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const cleanEmergency = MASTER_EMERGENCY_KEY.replace(/[^A-Z0-9]/g, '');
-  if (cleanKey === cleanEmergency) {
-    return { valid: true, isEmergency: true };
+function getLocalIpAddresses() {
+  const hostConfiguredIps = [];
+  if (process.env.HOST_IP && process.env.HOST_IP.trim()) {
+    process.env.HOST_IP.trim().split(/[\s,]+/).forEach((ip) => {
+      if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) hostConfiguredIps.push(ip);
+    });
   }
-  const cleanCode = String(sysCode).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const combined = `${cleanCode}_${MASTER_SECRET_SALT}`;
-  const shaHash = crypto.createHash('sha256').update(combined, 'utf8').digest('hex').substring(0, 16).toUpperCase();
-  const fnvHash = fnvFallbackHex(combined).substring(0, 16).toUpperCase();
-  if (cleanKey === shaHash || cleanKey === fnvHash) {
-    return { valid: true, isEmergency: false };
+  try {
+    const hostIpFile = path.join(DATA_DIR, 'server_host_ip.conf');
+    if (fs.existsSync(hostIpFile)) {
+      fs.readFileSync(hostIpFile, 'utf8').trim().split(/[\s,]+/).forEach((ip) => {
+        if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip) && !hostConfiguredIps.includes(ip)) hostConfiguredIps.push(ip);
+      });
+    }
+  } catch (e) {}
+
+  const interfaces = os.networkInterfaces();
+  const physicalIps = [];
+  const virtualIps = [];
+  for (const name of Object.keys(interfaces)) {
+    const isVirtual = /virtual|vmware|vbox|docker|br-|veth|loopback|tap|hyper-v|vethernet|tailscale|zerotier|wsl/i.test(name);
+    const ifaceList = interfaces[name];
+    if (!ifaceList) continue;
+    for (const iface of ifaceList) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        const isDockerBridge = /^172\.(1[7-9]|2\d|3[0-1])\./.test(iface.address);
+        if (isVirtual || isDockerBridge) virtualIps.push(iface.address);
+        else physicalIps.push(iface.address);
+      }
+    }
   }
-  return { valid: false, isEmergency: false };
+  const combined = [...hostConfiguredIps, ...physicalIps];
+  if (combined.length === 0) combined.push(...virtualIps);
+  return Array.from(new Set(combined));
 }
 
-function getOrCreateServerLicenseRecord() {
-  let record = null;
-  if (fs.existsSync(LICENSE_FILE)) {
-    try {
-      record = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
-    } catch (e) {}
+function getItemTimestampMs(item) {
+  if (!item || typeof item !== 'object') return 1;
+  if (item._updatedAtMs && Number.isFinite(Number(item._updatedAtMs))) return Number(item._updatedAtMs);
+  for (const f of ['updatedAt', 'createdAt', 'closedAt', 'date', 'issueDate']) {
+    if (item[f]) {
+      const t = new Date(item[f]).getTime();
+      if (Number.isFinite(t) && t > 0) return t;
+    }
   }
-  if ((!record || !record.isActivated) && fs.existsSync(DB_FILE)) {
-    try {
-      const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-      const firstSetting = Array.isArray(dbData?.settings) ? dbData.settings[0] : null;
-      if (firstSetting?.centralLicenseInfo?.isActivated && firstSetting.centralLicenseInfo.licenseKey) {
-        const cli = firstSetting.centralLicenseInfo;
-        const check = isKeyValidForCode(cli.licenseKey, cli.systemCode);
-        if (check.valid) {
-          record = {
-            systemCode: cli.systemCode,
-            licenseKey: cli.licenseKey,
-            activatedAt: cli.activatedAt || new Date().toISOString(),
-            isActivated: true,
-            isEmergencyOverride: check.isEmergency,
-          };
-          try {
-            fs.writeFileSync(LICENSE_FILE, JSON.stringify(record, null, 2), 'utf8');
-          } catch (e) {}
+  return 1;
+}
+
+function getCanonicalKey(tableName, item) {
+  if (!item || typeof item !== 'object') return '';
+  switch (tableName) {
+    case 'orders': return String(item.invoiceNumber !== undefined && item.invoiceNumber !== null ? item.invoiceNumber : item.id || '');
+    case 'journalVouchers': return String(item.voucherNumber !== undefined && item.voucherNumber !== null ? item.voucherNumber : item.id || '');
+    case 'customers': return String(item.phone || item.id || '');
+    case 'cashClosures': return String(item.dateLabel || item.closedAt || item.id || '');
+    case 'kitchenProductions': return String(item.batchNumber || item.id || '');
+    case 'categories':
+    case 'menuItems': return String(item.id || item.name || '');
+    case 'appUsers': return String(item.username || item.id || '');
+    case 'accounts': return String(item.code || item.id || '');
+    default: return String(item.id || item.code || item.name || '');
+  }
+}
+
+function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
+  const tableDel = deletedMap && deletedMap[tableName];
+  if (!tableDel || typeof tableDel !== 'object') return false;
+  let maxDelTs = 0;
+  if (canonicalKey && tableDel[canonicalKey]) maxDelTs = Math.max(maxDelTs, Number(tableDel[canonicalKey]) || 0);
+  if (item && typeof item === 'object') {
+    if (item.id !== undefined && item.id !== null) {
+      maxDelTs = Math.max(maxDelTs, Number(tableDel['id:' + item.id]) || 0, tableName !== 'orders' && tableName !== 'journalVouchers' ? (Number(tableDel[String(item.id)]) || 0) : 0);
+    }
+    if (item.invoiceNumber !== undefined && item.invoiceNumber !== null) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.invoiceNumber)]) || 0);
+    if (item.voucherNumber !== undefined && item.voucherNumber !== null) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.voucherNumber)]) || 0);
+    if (item.phone) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.phone)]) || 0);
+    if (item.name) maxDelTs = Math.max(maxDelTs, Number(tableDel['name:' + item.name]) || 0);
+    if (item.username) maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.username)]) || 0);
+  }
+  if (maxDelTs <= 0) return false;
+  return maxDelTs >= getItemTimestampMs(item);
+}
+
+function mergeDatabaseObjects(existing, incoming) {
+  if (!existing || typeof existing !== 'object') return incoming || {};
+  if (!incoming || typeof incoming !== 'object') return existing || {};
+  const result = { ...existing };
+  const mergedDeleted = {};
+  for (const src of [existing.deletedRecords, incoming.deletedRecords]) {
+    if (!src || typeof src !== 'object') continue;
+    for (const [table, keyMap] of Object.entries(src)) {
+      if (!keyMap || typeof keyMap !== 'object') continue;
+      if (!mergedDeleted[table]) mergedDeleted[table] = {};
+      for (const [k, ts] of Object.entries(keyMap)) {
+        const numTs = Number(ts) || 0;
+        if (numTs > (mergedDeleted[table][k] || 0)) mergedDeleted[table][k] = numTs;
+      }
+    }
+  }
+  result.deletedRecords = mergedDeleted;
+
+  const mergeTable = (tableName, sortFn) => {
+    const map = new Map();
+    if (Array.isArray(existing[tableName])) {
+      for (const item of existing[tableName]) {
+        if (!item) continue;
+        const k = getCanonicalKey(tableName, item);
+        if (k && !isRecordDeletedInMap(tableName, item, k, mergedDeleted)) map.set(k, item);
+      }
+    }
+    if (Array.isArray(incoming[tableName])) {
+      for (const item of incoming[tableName]) {
+        if (!item) continue;
+        const k = getCanonicalKey(tableName, item);
+        if (!k) continue;
+        if (isRecordDeletedInMap(tableName, item, k, mergedDeleted)) {
+          map.delete(k);
+          continue;
+        }
+        const prev = map.get(k);
+        if (prev) {
+          const prevTs = getItemTimestampMs(prev);
+          const incTs = getItemTimestampMs(item);
+          if (incTs >= prevTs) map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs) });
+        } else {
+          map.set(k, item);
         }
       }
-    } catch (e) {}
-  }
-  if (record && record.systemCode) {
-    if (record.licenseKey) {
-      const check = isKeyValidForCode(record.licenseKey, record.systemCode);
-      record.isActivated = check.valid;
-      record.isEmergencyOverride = check.isEmergency;
-    } else {
-      record.isActivated = false;
     }
-    return record;
-  }
-  const cpuModel = (os.cpus() && os.cpus()[0] && os.cpus()[0].model) || 'CPU';
-  const rawHw = `ARKA_CENTRAL_SRV_${os.hostname()}_${os.platform()}_${os.arch()}_${cpuModel}`;
-  const hash = crypto.createHash('sha256').update(rawHw, 'utf8').digest('hex').toUpperCase();
-  const systemCode = `ARKA-${hash.substring(0, 4)}-${hash.substring(4, 8)}-${hash.substring(8, 12)}`;
-  const initialRecord = {
-    systemCode,
-    isActivated: false,
-    licenseKey: '',
-    activatedAt: null,
+    const arr = Array.from(map.values());
+    if (sortFn) arr.sort(sortFn);
+    result[tableName] = arr;
   };
-  try {
-    fs.writeFileSync(LICENSE_FILE, JSON.stringify(initialRecord, null, 2), 'utf8');
-  } catch (e) {}
-  return initialRecord;
+
+  mergeTable('orders', (a, b) => (Number(a.invoiceNumber) || 0) - (Number(b.invoiceNumber) || 0));
+  mergeTable('customers');
+  mergeTable('journalVouchers', (a, b) => (Number(a.voucherNumber) || 0) - (Number(b.voucherNumber) || 0));
+  mergeTable('inventoryTransactions');
+  mergeTable('kitchenProductions');
+  mergeTable('cashClosures');
+  mergeTable('categories');
+  mergeTable('menuItems');
+  mergeTable('bankAccounts');
+  mergeTable('persons');
+  mergeTable('cheques');
+  mergeTable('rawMaterials');
+  mergeTable('productionRecipes');
+  mergeTable('accounts');
+  mergeTable('appUsers');
+
+  if (Array.isArray(incoming.settings) && incoming.settings.length > 0) result.settings = incoming.settings;
+  else if (Array.isArray(existing.settings)) result.settings = existing.settings;
+
+  result.version = incoming.version || existing.version || 8;
+  result.exportedAt = new Date().toISOString();
+  return result;
 }
 
 let currentRev = 1;
@@ -303,7 +359,7 @@ let lastRawResetRev = 0;
 try {
   if (fs.existsSync(DB_FILE)) {
     const stat = fs.statSync(DB_FILE);
-    currentRev = Math.floor(stat.mtimeMs / 1000);
+    currentRev = Math.max(1, Math.floor(stat.mtimeMs / 1000));
   }
 } catch (e) {}
 
@@ -332,129 +388,52 @@ const MIME_TYPES = {
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-Requested-With, Access-Control-Request-Private-Network');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   try {
     const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
-    // Central Server License Status (Single activation for the entire LAN)
-    if (parsedUrl.pathname === '/api/license/status' && req.method === 'GET') {
-      const record = getOrCreateServerLicenseRecord();
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      });
-      res.end(JSON.stringify({
-        ok: true,
-        isActivated: Boolean(record.isActivated),
-        systemCode: record.systemCode,
-        licenseKey: record.isActivated ? record.licenseKey : undefined,
-        activatedAt: record.activatedAt || undefined,
-        isEmergencyOverride: Boolean(record.isEmergencyOverride),
-        serverHostname: os.hostname(),
-      }));
-      return;
-    }
-
-    if (parsedUrl.pathname === '/api/license/activate' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk.toString(); });
-      req.on('end', () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          const userKey = String(payload.licenseKey || '').trim().toUpperCase();
-          const clientSystemCode = String(payload.clientSystemCode || '').trim().toUpperCase();
-          const record = getOrCreateServerLicenseRecord();
-
-          let targetCode = record.systemCode;
-          let check = isKeyValidForCode(userKey, record.systemCode);
-
-          if (!check.valid && clientSystemCode) {
-            const clientCheck = isKeyValidForCode(userKey, clientSystemCode);
-            if (clientCheck.valid) {
-              check = clientCheck;
-              targetCode = clientSystemCode;
-            }
-          }
-
-          if (!check.valid) {
-            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({
-              ok: false,
-              message: 'کد فعال‌سازی وارد شده معتبر نمی‌باشد.',
-            }));
-            return;
-          }
-
-          const updatedRecord = {
-            systemCode: targetCode,
-            licenseKey: userKey,
-            activatedAt: new Date().toISOString(),
-            isActivated: true,
-            isEmergencyOverride: check.isEmergency,
-          };
-
-          fs.writeFileSync(LICENSE_FILE, JSON.stringify(updatedRecord, null, 2), 'utf8');
-
-          if (fs.existsSync(DB_FILE)) {
-            try {
-              const dbData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-              if (Array.isArray(dbData?.settings) && dbData.settings.length > 0) {
-                dbData.settings[0].centralLicenseInfo = updatedRecord;
-                fs.writeFileSync(DB_FILE, JSON.stringify(dbData, null, 2), 'utf8');
-                currentRev += 1;
-              }
-            } catch (e) {}
-          }
-
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({
-            ok: true,
-            ...updatedRecord,
-            message: 'لایسنس روی سرور مرکزی فعال شد و تمامی کلاینت‌های شبکه به صورت خودکار فعال گردیدند.',
-          }));
-        } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, message: err.message }));
-        }
-      });
-      return;
-    }
-
-    // Central Server REST API for Multi-Terminal Network Sync
     if (parsedUrl.pathname === '/api/db/version' && req.method === 'GET') {
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      });
-      res.end(JSON.stringify({
-        ok: true,
-        rev: currentRev,
-        lastRawResetRev,
-        lastModified: new Date().toISOString(),
-      }));
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
+      res.end(JSON.stringify({ ok: true, rev: currentRev, lastRawResetRev, serverTimeMs: Date.now(), lastModified: new Date().toISOString() }));
       return;
     }
 
     if (parsedUrl.pathname === '/api/db/state' && req.method === 'GET') {
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      });
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate' });
       if (fs.existsSync(DB_FILE)) {
         try {
           const content = fs.readFileSync(DB_FILE, 'utf8');
-          res.end(JSON.stringify({ ok: true, rev: currentRev, data: JSON.parse(content) }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev, serverTimeMs: Date.now(), data: JSON.parse(content) }));
           return;
         } catch (e) {}
       }
-      res.end(JSON.stringify({ ok: false, rev: currentRev, data: null }));
+      res.end(JSON.stringify({ ok: false, rev: currentRev, serverTimeMs: Date.now(), data: null }));
+      return;
+    }
+
+    if (parsedUrl.pathname === '/api/network/info' && req.method === 'GET') {
+      const localIps = getLocalIpAddresses();
+      const customDomain = getSavedDomain();
+      const activePort = detectPort();
+      let domainUrl = customDomain ? (customDomain.startsWith('http') ? customDomain : `https://${customDomain}`) : '';
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, no-store' });
+      res.end(JSON.stringify({
+        ok: true,
+        hostname: getEffectiveHostname(),
+        platform: os.platform(),
+        isLinuxServer: os.platform() === 'linux',
+        port: activePort,
+        localIps,
+        customDomain,
+        domainUrl,
+        primaryUrl: localIps.length > 0 ? `http://${localIps[0]}:${activePort}` : `http://localhost:${activePort}`,
+        serverTime: new Date().toISOString(),
+        serverTimeMs: Date.now(),
+        rev: currentRev,
+      }));
       return;
     }
 
@@ -465,65 +444,53 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           const clientRev = Number(payload.clientRevision) || 0;
-
           function hasDbData(obj) {
             if (!obj || typeof obj !== 'object') return false;
             const c = Array.isArray(obj.categories) ? obj.categories.length : 0;
             const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
             const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
             const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
-            return (c + m + o + s) > 0;
+            const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
+            const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
+            const hasDel = obj.deletedRecords && typeof obj.deletedRecords === 'object' && Object.keys(obj.deletedRecords).length > 0;
+            return (c + m + o + s + cc + jv) > 0 || Boolean(hasDel);
           }
 
           let existingData = null;
           if (fs.existsSync(DB_FILE)) {
-            try {
-              existingData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-            } catch (e) {}
+            try { existingData = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch (e) {}
           }
-
           const serverHasData = hasDbData(existingData);
           const clientHasData = hasDbData(payload.data);
 
-          // SAFEGUARD: If server has existing data and incoming push is empty, REJECT!
           if (serverHasData && !clientHasData) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({
-              ok: false,
-              isOutdated: true,
-              rev: currentRev,
-              error: 'دیتابیس سرور دارای اطلاعات موجود است و کلاینت خالی مجاز به پاک کردن آن نیست.'
-            }));
+            res.end(JSON.stringify({ ok: false, isOutdated: true, rev: currentRev, serverTimeMs: Date.now() }));
             return;
           }
-
-          // REJECT STALE PUSH: If client is behind a Raw Reset or server revision, do NOT overwrite!
           if (lastRawResetRev > 0 && clientRev < lastRawResetRev) {
             res.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({
-              ok: false,
-              isOutdated: true,
-              rev: currentRev,
-              error: 'اطلاعات این کلاینت قدیمی است و سرور خام یا بروزرسانی شده است.'
-            }));
+            res.end(JSON.stringify({ ok: false, isOutdated: true, rev: currentRev, serverTimeMs: Date.now() }));
             return;
           }
 
+          let finalDataToSave = payload.data;
+          let wasMerged = false;
           if (payload.data && clientHasData) {
-            if (serverHasData) {
+            if (serverHasData && existingData) {
               try {
-                const backupDir = path.join(DATA_DIR, 'backups');
-                if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-                fs.writeFileSync(path.join(backupDir, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
+                fs.writeFileSync(path.join(BACKUP_DIR, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
               } catch (e) {}
+              finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+              wasMerged = true;
             }
             const tmpFile = DB_FILE + '.tmp';
-            fs.writeFileSync(tmpFile, JSON.stringify(payload.data, null, 2), 'utf8');
+            fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
             currentRev += 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev, serverTimeMs: Date.now(), merged: wasMerged, data: wasMerged ? finalDataToSave : undefined }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -539,16 +506,14 @@ const server = http.createServer((req, res) => {
         try {
           const payload = JSON.parse(body || '{}');
           if (payload.data) {
-            const jsonContent = JSON.stringify(payload.data, null, 2);
+            const cleanData = { ...payload.data, deletedRecords: {} };
+            const jsonContent = JSON.stringify(cleanData, null, 2);
             fs.writeFileSync(DB_FILE, jsonContent, 'utf8');
-            try {
-              fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), jsonContent, 'utf8');
-            } catch (e) {}
           }
           currentRev += 1000;
           lastRawResetRev = currentRev;
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, rev: currentRev }));
+          res.end(JSON.stringify({ ok: true, rev: currentRev, serverTimeMs: Date.now() }));
         } catch (err) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -557,106 +522,23 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    if (req.method === 'POST' && parsedUrl.pathname === '/api/send-bot-backup') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk.toString(); });
-      req.on('end', async () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          const { token, chatId, caption, fileName, backupJson, platform } = payload;
-          const hostDomain = platform === 'bale' ? 'https://tapi.bale.ai' : 'https://api.telegram.org';
-
-          if (!token || !chatId || !backupJson) {
-            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ ok: false, error: 'توکن، چت‌آیدی یا دیتای بکاپ ارسال نشده است.' }));
-            return;
-          }
-
-          const result = await sendBotMessageNode(token, chatId, caption, fileName, backupJson, hostDomain);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify(result));
-        } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false, error: err.message }));
-        }
-      });
-      return;
-    }
-
-    if (req.method === 'POST' && parsedUrl.pathname === '/api/sync-backup') {
-      let body = '';
-      req.on('data', (chunk) => { body += chunk.toString(); });
-      req.on('end', () => {
-        try {
-          const payload = JSON.parse(body || '{}');
-          if (payload.backupJson) {
-            fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), payload.backupJson, 'utf8');
-            if (!fs.existsSync(DB_FILE)) {
-              fs.writeFileSync(DB_FILE, payload.backupJson, 'utf8');
-            }
-          }
-          if (payload.settings) {
-            const s = payload.settings;
-            const envLines = [
-              `RESTAURANT_NAME="${String(s.restaurantName || 'Arka').replace(/"/g, '')}"`,
-              `BALE_BOT_TOKEN="${String(s.baleBotToken || '').trim()}"`,
-              `BALE_CHAT_ID="${String(s.baleChatId || '').trim()}"`,
-              `TELEGRAM_BOT_TOKEN="${String(s.telegramBotToken || '').trim()}"`,
-              `TELEGRAM_CHAT_ID="${String(s.telegramChatId || '').trim()}"`,
-            ];
-            fs.writeFileSync(path.join(DATA_DIR, 'bot_config.env'), envLines.join('\n') + '\n', 'utf8');
-          }
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err) {
-          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: false }));
-        }
-      });
-      return;
-    }
-
-    // Static Assets & Anti-Cache Headers for HTML & Service Workers
     let safePath = path.normalize(decodeURIComponent(parsedUrl.pathname)).replace(/^(\.\.[/\\])+/, '');
-    if (safePath === '/' || safePath === '\\') {
-      safePath = '/index.html';
-    }
-
+    if (safePath === '/' || safePath === '\\') safePath = '/index.html';
     let filePath = path.join(DIST_DIR, safePath);
-
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(DIST_DIR, 'index.html');
-    }
-
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) filePath = path.join(DIST_DIR, 'index.html');
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-
     fs.readFile(filePath, (err, content) => {
-      if (err) {
-        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Internal Server Error');
-        return;
-      }
-
-      // Enforce zero cache for HTML and Service Worker scripts so updates apply immediately
+      if (err) { res.writeHead(500); res.end('Internal Server Error'); return; }
       if (ext === '.html' || safePath.includes('sw.js') || safePath.includes('registerSW')) {
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'Expires': '0',
-        });
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0' });
       } else {
-        res.writeHead(200, {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=31536000',
-        });
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=31536000' });
       }
       res.end(content);
     });
   } catch (e) {
-    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('Server Error');
+    res.writeHead(500); res.end('Server Error');
   }
 });
 
@@ -1103,6 +985,9 @@ install_app() {
     if [[ "$USE_SSL" =~ ^[Yy]$ ]]; then
         read -p "[-] Enter your domain name (e.g. foodmix.ir): " DOMAIN
         DOMAIN=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | xargs)
+        if [ -n "$DOMAIN" ]; then
+            save_active_domain "$DOMAIN"
+        fi
         echo ""
         echo "Select SSL Certificate Mode:"
         echo "1) Official Free Let's Encrypt SSL (Trusted Green Lock in Chrome/Mobile - RECOMMENDED)"
@@ -1146,6 +1031,9 @@ install_app() {
     systemctl stop arka-restaurant 2>/dev/null || true
     docker rm -f arka-restaurant 2>/dev/null || true
 
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
+
     echo "[i] Starting Arka container on port $PORT..."
     cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
 services:
@@ -1156,6 +1044,8 @@ services:
     restart: always
     environment:
       - PORT=${PORT}
+      - HOST_IP=${SERVER_IP}
+      - HOST_HOSTNAME=${HOST_NAME}
     ports:
       - "0.0.0.0:${PORT}:${PORT}"
     command: node server.cjs
@@ -1183,6 +1073,8 @@ After=network.target
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 Environment=PORT=${PORT}
+Environment=HOST_IP=${SERVER_IP}
+Environment=HOST_HOSTNAME=${HOST_NAME}
 ExecStart=/usr/bin/node ${INSTALL_DIR}/server.cjs
 Restart=always
 RestartSec=3
@@ -1193,8 +1085,6 @@ EOF
         systemctl daemon-reload
         systemctl enable --now arka-restaurant
     fi
-
-    SERVER_IP=$(hostname -I | awk '{print $1}')
 
     # Configure Domain & SSL if requested
     if [ -n "$DOMAIN" ]; then
@@ -1297,6 +1187,11 @@ update_app() {
             npm install --no-audit --no-fund && npm run build || true
         fi
 
+        local SERVER_IP
+        SERVER_IP=$(hostname -I | awk '{print $1}')
+        local HOST_NAME
+        HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
+
         echo "[+] Step 4/4: Restarting services on active port ${ACTIVE_PORT}..."
         if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
             cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
@@ -1308,6 +1203,8 @@ services:
     restart: always
     environment:
       - PORT=${ACTIVE_PORT}
+      - HOST_IP=${SERVER_IP}
+      - HOST_HOSTNAME=${HOST_NAME}
     ports:
       - "0.0.0.0:${ACTIVE_PORT}:${ACTIVE_PORT}"
     command: node server.cjs

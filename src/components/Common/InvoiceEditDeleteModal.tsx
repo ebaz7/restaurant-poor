@@ -23,7 +23,7 @@ import {
   updateJournalVoucherAndSyncBanks,
 } from '../../lib/db';
 import { formatCurrency } from '../../lib/utils';
-import { pushToCentralServer } from '../../lib/networkSync';
+import { pushToCentralServer, recordRecordDeletion, getNetworkNow } from '../../lib/networkSync';
 
 interface InvoiceEditDeleteModalProps {
   order: Order | null;
@@ -201,6 +201,7 @@ export default function InvoiceEditDeleteModal({
         total: newTotal,
         cashAmount: paymentMethod === 'cash' ? newTotal : 0,
         cardAmount: paymentMethod === 'card' ? newTotal : 0,
+        updatedAt: new Date(getNetworkNow()),
       };
 
       await db.orders.update(order.id, updatedOrderFields);
@@ -250,7 +251,7 @@ export default function InvoiceEditDeleteModal({
         });
       }
 
-      // Also sync and trigger callback
+      // Immediately push updated state to central server
       await pushToCentralServer(false);
       if (onOrderUpdated) onOrderUpdated();
       setIsEditing(false);
@@ -273,6 +274,9 @@ export default function InvoiceEditDeleteModal({
 
     setIsSaving(true);
     try {
+      // Explicitly record tombstone for this invoice so it never resurrects on refresh or from other clients
+      recordRecordDeletion('orders', order, order.id);
+
       // Remove order from IndexedDB
       await db.orders.delete(order.id);
 
@@ -283,6 +287,7 @@ export default function InvoiceEditDeleteModal({
           (v.referenceId === order.id && v.type === 'auto_sale') ||
           (v.description && v.description.includes(`#${order.invoiceNumber}`))
         ) {
+          recordRecordDeletion('journalVouchers', v, v.id);
           if (v.id) await deleteJournalVoucherAndSyncBanks(v.id);
         }
       }
