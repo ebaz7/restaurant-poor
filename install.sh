@@ -58,23 +58,48 @@ get_active_port() {
     echo "80"
 }
 
-get_public_port_display() {
-    local INTERNAL_PORT
-    INTERNAL_PORT=$(get_active_port)
+get_public_port() {
     if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+        echo "80"
+        return 0
+    fi
+    if [ -f "$INSTALL_DIR/data/public_port.conf" ]; then
+        local PP
+        PP=$(tr -d ' \r\n' < "$INSTALL_DIR/data/public_port.conf" 2>/dev/null)
+        if [ -n "$PP" ] && [[ "$PP" =~ ^[0-9]+$ ]]; then
+            echo "$PP"
+            return 0
+        fi
+    fi
+    get_active_port
+}
+
+get_public_port_display() {
+    local PUB_PORT
+    PUB_PORT=$(get_public_port)
+    if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ] || [ "$PUB_PORT" = "80" ]; then
         echo "80 (HTTP) / 443 (HTTPS)"
     else
-        echo "${INTERNAL_PORT}"
+        echo "${PUB_PORT}"
     fi
 }
 
 save_active_port() {
     local TARGET_PORT="$1"
+    mkdir -p "$INSTALL_DIR/data" /opt/arka-backup
     if [ -n "$TARGET_PORT" ] && [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
-        mkdir -p "$INSTALL_DIR/data" /opt/arka-backup
         echo "$TARGET_PORT" > "$INSTALL_DIR/data/server_port.conf"
         echo "$TARGET_PORT" > "/opt/arka-backup/server_port.conf"
         chmod 666 "$INSTALL_DIR/data/server_port.conf" 2>/dev/null || true
+    fi
+    if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ] || [ "$TARGET_PORT" = "80" ]; then
+        echo "80" > "$INSTALL_DIR/data/public_port.conf"
+        echo "80" > "/opt/arka-backup/public_port.conf"
+        chmod 666 "$INSTALL_DIR/data/public_port.conf" 2>/dev/null || true
+    elif [ -n "$TARGET_PORT" ] && [[ "$TARGET_PORT" =~ ^[0-9]+$ ]]; then
+        echo "$TARGET_PORT" > "$INSTALL_DIR/data/public_port.conf"
+        echo "$TARGET_PORT" > "/opt/arka-backup/public_port.conf"
+        chmod 666 "$INSTALL_DIR/data/public_port.conf" 2>/dev/null || true
     fi
     local HOST_IPS
     HOST_IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^172\.' | grep -v '^127\.' | tr '\n' ' ' | xargs)
@@ -82,7 +107,6 @@ save_active_port() {
         HOST_IPS=$(hostname -I 2>/dev/null | awk '{print $1}')
     fi
     if [ -n "$HOST_IPS" ]; then
-        mkdir -p "$INSTALL_DIR/data"
         echo "$HOST_IPS" > "$INSTALL_DIR/data/server_host_ip.conf"
         chmod 666 "$INSTALL_DIR/data/server_host_ip.conf" 2>/dev/null || true
     fi
@@ -105,16 +129,16 @@ print_banner() {
     clear
     local SERVER_IP
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    local ACTIVE_PORT
-    ACTIVE_PORT=$(get_active_port 2>/dev/null || echo "80")
+    local PUB_PORT
+    PUB_PORT=$(get_public_port 2>/dev/null || echo "80")
     echo "================================================================"
     echo "   Arka Restaurant Management Software - Linux Installer & Manager"
     echo "   Networked Central Server, Multi-Terminal Live Sync & SSL"
     if [ -n "$SERVER_IP" ]; then
-        if [ -f "/etc/nginx/sites-enabled/arka-restaurant.conf" ] || [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ] || [ "$ACTIVE_PORT" = "80" ]; then
+        if [ "$PUB_PORT" = "80" ] || [ "$PUB_PORT" = "443" ]; then
             echo "   Active Server URL: http://${SERVER_IP} (Port 80 / 443)"
         else
-            echo "   Active Server URL: http://${SERVER_IP}:${ACTIVE_PORT}"
+            echo "   Active Server URL: http://${SERVER_IP}:${PUB_PORT}"
         fi
     fi
     echo "================================================================"
@@ -153,8 +177,8 @@ EOF
 
 create_server_script() {
     mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/data/backups"
-    # If the repository already contains the full v3 server.cjs with deletedRecordsV3 and selfHealCentralDbOnStartup, keep it!
-    if [ -f "$INSTALL_DIR/server.cjs" ] && grep -q "deletedRecordsV3" "$INSTALL_DIR/server.cjs" && grep -q "selfHealCentralDbOnStartup" "$INSTALL_DIR/server.cjs"; then
+    # If the repository already contains the full v3 server.cjs with sanitizeCentralDbOnStartup, keep it!
+    if [ -f "$INSTALL_DIR/server.cjs" ] && grep -q "sanitizeCentralDbOnStartup" "$INSTALL_DIR/server.cjs"; then
         echo "[v] Authoritative server.cjs verified in $INSTALL_DIR/server.cjs"
         return 0
     fi
@@ -219,6 +243,13 @@ try {
 function detectPublicPort(req) {
   if (PORT === 80 || PORT === 443) return PORT;
   try {
+    const pubPortFile = path.join(DATA_DIR, 'public_port.conf');
+    if (fs.existsSync(pubPortFile)) {
+      const pp = parseInt(fs.readFileSync(pubPortFile, 'utf8').trim(), 10);
+      if (!isNaN(pp) && pp > 0) return pp;
+    }
+  } catch (e) {}
+  try {
     if (
       os.platform() === 'linux' &&
       (fs.existsSync('/etc/nginx/sites-enabled/arka-restaurant.conf') ||
@@ -227,9 +258,9 @@ function detectPublicPort(req) {
       return 80;
     }
   } catch (e) {}
-  if (req && req.headers && req.headers.host) {
-    const h = String(req.headers.host);
-    if (!h.includes(':')) return 80;
+  if (req && req.headers) {
+    if (req.headers['x-forwarded-proto'] || req.headers['x-real-ip']) return 80;
+    if (req.headers.host && !String(req.headers.host).includes(':')) return 80;
   }
   return PORT;
 }
@@ -337,7 +368,20 @@ function getCanonicalKey(tableName, item) {
   }
 }
 
+const LEGACY_DEMO_BANK_CARDS = new Set(['6104-3378-9012-3456', '6219-8610-4455-6677', '6037-9975-1122-3344']);
+const LEGACY_DEMO_BANK_IBANS = new Set(['IR450120000000004589123456', 'IR820560082180008210987654', 'IR110170000000109988776001']);
+const LEGACY_DEMO_BANK_NAMES = new Set(['بانک ملت (کارتخوان ۱)', 'بانک سامان (کارتخوان ۲)', 'بانک ملی (حساب چک و جاری)']);
+
+function isLegacyDemoBank(item) {
+  if (!item || typeof item !== 'object') return false;
+  const card = item.cardNumber ? String(item.cardNumber).trim() : '';
+  const iban = item.iban ? String(item.iban).trim() : '';
+  const name = item.bankName ? String(item.bankName).trim() : '';
+  return (card && LEGACY_DEMO_BANK_CARDS.has(card)) || (iban && LEGACY_DEMO_BANK_IBANS.has(iban)) || (name && LEGACY_DEMO_BANK_NAMES.has(name));
+}
+
 function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
+  if (tableName === 'bankAccounts' && isLegacyDemoBank(item)) return true;
   const tableDel = deletedMap && deletedMap[tableName];
   if (!tableDel || typeof tableDel !== 'object') return false;
   let maxDelTs = 0;
@@ -436,7 +480,7 @@ function mergeDatabaseObjects(existing, incoming) {
   return result;
 }
 
-(function selfHealCentralDbOnStartup() {
+(function sanitizeCentralDbOnStartup() {
   if (!fs.existsSync(DB_FILE)) return;
   try {
     const currentDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -447,30 +491,31 @@ function mergeDatabaseObjects(existing, incoming) {
       delete currentDb.deletedRecords;
       modified = true;
     }
-    const backupCandidates = [
-      path.join(DATA_DIR, 'latest_db_backup.json'),
-      path.join(BACKUP_DIR, 'central_db_autobackup.json'),
-    ];
-    try {
-      if (fs.existsSync('/opt/arka-backup')) {
-        const files = fs.readdirSync('/opt/arka-backup').filter((f) => f.startsWith('arka_db_') && f.endsWith('.json')).sort().reverse();
-        for (const f of files.slice(0, 5)) backupCandidates.push(path.join('/opt/arka-backup', f));
+    if (Array.isArray(currentDb.bankAccounts)) {
+      const filteredBanks = [];
+      if (!currentDb.deletedRecordsV3 || typeof currentDb.deletedRecordsV3 !== 'object') currentDb.deletedRecordsV3 = {};
+      if (!currentDb.deletedRecordsV3.bankAccounts) currentDb.deletedRecordsV3.bankAccounts = {};
+      for (const b of currentDb.bankAccounts) {
+        if (isLegacyDemoBank(b)) {
+          modified = true;
+          if (b.id !== undefined && b.id !== null) {
+            currentDb.deletedRecordsV3.bankAccounts[String(b.id)] = nowTs;
+            currentDb.deletedRecordsV3.bankAccounts['id:' + b.id] = nowTs;
+          }
+          if (b.bankName) currentDb.deletedRecordsV3.bankAccounts['bank:' + b.bankName] = nowTs;
+        } else {
+          filteredBanks.push(b);
+        }
       }
-    } catch (e) {}
+      if (filteredBanks.length !== currentDb.bankAccounts.length) currentDb.bankAccounts = filteredBanks;
+    }
     for (const table of ALL_SYNC_TABLES) {
-      if (table === 'settings') continue;
-      const curArr = Array.isArray(currentDb[table]) ? currentDb[table] : [];
-      if (curArr.length === 0) {
-        for (const candPath of backupCandidates) {
-          if (!fs.existsSync(candPath)) continue;
-          try {
-            const candObj = JSON.parse(fs.readFileSync(candPath, 'utf8'));
-            if (candObj && Array.isArray(candObj[table]) && candObj[table].length > 0) {
-              currentDb[table] = candObj[table].map((r) => (r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r));
-              modified = true;
-              break;
-            }
-          } catch (e) {}
+      if (Array.isArray(currentDb[table])) {
+        for (const rec of currentDb[table]) {
+          if (rec && typeof rec === 'object' && !rec._updatedAtMs) {
+            rec._updatedAtMs = nowTs;
+            modified = true;
+          }
         }
       }
     }
@@ -1079,13 +1124,15 @@ show_network_sync_status() {
     echo "[+] Central Server & Network Terminal Sync Status"
     local SERVER_IP
     SERVER_IP=$(hostname -I | awk '{print $1}')
-    local ACTIVE_PORT
-    ACTIVE_PORT=$(get_active_port)
+    local PUBLIC_PORT
+    PUBLIC_PORT=$(get_public_port)
+    local PUBLIC_PORT_DISPLAY
+    PUBLIC_PORT_DISPLAY=$(get_public_port_display)
     local DB_FILE="$INSTALL_DIR/data/central_db.json"
 
     echo "----------------------------------------------------------------"
     echo "[v] Central Server IP:          $SERVER_IP"
-    echo "[v] Active Server Port:         $ACTIVE_PORT"
+    echo "[v] Active Server Port:         $PUBLIC_PORT_DISPLAY"
     echo "[v] Service Status:             $(systemctl is-active arka-restaurant 2>/dev/null || docker ps -f name=arka-restaurant --format '{{.Status}}')"
     if [ -f "$DB_FILE" ]; then
         local SIZE
@@ -1099,11 +1146,19 @@ show_network_sync_status() {
     fi
     echo "----------------------------------------------------------------"
     echo "Client Connection URLs for LAN Terminals & Mobile Waiters:"
-    echo "1. Any PC / Laptop on LAN:      http://${SERVER_IP}:${ACTIVE_PORT}"
-    echo "2. Cashier 2 / Mobile Devices:  http://${SERVER_IP}:${ACTIVE_PORT}"
+    if [ "$PUBLIC_PORT" = "80" ] || [ "$PUBLIC_PORT" = "443" ]; then
+        echo "1. Any PC / Laptop on LAN:      http://${SERVER_IP}"
+        echo "2. Cashier 2 / Mobile Devices:  http://${SERVER_IP}"
+    else
+        echo "1. Any PC / Laptop on LAN:      http://${SERVER_IP}:${PUBLIC_PORT}"
+        echo "2. Cashier 2 / Mobile Devices:  http://${SERVER_IP}:${PUBLIC_PORT}"
+    fi
     if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
         local DOMAIN
         DOMAIN=$(grep -m1 "server_name" /etc/nginx/sites-available/arka-restaurant.conf | awk '{print $2}' | tr -d ';')
+        if [ "$DOMAIN" = "_" ]; then
+            DOMAIN=$(grep -m1 "server_name" /etc/nginx/sites-available/arka-restaurant.conf | awk '{print $3}' | tr -d ';')
+        fi
         if [ -n "$DOMAIN" ]; then
             echo "3. Public Domain URL:           https://${DOMAIN}"
         fi
@@ -1307,13 +1362,90 @@ backup_app() {
     fi
 }
 
-update_app() {
-    print_banner
-    echo "[+] Starting Safe Update Process for Arka Restaurant..."
+update_app_post_pull() {
     local ACTIVE_PORT
     ACTIVE_PORT=$(get_active_port)
     local PUBLIC_PORT_DISPLAY
     PUBLIC_PORT_DISPLAY=$(get_public_port_display)
+
+    # Ensure server port and public port configuration is preserved
+    save_active_port "$ACTIVE_PORT"
+
+    # Safety Fallback: If central_db.json was lost or empty, restore latest json from /opt/arka-backup/
+    if [ ! -s "$INSTALL_DIR/data/central_db.json" ]; then
+        LATEST_JSON=$(ls -t /opt/arka-backup/arka_db_*.json 2>/dev/null | head -n1)
+        if [ -n "$LATEST_JSON" ] && [ -s "$LATEST_JSON" ]; then
+            echo "[v] Restoring central database from backup archive: $LATEST_JSON"
+            cp -f "$LATEST_JSON" "$INSTALL_DIR/data/central_db.json" 2>/dev/null || true
+        fi
+    fi
+
+    chmod -R 777 "$INSTALL_DIR/data" 2>/dev/null || true
+
+    echo "[+] Step 3/4: Updating production server script & building bundle..."
+    create_server_script
+
+    ensure_swap
+    if [ -f "$INSTALL_DIR/package.json" ]; then
+        apt-get install -y nodejs npm || true
+        export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+        npm config set registry https://registry.npmmirror.com
+        npm install --no-audit --no-fund && npm run build || true
+    fi
+
+    local SERVER_IP
+    SERVER_IP=$(hostname -I | awk '{print $1}')
+    local HOST_NAME
+    HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
+
+    echo "[+] Step 4/4: Restarting services on active port ${PUBLIC_PORT_DISPLAY}..."
+    # Ensure Nginx allows up to 100MB sync payloads (fixes HTTP 413 on large databases)
+    if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
+        if ! grep -q "client_max_body_size" /etc/nginx/sites-available/arka-restaurant.conf; then
+            sed -i '/server_name/a \    client_max_body_size 100M;' /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null || true
+        fi
+        nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+    fi
+
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+        cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
+services:
+  arka-app:
+    image: node:20-alpine
+    container_name: arka-restaurant
+    working_dir: /app
+    restart: always
+    environment:
+      - PORT=${ACTIVE_PORT}
+      - HOST_IP=${SERVER_IP}
+      - HOST_HOSTNAME=${HOST_NAME}
+    ports:
+      - "0.0.0.0:${ACTIVE_PORT}:${ACTIVE_PORT}"
+    command: node server.cjs
+    volumes:
+      - .:/app
+EOF
+    fi
+
+    # Restart BOTH systemd service (if present) and Docker container (if present) without short-circuiting!
+    if [ -f "/etc/systemd/system/arka-restaurant.service" ] || systemctl list-unit-files 2>/dev/null | grep -q "arka-restaurant.service"; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart arka-restaurant 2>/dev/null || true
+    fi
+    if command -v docker &> /dev/null && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "arka-restaurant"; then
+        docker compose up -d --force-recreate 2>/dev/null || docker-compose up -d --force-recreate 2>/dev/null || docker restart arka-restaurant 2>/dev/null || true
+    fi
+
+    echo "================================================================"
+    echo "[v] Update completed successfully on port ${PUBLIC_PORT_DISPLAY}!"
+    echo "[v] Pre-update backup saved & sent to configured bots."
+    echo "[i] Tip: In your browser, press Ctrl+F5 (or clear cache in mobile) to load the new version immediately."
+    echo "================================================================"
+}
+
+update_app() {
+    print_banner
+    echo "[+] Starting Safe Update Process for Arka Restaurant..."
     if [ -d "$INSTALL_DIR" ]; then
         echo "[+] Step 1/4: Creating automatic pre-update backup & sending to Bale/Telegram bots..."
         backup_app "Automatic Pre-Update Backup"
@@ -1334,79 +1466,23 @@ update_app() {
         cp -rf /tmp/arka_data_preserve/* "$INSTALL_DIR/data/" 2>/dev/null || true
         rm -rf /tmp/arka_data_preserve
 
-        # Ensure server port configuration is preserved
-        save_active_port "$ACTIVE_PORT"
-
-        # Safety Fallback: If central_db.json was lost or empty, restore latest json from /opt/arka-backup/
-        if [ ! -s "$INSTALL_DIR/data/central_db.json" ]; then
-            LATEST_JSON=$(ls -t /opt/arka-backup/arka_db_*.json 2>/dev/null | head -n1)
-            if [ -n "$LATEST_JSON" ] && [ -s "$LATEST_JSON" ]; then
-                echo "[v] Restoring central database from backup archive: $LATEST_JSON"
-                cp -f "$LATEST_JSON" "$INSTALL_DIR/data/central_db.json" 2>/dev/null || true
-            fi
+        chmod +x "$INSTALL_DIR/install.sh" 2>/dev/null || true
+        if [ -f "/root/install.sh" ]; then
+            cp -f "$INSTALL_DIR/install.sh" "/root/install.sh" 2>/dev/null || true
+            chmod +x "/root/install.sh" 2>/dev/null || true
+        fi
+        if [ -f "/usr/local/bin/arka" ]; then
+            cp -f "$INSTALL_DIR/install.sh" "/usr/local/bin/arka" 2>/dev/null || true
+            chmod +x "/usr/local/bin/arka" 2>/dev/null || true
         fi
 
-        chmod -R 777 "$INSTALL_DIR/data" 2>/dev/null || true
-
-        echo "[+] Step 3/4: Updating production server script & building bundle..."
-        create_server_script
-
-        ensure_swap
-        if [ -f "$INSTALL_DIR/package.json" ]; then
-            apt-get install -y nodejs npm || true
-            export ELECTRON_SKIP_BINARY_DOWNLOAD=1
-            npm config set registry https://registry.npmmirror.com
-            npm install --no-audit --no-fund && npm run build || true
+        # Re-execute the newly fetched install.sh so all new update logic & port 80 display take effect immediately!
+        if [ "${ARKA_REEXEC_UPDATE:-0}" != "1" ] && [ -f "$INSTALL_DIR/install.sh" ]; then
+            export ARKA_REEXEC_UPDATE=1
+            exec bash "$INSTALL_DIR/install.sh" --post-pull-update
         fi
 
-        local SERVER_IP
-        SERVER_IP=$(hostname -I | awk '{print $1}')
-        local HOST_NAME
-        HOST_NAME=$(hostname 2>/dev/null || echo "linux-server")
-
-        echo "[+] Step 4/4: Restarting services & updating Nginx limits (Public Port: ${PUBLIC_PORT_DISPLAY})..."
-        # Ensure Nginx allows up to 100MB sync payloads (fixes HTTP 413 on large databases)
-        if [ -f "/etc/nginx/sites-available/arka-restaurant.conf" ]; then
-            if ! grep -q "client_max_body_size" /etc/nginx/sites-available/arka-restaurant.conf; then
-                sed -i '/server_name/a \    client_max_body_size 100M;' /etc/nginx/sites-available/arka-restaurant.conf 2>/dev/null || true
-            fi
-            nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
-        fi
-
-        if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
-            cat <<EOF > "$INSTALL_DIR/docker-compose.yml"
-services:
-  arka-app:
-    image: node:20-alpine
-    container_name: arka-restaurant
-    working_dir: /app
-    restart: always
-    environment:
-      - PORT=${ACTIVE_PORT}
-      - HOST_IP=${SERVER_IP}
-      - HOST_HOSTNAME=${HOST_NAME}
-    ports:
-      - "0.0.0.0:${ACTIVE_PORT}:${ACTIVE_PORT}"
-    command: node server.cjs
-    volumes:
-      - .:/app
-EOF
-        fi
-
-        # Restart BOTH systemd service (if present) and Docker container (if present) without short-circuiting!
-        if [ -f "/etc/systemd/system/arka-restaurant.service" ] || systemctl list-unit-files 2>/dev/null | grep -q "arka-restaurant.service"; then
-            systemctl daemon-reload 2>/dev/null || true
-            systemctl restart arka-restaurant 2>/dev/null || true
-        fi
-        if command -v docker &> /dev/null && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "arka-restaurant"; then
-            docker compose up -d --force-recreate 2>/dev/null || docker-compose up -d --force-recreate 2>/dev/null || docker restart arka-restaurant 2>/dev/null || true
-        fi
-
-        echo "================================================================"
-        echo "[v] Update completed successfully! Active Public Port: ${PUBLIC_PORT_DISPLAY}"
-        echo "[v] Pre-update backup saved & sent to configured bots."
-        echo "[i] Tip: In your browser, press Ctrl+F5 (or clear cache in mobile) to load the new version immediately."
-        echo "================================================================"
+        update_app_post_pull
     else
         echo "[!] Software is not installed."
     fi
@@ -1609,12 +1685,16 @@ build_tauri_windows_on_linux() {
     if [ -f "$ZIP_PATH" ]; then
         echo "    3. پکیج کامل فشرده (ZIP):              $ZIP_PATH"
     fi
-    local ACTIVE_PORT
-    ACTIVE_PORT=$(get_active_port)
+    local PUBLIC_PORT
+    PUBLIC_PORT=$(get_public_port)
+    local PORT_SUFFIX=":${PUBLIC_PORT}"
+    if [ "$PUBLIC_PORT" = "80" ] || [ "$PUBLIC_PORT" = "443" ]; then
+        PORT_SUFFIX=""
+    fi
     echo "----------------------------------------------------------------"
-    echo "[+] لینک دانلود مستقیم از طریق مرورگر (پورت فعال سرور: ${ACTIVE_PORT}):"
-    echo "    >>> http://${SERVER_IP}:${ACTIVE_PORT}/Arka-POS-Windows-Setup.exe <<<"
-    echo "    >>> http://${SERVER_IP}:${ACTIVE_PORT}/Arka-Tauri-Windows.zip <<<"
+    echo "[+] لینک دانلود مستقیم از طریق مرورگر (پورت فعال سرور: ${PUBLIC_PORT}):"
+    echo "    >>> http://${SERVER_IP}${PORT_SUFFIX}/Arka-POS-Windows-Setup.exe <<<"
+    echo "    >>> http://${SERVER_IP}${PORT_SUFFIX}/Arka-Tauri-Windows.zip <<<"
     echo "================================================================"
 
     # Also offer sending to configured Telegram / Bale bots if available
@@ -1629,6 +1709,12 @@ main_menu() {
     if [ "${1:-}" == "--build-tauri-win" ]; then
         build_tauri_windows_on_linux
         exit $?
+    fi
+    if [ "${1:-}" == "--post-pull-update" ]; then
+        cd "$INSTALL_DIR" 2>/dev/null || true
+        update_app_post_pull
+        export ARKA_REEXEC_UPDATE=0
+        read -p "[-] Press Enter to return to menu..."
     fi
     while true; do
         print_banner

@@ -357,6 +357,34 @@ export function recordRecordDeletion(tableName: string, objOrKey: any, primKey?:
   savePersistedDirtyState();
 }
 
+const LEGACY_DEMO_BANK_CARDS = new Set([
+  '6104-3378-9012-3456',
+  '6219-8610-4455-6677',
+  '6037-9975-1122-3344',
+]);
+const LEGACY_DEMO_BANK_IBANS = new Set([
+  'IR450120000000004589123456',
+  'IR820560082180008210987654',
+  'IR110170000000109988776001',
+]);
+const LEGACY_DEMO_BANK_NAMES = new Set([
+  'بانک ملت (کارتخوان ۱)',
+  'بانک سامان (کارتخوان ۲)',
+  'بانک ملی (حساب چک و جاری)',
+]);
+
+export function isLegacyDemoBankRecord(item: any): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const card = item.cardNumber ? String(item.cardNumber).trim() : '';
+  const iban = item.iban ? String(item.iban).trim() : '';
+  const name = item.bankName ? String(item.bankName).trim() : '';
+  return Boolean(
+    (card && LEGACY_DEMO_BANK_CARDS.has(card)) ||
+      (iban && LEGACY_DEMO_BANK_IBANS.has(iban)) ||
+      (name && LEGACY_DEMO_BANK_NAMES.has(name))
+  );
+}
+
 /**
  * Checks if a record has been deleted according to the tombstone map
  */
@@ -366,6 +394,9 @@ export function isRecordDeletedInMap(
   canonicalKey: string,
   deletedMap: Record<string, Record<string, number>>
 ): boolean {
+  if (tableName === 'bankAccounts' && isLegacyDemoBankRecord(item)) {
+    return true;
+  }
   const tableDel = deletedMap?.[tableName];
   if (!tableDel || typeof tableDel !== 'object') return false;
 
@@ -1546,7 +1577,12 @@ export async function fetchServerNetworkInfo(customUrl?: string): Promise<{
               : typeof window !== 'undefined' && !isTauri && Number(window.location.port) > 0
               ? Number(window.location.port)
               : 0;
-          const detectedPort = Number(data.publicPort || browserImplicitPort || data.port) || 4040;
+          const detectedPort =
+            Number(
+              browserImplicitPort === 80
+                ? 80
+                : data.publicPort || browserImplicitPort || data.port
+            ) || (isLinux ? 80 : 4040);
 
           if (typeof window !== 'undefined' && detectedPort) {
             try {

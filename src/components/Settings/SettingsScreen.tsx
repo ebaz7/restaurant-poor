@@ -213,8 +213,8 @@ export default function SettingsScreen() {
 
   const handleSaveCustomPort = async () => {
     const portNum = Number(serverCustomPort);
-    if (!portNum || portNum < 1024 || portNum > 65535) {
-      setPortNotice({ type: 'error', text: 'لطفاً شماره پورت معتبر بین ۱۰۲۴ تا ۶۵۵۳۵ وارد فرمایید.' });
+    if (!portNum || (portNum !== 80 && portNum !== 443 && (portNum < 1024 || portNum > 65535))) {
+      setPortNotice({ type: 'error', text: 'لطفاً شماره پورت معتبر (۸۰، ۴۴۳ یا بین ۱۰۲۴ تا ۶۵۵۳۵) وارد فرمایید.' });
       return;
     }
 
@@ -223,11 +223,15 @@ export default function SettingsScreen() {
     try {
       const res = await updateServerPort(portNum);
       if (res.ok) {
+        const portSuffix = portNum === 80 || portNum === 443 ? '' : `:${portNum}`;
         setPortNotice({ type: 'success', text: `پورت سرور با موفقیت روی ${portNum} تنظیم گردید.` });
         setNetworkInfo((prev) => ({
           ...prev,
           port: portNum,
-          primaryUrl: prev.localIps && prev.localIps.length > 0 ? `http://${prev.localIps[0]}:${portNum}` : `http://localhost:${portNum}`,
+          primaryUrl:
+            prev.localIps && prev.localIps.length > 0
+              ? `http://${prev.localIps[0]}${portSuffix}`
+              : `http://localhost${portSuffix}`,
         }));
       } else {
         setPortNotice({ type: 'error', text: res.error || 'خطا در ثبت پورت سرور.' });
@@ -242,12 +246,14 @@ export default function SettingsScreen() {
   const handleSelectPrimaryIp = (ip: string) => {
     saveServerLanIpPreference(ip);
     const port = Number(serverCustomPort) || networkInfo.port || 4040;
+    const portSuffix = port === 80 || port === 443 ? '' : `:${port}`;
+    const fullUrl = `http://${ip}${portSuffix}`;
     setNetworkInfo((prev) => ({
       ...prev,
-      primaryUrl: `http://${ip}:${port}`,
+      primaryUrl: fullUrl,
     }));
-    handleCopyText(`http://${ip}:${port}`);
-    showNotice('success', `آدرس اصلی سرور روی http://${ip}:${port} تنظیم شد و در کلیپ‌بورد کپی گردید.`);
+    handleCopyText(fullUrl);
+    showNotice('success', `آدرس اصلی سرور روی ${fullUrl} تنظیم شد و در کلیپ‌بورد کپی گردید.`);
   };
 
   const handleSaveManualLanIp = () => {
@@ -258,11 +264,12 @@ export default function SettingsScreen() {
     }
     saveServerLanIpPreference(cleanIp);
     const port = Number(serverCustomPort) || networkInfo.port || 4040;
+    const portSuffix = port === 80 || port === 443 ? '' : `:${port}`;
     const newIps = Array.from(new Set([cleanIp, ...(networkInfo.localIps || [])]));
     setNetworkInfo((prev) => ({
       ...prev,
       localIps: newIps,
-      primaryUrl: `http://${cleanIp}:${port}`,
+      primaryUrl: `http://${cleanIp}${portSuffix}`,
     }));
     showNotice('success', `آی‌پی سرور روی ${cleanIp} با موفقیت ثبت شد.`);
   };
@@ -1088,66 +1095,147 @@ pause
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50">
-      {/* Compact Header + Tab Switcher */}
-      <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 sm:py-3 shrink-0">
-        <div className="max-w-5xl mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-          <div>
-            <h1 className="text-sm sm:text-xl font-extrabold text-slate-900">
-              تنظیمات سیستم، دسترسی کاربران، بکاپ و شبکه
-            </h1>
-            <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
-              مدیریت کاربران و دسترسی بخش‌ها، واحد پول، سلف سرویس، بات بله/تلگرام و خام‌سازی ۱۰۰٪ نرم‌افزار
-            </p>
+      {/* Prominent Header + Full-Width 4-Column Tab Switcher */}
+      <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-3 sm:py-4 shrink-0 shadow-2xs">
+        <div className="max-w-5xl mx-auto flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <div>
+              <h1 className="text-base sm:text-xl font-extrabold text-slate-900">
+                تنظیمات سیستم، دسترسی کاربران، بکاپ و شبکه
+              </h1>
+              <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
+                جهت جابجایی بین بخش‌های مختلف تنظیمات، یکی از ۴ کارت زیر را انتخاب نمایید:
+              </p>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl overflow-x-auto no-scrollbar w-full lg:w-auto">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3 w-full">
             <button
               type="button"
               onClick={() => setActiveTab('network')}
-              className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`p-2.5 sm:p-3 rounded-xl border-2 text-right flex items-center gap-2.5 transition-all cursor-pointer ${
                 activeTab === 'network'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-700 hover:bg-white/60'
+                  ? 'bg-emerald-600 border-emerald-600 text-white shadow-md shadow-emerald-600/20'
+                  : 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-emerald-50/60 hover:border-emerald-300'
               }`}
             >
-              <Wifi size={14} />
-              <span>۱. شبکه، IP سرور و پرینترها</span>
+              <div
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                  activeTab === 'network'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-emerald-100 text-emerald-700'
+                }`}
+              >
+                <Wifi size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs sm:text-sm font-extrabold truncate">
+                  ۱. شبکه و پرینترها
+                </div>
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${
+                    activeTab === 'network' ? 'text-emerald-100' : 'text-slate-500'
+                  }`}
+                >
+                  IP سرور، پورت و چاپگرها
+                </div>
+              </div>
             </button>
+
             <button
               type="button"
               onClick={() => setActiveTab('general')}
-              className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`p-2.5 sm:p-3 rounded-xl border-2 text-right flex items-center gap-2.5 transition-all cursor-pointer ${
                 activeTab === 'general'
-                  ? 'bg-white text-blue-700 shadow-xs'
-                  : 'text-slate-600'
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-600/20'
+                  : 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-blue-50/60 hover:border-blue-300'
               }`}
             >
-              <Store size={14} />
-              <span>۲. مشخصات فروشگاه و سلف</span>
+              <div
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                  activeTab === 'general'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-blue-100 text-blue-700'
+                }`}
+              >
+                <Store size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs sm:text-sm font-extrabold truncate">
+                  ۲. فروشگاه و سلف
+                </div>
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${
+                    activeTab === 'general' ? 'text-blue-100' : 'text-slate-500'
+                  }`}
+                >
+                  مشخصات، واحد پول و فیش
+                </div>
+              </div>
             </button>
+
             <button
               type="button"
               onClick={() => setActiveTab('users')}
-              className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`p-2.5 sm:p-3 rounded-xl border-2 text-right flex items-center gap-2.5 transition-all cursor-pointer ${
                 activeTab === 'users'
-                  ? 'bg-white text-teal-700 shadow-xs'
-                  : 'text-slate-600'
+                  ? 'bg-teal-600 border-teal-600 text-white shadow-md shadow-teal-600/20'
+                  : 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-teal-50/60 hover:border-teal-300'
               }`}
             >
-              <Shield size={14} />
-              <span>۳. کاربران و سطح دسترسی</span>
+              <div
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                  activeTab === 'users'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-teal-100 text-teal-700'
+                }`}
+              >
+                <Shield size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs sm:text-sm font-extrabold truncate">
+                  ۳. کاربران و دسترسی
+                </div>
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${
+                    activeTab === 'users' ? 'text-teal-100' : 'text-slate-500'
+                  }`}
+                >
+                  صندوق‌داران، رمزها و مجوزها
+                </div>
+              </div>
             </button>
+
             <button
               type="button"
               onClick={() => setActiveTab('backup')}
-              className={`px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`p-2.5 sm:p-3 rounded-xl border-2 text-right flex items-center gap-2.5 transition-all cursor-pointer ${
                 activeTab === 'backup'
-                  ? 'bg-white text-indigo-700 shadow-xs'
-                  : 'text-slate-600'
+                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-indigo-50/60 hover:border-indigo-300'
               }`}
             >
-              <Bot size={14} />
-              <span>۴. بات بله/تلگرام و بکاپ</span>
+              <div
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                  activeTab === 'backup'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-indigo-100 text-indigo-700'
+                }`}
+              >
+                <Bot size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs sm:text-sm font-extrabold truncate">
+                  ۴. بکاپ و بات بله/تلگرام
+                </div>
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${
+                    activeTab === 'backup' ? 'text-indigo-100' : 'text-slate-500'
+                  }`}
+                >
+                  پشتیبان‌گیری، بازیابی و خام‌سازی
+                </div>
+              </div>
             </button>
           </div>
         </div>
@@ -1307,9 +1395,12 @@ pause
                         {networkInfo.localIps && networkInfo.localIps.length > 0 ? (
                           <div className="flex flex-wrap gap-1.5">
                             {networkInfo.localIps.map((ip) => {
-                              const port = networkInfo.port || serverCustomPort || 4040;
-                              const fullUrl = `http://${ip}:${port}`;
-                              const isCurrentPrimary = networkInfo.primaryUrl === fullUrl;
+                              const port = Number(networkInfo.port || serverCustomPort || 4040);
+                              const portSuffix = port === 80 || port === 443 ? '' : `:${port}`;
+                              const fullUrl = `http://${ip}${portSuffix}`;
+                              const isCurrentPrimary =
+                                networkInfo.primaryUrl === fullUrl ||
+                                networkInfo.primaryUrl === `http://${ip}:${port}`;
                               return (
                                 <button
                                   key={ip}
@@ -1325,7 +1416,9 @@ pause
                                 >
                                   {isCurrentPrimary && <Check size={12} />}
                                   <span>{ip}</span>
-                                  <span className={`text-[10px] font-sans ${isCurrentPrimary ? 'text-emerald-100' : 'text-emerald-600'}`}>(:{port})</span>
+                                  <span className={`text-[10px] font-sans ${isCurrentPrimary ? 'text-emerald-100' : 'text-emerald-600'}`}>
+                                    ({port === 80 ? 'پورت ۸۰' : `:${port}`})
+                                  </span>
                                 </button>
                               );
                             })}

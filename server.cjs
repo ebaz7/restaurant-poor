@@ -48,6 +48,13 @@ try {
 function detectPublicPort(req) {
   if (PORT === 80 || PORT === 443) return PORT;
   try {
+    const pubPortFile = path.join(DATA_DIR, 'public_port.conf');
+    if (fs.existsSync(pubPortFile)) {
+      const pp = parseInt(fs.readFileSync(pubPortFile, 'utf8').trim(), 10);
+      if (!isNaN(pp) && pp > 0) return pp;
+    }
+  } catch (e) {}
+  try {
     if (
       os.platform() === 'linux' &&
       (fs.existsSync('/etc/nginx/sites-enabled/arka-restaurant.conf') ||
@@ -56,9 +63,14 @@ function detectPublicPort(req) {
       return 80;
     }
   } catch (e) {}
-  if (req && req.headers && req.headers.host) {
-    const h = String(req.headers.host);
-    if (!h.includes(':')) return 80;
+  if (req && req.headers) {
+    if (req.headers['x-forwarded-proto'] || req.headers['x-real-ip']) {
+      return 80;
+    }
+    if (req.headers.host) {
+      const h = String(req.headers.host);
+      if (!h.includes(':')) return 80;
+    }
   }
   return PORT;
 }
@@ -270,8 +282,36 @@ if (!fs.existsSync(DB_FILE)) {
   }
 }
 
-// Self-heal central_db.json on startup: purge poisoned legacy deletedRecords and recover any wiped tables from backups
-(function selfHealCentralDbOnStartup() {
+const LEGACY_DEMO_BANK_CARDS = new Set([
+  '6104-3378-9012-3456',
+  '6219-8610-4455-6677',
+  '6037-9975-1122-3344',
+]);
+const LEGACY_DEMO_BANK_IBANS = new Set([
+  'IR450120000000004589123456',
+  'IR820560082180008210987654',
+  'IR110170000000109988776001',
+]);
+const LEGACY_DEMO_BANK_NAMES = new Set([
+  'بانک ملت (کارتخوان ۱)',
+  'بانک سامان (کارتخوان ۲)',
+  'بانک ملی (حساب چک و جاری)',
+]);
+
+function isLegacyDemoBank(item) {
+  if (!item || typeof item !== 'object') return false;
+  const card = item.cardNumber ? String(item.cardNumber).trim() : '';
+  const iban = item.iban ? String(item.iban).trim() : '';
+  const name = item.bankName ? String(item.bankName).trim() : '';
+  return (
+    (card && LEGACY_DEMO_BANK_CARDS.has(card)) ||
+    (iban && LEGACY_DEMO_BANK_IBANS.has(iban)) ||
+    (name && LEGACY_DEMO_BANK_NAMES.has(name))
+  );
+}
+
+// Sanitize central_db.json on startup: purge legacy deletedRecords and strip the 3 unauthorized demo banks
+(function sanitizeCentralDbOnStartup() {
   if (!fs.existsSync(DB_FILE)) return;
   try {
     const currentDb = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -284,42 +324,30 @@ if (!fs.existsSync(DB_FILE)) {
       modified = true;
     }
 
-    // Collect candidate backup files to recover any accidentally emptied tables (e.g. bankAccounts, categories, menuItems)
-    const backupCandidates = [
-      path.join(DATA_DIR, 'latest_db_backup.json'),
-      path.join(BACKUP_DIR, 'central_db_autobackup.json'),
-    ];
-    try {
-      if (fs.existsSync('/opt/arka-backup')) {
-        const files = fs
-          .readdirSync('/opt/arka-backup')
-          .filter((f) => f.startsWith('arka_db_') && f.endsWith('.json'))
-          .sort()
-          .reverse();
-        for (const f of files.slice(0, 5)) {
-          backupCandidates.push(path.join('/opt/arka-backup', f));
+    if (Array.isArray(currentDb.bankAccounts)) {
+      const filteredBanks = [];
+      if (!currentDb.deletedRecordsV3 || typeof currentDb.deletedRecordsV3 !== 'object') {
+        currentDb.deletedRecordsV3 = {};
+      }
+      if (!currentDb.deletedRecordsV3.bankAccounts) {
+        currentDb.deletedRecordsV3.bankAccounts = {};
+      }
+      for (const b of currentDb.bankAccounts) {
+        if (isLegacyDemoBank(b)) {
+          modified = true;
+          if (b.id !== undefined && b.id !== null) {
+            currentDb.deletedRecordsV3.bankAccounts[String(b.id)] = nowTs;
+            currentDb.deletedRecordsV3.bankAccounts['id:' + b.id] = nowTs;
+          }
+          if (b.bankName) {
+            currentDb.deletedRecordsV3.bankAccounts['bank:' + b.bankName] = nowTs;
+          }
+        } else {
+          filteredBanks.push(b);
         }
       }
-    } catch (e) {}
-
-    for (const table of ALL_SYNC_TABLES) {
-      if (table === 'settings') continue;
-      const curArr = Array.isArray(currentDb[table]) ? currentDb[table] : [];
-      if (curArr.length === 0) {
-        for (const candPath of backupCandidates) {
-          if (!fs.existsSync(candPath)) continue;
-          try {
-            const candObj = JSON.parse(fs.readFileSync(candPath, 'utf8'));
-            if (candObj && Array.isArray(candObj[table]) && candObj[table].length > 0) {
-              currentDb[table] = candObj[table].map((r) =>
-                r && typeof r === 'object' ? { ...r, _updatedAtMs: nowTs } : r
-              );
-              modified = true;
-              console.log(`[+] Self-healed table "${table}" (${candObj[table].length} records) from ${candPath}`);
-              break;
-            }
-          } catch (e) {}
-        }
+      if (filteredBanks.length !== currentDb.bankAccounts.length) {
+        currentDb.bankAccounts = filteredBanks;
       }
     }
 
@@ -339,7 +367,7 @@ if (!fs.existsSync(DB_FILE)) {
       fs.writeFileSync(DB_FILE, JSON.stringify(currentDb, null, 2), 'utf8');
     }
   } catch (e) {
-    console.warn('[-] Startup self-heal check error:', e.message);
+    console.warn('[-] Startup sanitize check error:', e.message);
   }
 })();
 
@@ -482,6 +510,9 @@ function getCanonicalKey(tableName, item) {
 }
 
 function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
+  if (tableName === 'bankAccounts' && isLegacyDemoBank(item)) {
+    return true;
+  }
   const tableDel = deletedMap && deletedMap[tableName];
   if (!tableDel || typeof tableDel !== 'object') return false;
 
