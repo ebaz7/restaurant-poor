@@ -358,7 +358,49 @@ export async function mergeServerDataIntoDexie(serverData: any): Promise<{ hasUn
     }
   }
 
-  // 5. Raw Materials & Recipes & Kitchen Productions & Inventory
+  // 5. CashClosures: NEVER CLEAR! Check unsynced local closures and merge safely by dateLabel + closedAt
+  if (Array.isArray(serverData.cashClosures)) {
+    const serverClosures = parseDatesInArray(serverData.cashClosures);
+    const serverClosureKeys = new Set(
+      serverClosures
+        .filter(Boolean)
+        .map((cc) => String(cc.dateLabel || cc.id))
+    );
+
+    const localClosures = await db.cashClosures.toArray();
+    for (const lc of localClosures) {
+      if (lc) {
+        const key = String(lc.dateLabel || lc.id);
+        if (!serverClosureKeys.has(key)) {
+          hasUnsyncedLocalRecords = true;
+        }
+      }
+    }
+
+    for (const sc of serverClosures) {
+      if (!sc) continue;
+      try {
+        const existing = sc.dateLabel
+          ? await db.cashClosures.where('dateLabel').equals(sc.dateLabel).first()
+          : sc.id
+          ? await db.cashClosures.get(sc.id)
+          : undefined;
+        if (existing) {
+          await db.cashClosures.put({ ...sc, id: existing.id });
+        } else {
+          const conflict = sc.id ? await db.cashClosures.get(sc.id) : null;
+          if (conflict && conflict.dateLabel !== sc.dateLabel) {
+            const { id: _, ...ccWithoutId } = sc;
+            await db.cashClosures.add(ccWithoutId);
+          } else {
+            await db.cashClosures.put(sc);
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 6. Raw Materials & Recipes & Kitchen Productions & Inventory
   const safeBulkPutTable = async (tableName: string, dataArr: any[]) => {
     if (!Array.isArray(dataArr) || dataArr.length === 0) return;
     const table = (db as any)[tableName];
@@ -377,13 +419,12 @@ export async function mergeServerDataIntoDexie(serverData: any): Promise<{ hasUn
   await safeBulkPutTable('productionRecipes', serverData.productionRecipes);
   await safeBulkPutTable('kitchenProductions', serverData.kitchenProductions);
   await safeBulkPutTable('inventoryTransactions', serverData.inventoryTransactions);
-  await safeBulkPutTable('cashClosures', serverData.cashClosures);
   await safeBulkPutTable('bankAccounts', serverData.bankAccounts);
   await safeBulkPutTable('persons', serverData.persons);
   await safeBulkPutTable('cheques', serverData.cheques);
   await safeBulkPutTable('accounts', serverData.accounts);
 
-  // 6. Settings
+  // 7. Settings
   if (Array.isArray(serverData.settings) && serverData.settings.length > 0) {
     const s = serverData.settings[0];
     const localSetting = await db.settings.toCollection().first();
@@ -394,7 +435,7 @@ export async function mergeServerDataIntoDexie(serverData: any): Promise<{ hasUn
     }
   }
 
-  // 7. AppUsers
+  // 8. AppUsers
   if (Array.isArray(serverData.appUsers) && serverData.appUsers.length > 0) {
     const sanitizedUsers = parseDatesInArray(serverData.appUsers);
     for (const u of sanitizedUsers) {
@@ -444,7 +485,7 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
         currentSyncState.lastError = null;
         currentSyncState.isOnline = true;
 
-        // If local has new orders that server doesn't have, immediately push them so server records them!
+        // If local has new orders or closures that server doesn't have, immediately push them so server records them!
         if (mergeResult.hasUnsyncedLocalRecords) {
           setTimeout(() => {
             pushToCentralServer(false);
@@ -478,13 +519,18 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
     const jsonString = await exportDB();
     const data = JSON.parse(jsonString);
 
-    // SAFEGUARD: If local client database is empty (e.g., fresh PWA client on phone),
+    // SAFEGUARD: If local client database is completely empty (e.g., uninitialized browser),
     // NEVER push empty data to central server! Force a pull from central server instead!
     const catCount = Array.isArray(data?.categories) ? data.categories.length : 0;
     const menuCount = Array.isArray(data?.menuItems) ? data.menuItems.length : 0;
     const orderCount = Array.isArray(data?.orders) ? data.orders.length : 0;
-    if (catCount === 0 && menuCount === 0 && orderCount === 0 && !isInitialSeed) {
-      console.log('Local DB is empty. Pulling central database from server instead of pushing empty state...');
+    const closureCount = Array.isArray(data?.cashClosures) ? data.cashClosures.length : 0;
+    const voucherCount = Array.isArray(data?.journalVouchers) ? data.journalVouchers.length : 0;
+    const settingsCount = Array.isArray(data?.settings) ? data.settings.length : 0;
+    const totalMeaningful = catCount + menuCount + orderCount + closureCount + voucherCount + settingsCount;
+
+    if (totalMeaningful === 0 && !isInitialSeed) {
+      console.log('Local DB is completely empty. Pulling central database from server instead of pushing empty state...');
       await pullFromCentralServer(true);
       return true;
     }

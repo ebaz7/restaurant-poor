@@ -211,7 +211,9 @@ function hasDbData(obj) {
   const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
   const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
   const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
-  return (c + m + o + s) > 0;
+  const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
+  const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
+  return (c + m + o + s + cc + jv) > 0;
 }
 
 function mergeDatabaseObjects(existing, incoming) {
@@ -265,12 +267,12 @@ function mergeDatabaseObjects(existing, incoming) {
   const vouchersMap = new Map();
   if (Array.isArray(existing.journalVouchers)) {
     for (const v of existing.journalVouchers) {
-      if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+      if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
     }
   }
   if (Array.isArray(incoming.journalVouchers)) {
     for (const v of incoming.journalVouchers) {
-      if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+      if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
     }
   }
   result.journalVouchers = Array.from(vouchersMap.values());
@@ -293,26 +295,26 @@ function mergeDatabaseObjects(existing, incoming) {
   const kpMap = new Map();
   if (Array.isArray(existing.kitchenProductions)) {
     for (const kp of existing.kitchenProductions) {
-      if (kp) kpMap.set(kp.batchNumber || kp.id, kp);
+      if (kp) kpMap.set(String(kp.batchNumber || kp.id), kp);
     }
   }
   if (Array.isArray(incoming.kitchenProductions)) {
     for (const kp of incoming.kitchenProductions) {
-      if (kp) kpMap.set(kp.batchNumber || kp.id, kp);
+      if (kp) kpMap.set(String(kp.batchNumber || kp.id), kp);
     }
   }
   result.kitchenProductions = Array.from(kpMap.values());
 
-  // 6. Cash Closures: merge by closedAt or id
+  // 6. Cash Closures: merge by dateLabel or closedAt or id
   const ccMap = new Map();
   if (Array.isArray(existing.cashClosures)) {
     for (const cc of existing.cashClosures) {
-      if (cc) ccMap.set(cc.id || cc.closedAt, cc);
+      if (cc) ccMap.set(String(cc.dateLabel || cc.closedAt || cc.id), cc);
     }
   }
   if (Array.isArray(incoming.cashClosures)) {
     for (const cc of incoming.cashClosures) {
-      if (cc) ccMap.set(cc.id || cc.closedAt, cc);
+      if (cc) ccMap.set(String(cc.dateLabel || cc.closedAt || cc.id), cc);
     }
   }
   result.cashClosures = Array.from(ccMap.values());

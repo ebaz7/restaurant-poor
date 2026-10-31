@@ -180,12 +180,12 @@ function centralServerDbPlugin(): Plugin {
     const vouchersMap = new Map();
     if (Array.isArray(existing.journalVouchers)) {
       for (const v of existing.journalVouchers) {
-        if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+        if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
       }
     }
     if (Array.isArray(incoming.journalVouchers)) {
       for (const v of incoming.journalVouchers) {
-        if (v) vouchersMap.set(v.voucherNumber || v.id, v);
+        if (v) vouchersMap.set(String(v.voucherNumber || v.id), v);
       }
     }
     result.journalVouchers = Array.from(vouchersMap.values());
@@ -194,10 +194,20 @@ function centralServerDbPlugin(): Plugin {
     const mergeTable = (key: string) => {
       const map = new Map();
       if (Array.isArray(existing[key])) {
-        for (const item of existing[key]) if (item) map.set(item.id || item.code || item.name || item.batchNumber, item);
+        for (const item of existing[key]) {
+          if (item) {
+            const k = String(item.dateLabel || item.closedAt || item.batchNumber || item.id || item.code || item.name);
+            map.set(k, item);
+          }
+        }
       }
       if (Array.isArray(incoming[key])) {
-        for (const item of incoming[key]) if (item) map.set(item.id || item.code || item.name || item.batchNumber, item);
+        for (const item of incoming[key]) {
+          if (item) {
+            const k = String(item.dateLabel || item.closedAt || item.batchNumber || item.id || item.code || item.name);
+            map.set(k, item);
+          }
+        }
       }
       result[key] = Array.from(map.values());
     };
@@ -457,7 +467,9 @@ function centralServerDbPlugin(): Plugin {
                 const m = Array.isArray(obj.menuItems) ? obj.menuItems.length : 0;
                 const o = Array.isArray(obj.orders) ? obj.orders.length : 0;
                 const s = Array.isArray(obj.settings) ? obj.settings.length : 0;
-                return (c + m + o + s) > 0;
+                const cc = Array.isArray(obj.cashClosures) ? obj.cashClosures.length : 0;
+                const jv = Array.isArray(obj.journalVouchers) ? obj.journalVouchers.length : 0;
+                return (c + m + o + s + cc + jv) > 0;
               };
 
               let existingData: any = null;

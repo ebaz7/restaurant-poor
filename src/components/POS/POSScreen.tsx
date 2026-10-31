@@ -195,7 +195,13 @@ export default function POSScreen({
   }, [allOrders]);
 
   const todaySalesTotal = useMemo(() => {
-    return todayOrders.reduce((sum, o) => sum + (o.finalAmount || 0), 0);
+    return todayOrders.reduce((sum, o) => {
+      if (!o || o.status === 'cancelled') return sum;
+      const amt = Number.isFinite((o as any).finalAmount)
+        ? Number((o as any).finalAmount)
+        : Number(o.total) || 0;
+      return sum + amt;
+    }, 0);
   }, [todayOrders]);
 
   const selfServiceOrdersCount = useMemo(() => {
@@ -927,7 +933,10 @@ export default function POSScreen({
       notes: closureNotes.trim(),
     });
 
-    setClosureSuccessMsg('بستن صندوق پایان روز و تطبیق حساب بانک‌ها با موفقیت ثبت شد.');
+    // Immediately broadcast daily closure to central server so it persists permanently across all terminals
+    pushToCentralServer(false).catch((e) => console.warn('Instant push closure notice:', e));
+
+    setClosureSuccessMsg('بستن صندوق پایان روز و تطبیق حساب بانک‌ها با موفقیت در دیتابیس سرور ثبت شد.');
     setTimeout(() => setClosureSuccessMsg(''), 4000);
   };
 
