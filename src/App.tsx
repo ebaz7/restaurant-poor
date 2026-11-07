@@ -155,7 +155,6 @@ export default function App() {
   }, [
     settings?.centralLicenseInfo?.isActivated,
     syncState.serverUrl,
-    syncState.serverRevision,
   ]);
 
   useEffect(() => {

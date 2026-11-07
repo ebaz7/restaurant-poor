@@ -553,7 +553,7 @@ function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
   return maxDelTs >= itemTs;
 }
 
-function mergeDatabaseObjects(existing, incoming) {
+function mergeDatabaseObjects(existing, incoming, preferIncoming) {
   if (!existing || typeof existing !== 'object') return incoming || {};
   if (!incoming || typeof incoming !== 'object') return existing || {};
 
@@ -604,11 +604,22 @@ function mergeDatabaseObjects(existing, incoming) {
         if (prev) {
           const prevTs = getItemTimestampMs(prev);
           const incTs = getItemTimestampMs(item);
-          if (incTs >= prevTs) {
-            map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs, 1) });
+          if (preferIncoming || incTs >= prevTs) {
+            map.set(k, {
+              ...prev,
+              ...item,
+              _updatedAtMs: preferIncoming ? Math.max(incTs, prevTs + 1000, nowTs) : Math.max(incTs, prevTs, 1),
+            });
           }
         } else {
-          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
+          map.set(
+            k,
+            preferIncoming
+              ? { ...item, _updatedAtMs: Math.max(getItemTimestampMs(item), nowTs) }
+              : item._updatedAtMs
+              ? item
+              : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs }
+          );
         }
       }
     }
@@ -635,18 +646,21 @@ function mergeDatabaseObjects(existing, incoming) {
   mergeTableChronologically('accounts');
   mergeTableChronologically('appUsers');
 
-  // Settings: prefer newer settings based on timestamp
+  // Settings: always apply incoming settings edits from active client sync and preserve centralLicenseInfo
   if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
     if (Array.isArray(existing.settings) && existing.settings.length > 0) {
       const prevS = existing.settings[0];
       const incS = incoming.settings[0];
       const prevTs = getItemTimestampMs(prevS);
       const incTs = getItemTimestampMs(incS);
-      if (incTs >= prevTs) {
-        result.settings = [{ ...prevS, ...incS, centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo, _updatedAtMs: Math.max(incTs, prevTs, 1) }];
-      } else {
-        result.settings = existing.settings;
-      }
+      result.settings = [
+        {
+          ...prevS,
+          ...incS,
+          centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo,
+          _updatedAtMs: Math.max(incTs, prevTs, nowTs),
+        },
+      ];
     } else {
       result.settings = incoming.settings;
     }
@@ -974,17 +988,21 @@ const server = http.createServer((req, res) => {
               } catch (e) {}
 
               if (!forceOverwrite) {
-                finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data, false);
                 wasMerged = true;
               } else {
-                finalDataToSave = { ...payload.data, deletedRecordsV3: payload.data.deletedRecordsV3 || {} };
-                delete finalDataToSave.deletedRecords;
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data, true);
+                wasMerged = false;
               }
             }
 
+            const finalJson = JSON.stringify(finalDataToSave, null, 2);
             const tmpFile = DB_FILE + '.tmp';
-            fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
+            fs.writeFileSync(tmpFile, finalJson, 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
+            try {
+              fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), finalJson, 'utf8');
+            } catch (e) {}
             currentRev += forceOverwrite ? 100 : 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

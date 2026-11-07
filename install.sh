@@ -401,7 +401,7 @@ function isRecordDeletedInMap(tableName, item, canonicalKey, deletedMap) {
   return maxDelTs >= getItemTimestampMs(item);
 }
 
-function mergeDatabaseObjects(existing, incoming) {
+function mergeDatabaseObjects(existing, incoming, preferIncoming) {
   if (!existing || typeof existing !== 'object') return incoming || {};
   if (!incoming || typeof incoming !== 'object') return existing || {};
   const result = { ...existing };
@@ -445,9 +445,11 @@ function mergeDatabaseObjects(existing, incoming) {
         if (prev) {
           const prevTs = getItemTimestampMs(prev);
           const incTs = getItemTimestampMs(item);
-          if (incTs >= prevTs) map.set(k, { ...prev, ...item, _updatedAtMs: Math.max(incTs, prevTs, 1) });
+          if (preferIncoming || incTs >= prevTs) {
+            map.set(k, { ...prev, ...item, _updatedAtMs: preferIncoming ? Math.max(incTs, prevTs + 1000, nowTs) : Math.max(incTs, prevTs, 1) });
+          }
         } else {
-          map.set(k, item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
+          map.set(k, preferIncoming ? { ...item, _updatedAtMs: Math.max(getItemTimestampMs(item), nowTs) } : item._updatedAtMs ? item : { ...item, _updatedAtMs: getItemTimestampMs(item) || nowTs });
         }
       }
     }
@@ -472,8 +474,17 @@ function mergeDatabaseObjects(existing, incoming) {
   mergeTable('accounts');
   mergeTable('appUsers');
 
-  if (Array.isArray(incoming.settings) && incoming.settings.length > 0) result.settings = incoming.settings;
-  else if (Array.isArray(existing.settings)) result.settings = existing.settings;
+  if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
+    if (Array.isArray(existing.settings) && existing.settings.length > 0) {
+      const prevS = existing.settings[0];
+      const incS = incoming.settings[0];
+      const prevTs = getItemTimestampMs(prevS);
+      const incTs = getItemTimestampMs(incS);
+      result.settings = [{ ...prevS, ...incS, centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo, _updatedAtMs: Math.max(incTs, prevTs, nowTs) }];
+    } else {
+      result.settings = incoming.settings;
+    }
+  } else if (Array.isArray(existing.settings)) result.settings = existing.settings;
 
   result.version = incoming.version || existing.version || 8;
   result.exportedAt = new Date().toISOString();
@@ -610,6 +621,45 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (parsedUrl.pathname === '/api/license/status' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache, no-store' });
+      const licFile = path.join(DATA_DIR, 'central_license.json');
+      if (fs.existsSync(licFile)) {
+        try {
+          const lic = JSON.parse(fs.readFileSync(licFile, 'utf8'));
+          res.end(JSON.stringify({ ok: true, ...lic }));
+          return;
+        } catch (e) {}
+      }
+      res.end(JSON.stringify({ ok: true, isActivated: false }));
+      return;
+    }
+
+    if (parsedUrl.pathname === '/api/license/activate' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk.toString(); });
+      req.on('end', () => {
+        try {
+          const payload = JSON.parse(body || '{}');
+          const licFile = path.join(DATA_DIR, 'central_license.json');
+          const record = {
+            isActivated: true,
+            systemCode: payload.systemCode || '',
+            licenseKey: payload.licenseKey || '',
+            activatedAt: payload.activatedAt || new Date().toLocaleDateString('fa-IR'),
+            isEmergencyOverride: Boolean(payload.isEmergencyOverride),
+          };
+          fs.writeFileSync(licFile, JSON.stringify(record, null, 2), 'utf8');
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, ...record }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
     if (parsedUrl.pathname === '/api/db/sync' && req.method === 'POST') {
       let body = '';
       req.on('data', (chunk) => { body += chunk.toString(); });
@@ -638,16 +688,18 @@ const server = http.createServer((req, res) => {
                 fs.writeFileSync(path.join(BACKUP_DIR, 'central_db_autobackup.json'), JSON.stringify(existingData, null, 2), 'utf8');
               } catch (e) {}
               if (!forceOverwrite) {
-                finalDataToSave = mergeDatabaseObjects(existingData, payload.data);
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data, false);
                 wasMerged = true;
               } else {
-                finalDataToSave = { ...payload.data, deletedRecordsV3: payload.data.deletedRecordsV3 || {} };
-                delete finalDataToSave.deletedRecords;
+                finalDataToSave = mergeDatabaseObjects(existingData, payload.data, true);
+                wasMerged = false;
               }
             }
+            const finalJson = JSON.stringify(finalDataToSave, null, 2);
             const tmpFile = DB_FILE + '.tmp';
-            fs.writeFileSync(tmpFile, JSON.stringify(finalDataToSave, null, 2), 'utf8');
+            fs.writeFileSync(tmpFile, finalJson, 'utf8');
             fs.renameSync(tmpFile, DB_FILE);
+            try { fs.writeFileSync(path.join(DATA_DIR, 'latest_db_backup.json'), finalJson, 'utf8'); } catch (e) {}
             currentRev += forceOverwrite ? 100 : 1;
           }
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });

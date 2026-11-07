@@ -9,6 +9,7 @@ import {
   recordJournalVoucher,
   processOrderInventoryAndCOGS,
   getDefaultQuickBeverages,
+  normalizeQuickBeveragesForUnit,
   QuickBeverageOption,
 } from '../../lib/db';
 import {
@@ -100,11 +101,18 @@ export default function POSScreen({
   const defaultDelsterPrice = settings?.defaultDelsterPrice ?? (isRial ? 200000 : 20000);
 
   const quickBeveragesList = useMemo(() => {
+    const unit = settings?.currencyUnit || 'toman';
     if (settings?.quickBeverages && settings.quickBeverages.length > 0) {
-      return settings.quickBeverages.filter((b) => b.isActive !== false);
+      const { beverages } = normalizeQuickBeveragesForUnit(
+        settings.quickBeverages,
+        unit,
+        settings.selfServicePricePerPerson,
+        (settings as any)._quickBeveragesCurrencySynced
+      );
+      return beverages.filter((b) => b.isActive !== false);
     }
-    return getDefaultQuickBeverages(settings?.currencyUnit || 'toman');
-  }, [settings?.quickBeverages, settings?.currencyUnit]);
+    return getDefaultQuickBeverages(unit);
+  }, [settings?.quickBeverages, settings?.currencyUnit, settings?.selfServicePricePerPerson]);
 
   const bankAccounts = useLiveQuery(() => db.bankAccounts.toArray()) || [];
   const allOrders = useLiveQuery(() => db.orders.toArray()) || [];
@@ -229,17 +237,28 @@ export default function POSScreen({
 
   const activeTab = openTabs.find((t) => t.id === activeTabId) || openTabs[0];
 
-  // Sync default settings & default bank into initial tab
+  const lastAppliedSettingsPriceRef = useRef<number | undefined>(undefined);
+
+  // Sync default settings & default bank into tabs only when primitive values actually change
   useEffect(() => {
     if (settings || defaultBank) {
       const defaultMode = settings?.defaultInvoiceMode || 'self_service';
+      const settingsPrice = settings?.selfServicePricePerPerson;
+      const didSettingsPriceChange =
+        settingsPrice !== undefined && settingsPrice !== lastAppliedSettingsPriceRef.current;
+      if (didSettingsPriceChange) {
+        lastAppliedSettingsPriceRef.current = settingsPrice;
+      }
+
       setOpenTabs((prev) =>
         prev.map((tab) => ({
           ...tab,
           invoiceMode: settings?.lockSelfServiceMode ? 'self_service' : (tab.invoiceMode || defaultMode),
-          selfServiceUnitPrice: settings?.selfServicePricePerPerson ?? 0,
+          selfServiceUnitPrice: didSettingsPriceChange
+            ? (settingsPrice ?? 0)
+            : (tab.selfServiceUnitPrice || settingsPrice || 0),
           selfServiceGuests:
-            tab.selfServiceGuests === 0 && (settings?.selfServicePricePerPerson ?? 0) > 0
+            didSettingsPriceChange && tab.selfServiceGuests === 0 && (settingsPrice ?? 0) > 0
               ? 1
               : tab.selfServiceGuests,
           selfServiceDrinkNote: tab.selfServiceDrinkNote || settings?.selfServiceTitle || '',
@@ -247,7 +266,13 @@ export default function POSScreen({
         }))
       );
     }
-  }, [settings, defaultBank]);
+  }, [
+    settings?.selfServicePricePerPerson,
+    settings?.defaultInvoiceMode,
+    settings?.lockSelfServiceMode,
+    settings?.selfServiceTitle,
+    defaultBank?.id,
+  ]);
 
   useEffect(() => {
     if (categories?.length && !activeCategoryId) {
@@ -1425,9 +1450,29 @@ export default function POSScreen({
                       <input
                         type="number"
                         value={activeTab.selfServiceUnitPrice || ''}
-                        onChange={(e) =>
-                          updateActiveTab({ selfServiceUnitPrice: Math.max(0, Number(e.target.value)) })
-                        }
+                        onChange={(e) => {
+                          const newPrice = Math.max(0, Number(e.target.value));
+                          lastAppliedSettingsPriceRef.current = newPrice;
+                          updateActiveTab({ selfServiceUnitPrice: newPrice });
+                        }}
+                        onBlur={async () => {
+                          if (
+                            settings?.id &&
+                            activeTab.selfServiceUnitPrice !== undefined &&
+                            activeTab.selfServiceUnitPrice !== settings.selfServicePricePerPerson
+                          ) {
+                            const nextTs = Math.max(
+                              Date.now(),
+                              (Number((settings as any)._updatedAtMs) || 0) + 5000
+                            );
+                            lastAppliedSettingsPriceRef.current = activeTab.selfServiceUnitPrice;
+                            await db.settings.update(settings.id, {
+                              selfServicePricePerPerson: activeTab.selfServiceUnitPrice,
+                              _updatedAtMs: nextTs,
+                            } as any);
+                            pushToCentralServer(true).catch(() => {});
+                          }
+                        }}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-left outline-none focus:ring-2 focus:ring-teal-600"
                         dir="ltr"
                       />

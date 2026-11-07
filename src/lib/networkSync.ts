@@ -251,6 +251,8 @@ export function getRecordCanonicalKey(tableName: string, item: any, fallbackPrim
   }
   const effId = item.id !== undefined && item.id !== null ? item.id : fallbackPrimKey;
   switch (tableName) {
+    case 'settings':
+      return 'settings_singleton';
     case 'orders':
       return String(
         item.invoiceNumber !== undefined && item.invoiceNumber !== null
@@ -270,20 +272,20 @@ export function getRecordCanonicalKey(tableName: string, item: any, fallbackPrim
     case 'kitchenProductions':
       return String(item.batchNumber || effId || '');
     case 'bankAccounts':
-      return String(effId ?? item.bankName ?? item.cardNumber ?? '');
+      return String(effId ?? (item.bankName ? `${item.bankName}_${item.cardNumber || ''}` : ''));
     case 'categories':
     case 'menuItems':
       return String(effId ?? item.name ?? '');
     case 'persons':
-      return String(effId ?? item.name ?? '');
+      return String(effId ?? (item.name ? `${item.name}_${item.role || ''}` : ''));
     case 'cheques':
-      return String(effId ?? item.chequeNumber ?? '');
+      return String(item.chequeNumber || effId || '');
     case 'rawMaterials':
       return String(effId ?? item.name ?? '');
     case 'productionRecipes':
-      return String(effId ?? item.menuItemId ?? item.menuItemName ?? '');
+      return String(item.menuItemId || effId || item.menuItemName || '');
     case 'inventoryTransactions':
-      return String(effId ?? '');
+      return String(effId ?? `${item.materialId || ''}_${item.date || ''}_${item.type || ''}`);
     case 'appUsers':
       return String(item.username || effId || '');
     case 'accounts':
@@ -406,7 +408,13 @@ export function isRecordDeletedInMap(
   }
   if (item && typeof item === 'object') {
     if (item.id !== undefined && item.id !== null) {
-      maxDelTs = Math.max(maxDelTs, Number(tableDel[`id:${item.id}`]) || 0);
+      maxDelTs = Math.max(
+        maxDelTs,
+        Number(tableDel[`id:${item.id}`]) || 0,
+        tableName !== 'orders' && tableName !== 'journalVouchers'
+          ? Number(tableDel[String(item.id)]) || 0
+          : 0
+      );
     }
     if (item.invoiceNumber !== undefined && item.invoiceNumber !== null) {
       maxDelTs = Math.max(maxDelTs, Number(tableDel[String(item.invoiceNumber)]) || 0);
@@ -503,6 +511,8 @@ export function getSyncState(): SyncState {
 }
 
 let isApplyingRemoteChange = false;
+let isBulkMutationInProgress = false;
+let pendingForceOverwrite = false;
 let isPullInFlight = false;
 let isPushInFlight = false;
 let activePushPromise: Promise<boolean> | null = null;
@@ -510,6 +520,14 @@ let syncDebounceTimer: any = null;
 let pollTimer: any = null;
 let isInitialized = false;
 let crossTabChannel: BroadcastChannel | null = null;
+
+export function setBulkMutationInProgress(active: boolean) {
+  isBulkMutationInProgress = active;
+  if (active && syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null;
+  }
+}
 
 try {
   if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -642,7 +660,12 @@ export async function initNetworkSync(customServerUrl?: string) {
       table.hook('updating', function (modifications: any, primKey, obj) {
         if (!isApplyingRemoteChange && obj && typeof obj === 'object') {
           const prevTs = getRecordTimestampMs(obj);
-          const nextTs = Math.max(getNetworkNow(), prevTs + 1000);
+          const modTs = modifications && typeof modifications === 'object' ? getRecordTimestampMs(modifications) : 0;
+          const nextTs = Math.max(getNetworkNow(), Date.now(), prevTs + 1000, modTs + 1000);
+          if (modifications && typeof modifications === 'object') {
+            modifications._updatedAtMs = nextTs;
+            modifications.updatedAt = new Date(nextTs);
+          }
           const mergedObj = { ...obj, ...modifications, id: obj.id ?? primKey, _updatedAtMs: nextTs };
           clearTombstoneForCreatedOrUpdatedItem(tableName, mergedObj, primKey);
           markRecordDirty(tableName, mergedObj, primKey);
@@ -725,11 +748,11 @@ export async function initNetworkSync(customServerUrl?: string) {
  * If this client has pending unpushed changes, pushes them immediately.
  */
 async function checkServerRevision() {
-  if (isApplyingRemoteChange || isPullInFlight || isPushInFlight) return;
+  if (isApplyingRemoteChange || isBulkMutationInProgress || isPullInFlight || isPushInFlight) return;
 
   // If a local change is waiting to be pushed, push it first!
-  if (hasPendingPush) {
-    await pushToCentralServer(false);
+  if (hasPendingPush || pendingForceOverwrite) {
+    await pushToCentralServer(pendingForceOverwrite);
     return;
   }
 
@@ -873,15 +896,15 @@ export async function mergeServerDataIntoDexie(
           (lItem.id !== undefined && dirtySet.has(String(lItem.id))) ||
           (hasPendingPush && dirtyTables.has(tableName));
 
-        if (!isLocallyDirty && previouslySyncedSet.has(k) && serverItems.length > 0) {
-          // Record was previously synced with the server and removed on another client
-          if (lItem.id !== undefined) {
+        if (!isLocallyDirty && (previouslySyncedSet.has(k) || !isStartup)) {
+          // Record was previously synced with the server (or removed on another client) -> delete locally (except system accounts)
+          if (tableName !== 'accounts' && lItem.id !== undefined) {
             try {
               await table.delete(lItem.id);
             } catch {}
           }
-        } else {
-          // Local record is not yet on the server (e.g., newly added bank, menu item, category, voucher, or restored backup) -> keep it and push to server!
+        } else if (isLocallyDirty) {
+          // Local record was explicitly created/edited on this terminal and not yet on the server -> push to server
           hasUnsyncedLocalRecords = true;
         }
       }
@@ -907,7 +930,10 @@ export async function mergeServerDataIntoDexie(
           if (isLocalEdited) {
             hasUnsyncedLocalRecords = true;
           } else {
-            await table.put({ ...sItem, id: existingLocal.id });
+            const candidate = { ...sItem, id: existingLocal.id };
+            if (JSON.stringify(existingLocal) !== JSON.stringify(candidate)) {
+              await table.put(candidate);
+            }
           }
         } else {
           // New item from server
@@ -1022,17 +1048,20 @@ export async function mergeServerDataIntoDexie(
     localAll.find((lu) => (sUser.username && lu.username === sUser.username) || (sUser.id && lu.id === sUser.id))
   );
 
-  // 10. Settings: compare timestamps so newest settings win
+  // 10. Settings: compare timestamps so newest settings win and avoid redundant Dexie updates
   if (Array.isArray(serverData.settings) && serverData.settings.length > 0) {
     const s = parseDatesInItem(serverData.settings[0]);
     const localSetting = await db.settings.toCollection().first();
     if (localSetting?.id) {
       const sTime = getRecordTimestampMs(s);
       const lTime = getRecordTimestampMs(localSetting);
-      if (!isStartup && dirtyTables.has('settings') && lTime > sTime) {
+      if (dirtyTables.has('settings') && lTime >= sTime) {
         hasUnsyncedLocalRecords = true;
       } else {
-        await db.settings.update(localSetting.id, s);
+        const candidate = { ...localSetting, ...s, id: localSetting.id };
+        if (JSON.stringify(localSetting) !== JSON.stringify(candidate)) {
+          await db.settings.update(localSetting.id, s);
+        }
       }
     } else {
       await db.settings.add(s);
@@ -1047,7 +1076,8 @@ export async function mergeServerDataIntoDexie(
  * Pulls the database state from the central server into local Dexie.
  */
 export async function pullFromCentralServer(isStartup: boolean = false): Promise<boolean> {
-  if (isApplyingRemoteChange || isPullInFlight) return false;
+  if (isApplyingRemoteChange || isBulkMutationInProgress || isPullInFlight || isPushInFlight) return false;
+  if (!isStartup && (hasPendingPush || pendingForceOverwrite)) return false;
 
   isPullInFlight = true;
   currentSyncState.isSyncing = true;
@@ -1068,6 +1098,11 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
 
     const payload = await res.json();
     updateServerTimeOffset(payload.serverTimeMs);
+
+    // If a local write or bulk mutation started while fetch was in flight, do not overwrite local state with stale pull data
+    if (!isStartup && (hasPendingPush || pendingForceOverwrite || isBulkMutationInProgress || isPushInFlight)) {
+      return false;
+    }
 
     if ((payload.ok || payload.data) && payload.data) {
       isApplyingRemoteChange = true;
@@ -1097,9 +1132,9 @@ export async function pullFromCentralServer(isStartup: boolean = false): Promise
     notifyListeners();
 
     // If a local change occurred while pull was in flight or unsynced local records were detected, push immediately!
-    if (hasPendingPush && !isPushInFlight) {
+    if ((hasPendingPush || pendingForceOverwrite) && !isPushInFlight && !isBulkMutationInProgress) {
       setTimeout(() => {
-        pushToCentralServer(false);
+        pushToCentralServer(pendingForceOverwrite);
       }, 20);
     }
   }
@@ -1169,6 +1204,9 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
     syncDebounceTimer = null;
   }
 
+  if (isInitialSeed) {
+    pendingForceOverwrite = true;
+  }
   hasPendingPush = true;
   savePersistedDirtyState();
 
@@ -1178,6 +1216,10 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
   }
 
   if (isPushInFlight && activePushPromise) {
+    if (isInitialSeed) {
+      await activePushPromise.catch(() => false);
+      return pushToCentralServer(true);
+    }
     return activePushPromise;
   }
 
@@ -1187,6 +1229,8 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
 
   activePushPromise = (async (): Promise<boolean> => {
     let pushedSuccessfully = false;
+    const useForceOverwrite = isInitialSeed || pendingForceOverwrite;
+    pendingForceOverwrite = false;
     try {
       hasPendingPush = false;
       const baseUrl = resolveEffectiveServerUrl();
@@ -1222,7 +1266,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
         (k) => Object.keys(localDeletedRecords[k] || {}).length > 0
       );
 
-      if (totalMeaningful === 0 && !hasDeletions && !isInitialSeed) {
+      if (totalMeaningful === 0 && !hasDeletions && !useForceOverwrite) {
         clearDirtyStateAfterSuccessfulPush();
         await pullFromCentralServer(true);
         return true;
@@ -1231,7 +1275,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
       const clientRevBeforePush = currentSyncState.localRevision;
 
       // Use compact delta payload if full payload > 220 KB and server already has data (avoids Nginx 1MB 413 error)
-      const shouldUseCompact = !isInitialSeed && clientRevBeforePush > 0 && jsonString.length > 220000;
+      const shouldUseCompact = !useForceOverwrite && clientRevBeforePush > 0 && jsonString.length > 220000;
       const payloadData = shouldUseCompact ? buildCompactDeltaPayload(fullData, false) : fullData;
 
       let res = await fetch(`${baseUrl}/api/db/sync`, {
@@ -1242,7 +1286,8 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
         },
         body: JSON.stringify({
           data: payloadData,
-          isInitialSeed,
+          isInitialSeed: useForceOverwrite,
+          forceOverwrite: useForceOverwrite,
           clientRevision: clientRevBeforePush,
           timestamp: new Date(getNetworkNow()).toISOString(),
         }),
@@ -1259,7 +1304,8 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
           },
           body: JSON.stringify({
             data: ultraCompactData,
-            isInitialSeed: false,
+            isInitialSeed: useForceOverwrite,
+            forceOverwrite: useForceOverwrite,
             clientRevision: clientRevBeforePush,
             timestamp: new Date(getNetworkNow()).toISOString(),
           }),
@@ -1305,7 +1351,24 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
         }
         savePersistedKnownSyncedKeys();
 
-        if (!hasPendingPush) {
+        // Only apply merged server data if no newer local write or bulk mutation occurred while push was in flight
+        const mergedServerData = result.data || result.state?.data;
+        if (
+          result.merged &&
+          mergedServerData &&
+          !hasPendingPush &&
+          !pendingForceOverwrite &&
+          !isBulkMutationInProgress
+        ) {
+          isApplyingRemoteChange = true;
+          try {
+            await mergeServerDataIntoDexie(mergedServerData, false);
+          } finally {
+            isApplyingRemoteChange = false;
+          }
+        }
+
+        if (!hasPendingPush && !pendingForceOverwrite && !isBulkMutationInProgress) {
           clearDirtyStateAfterSuccessfulPush();
         }
         pushedSuccessfully = true;
@@ -1315,21 +1378,14 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
           crossTabChannel?.postMessage({ type: 'DB_UPDATED', rev: nextRev });
         } catch {}
 
-        // If server merged data from other clients, apply merged state into local Dexie
-        const mergedServerData = result.data || result.state?.data;
-        if (result.merged && mergedServerData) {
-          isApplyingRemoteChange = true;
-          try {
-            await mergeServerDataIntoDexie(mergedServerData, false);
-          } finally {
-            isApplyingRemoteChange = false;
-          }
-        }
         return true;
       } else {
         throw new Error(result.error || 'خطا در ثبت داده‌ها روی سرور مرکزی');
       }
     } catch (err: any) {
+      if (useForceOverwrite) {
+        pendingForceOverwrite = true;
+      }
       hasPendingPush = true;
       savePersistedDirtyState();
       currentSyncState.lastError = err?.message || 'عدم ارسال داده به سرور مرکزی';
@@ -1341,9 +1397,9 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
       notifyListeners();
 
       // If another local write happened while this push was in flight, immediately run another push!
-      if (hasPendingPush && pushedSuccessfully) {
+      if ((hasPendingPush || pendingForceOverwrite) && pushedSuccessfully && !isBulkMutationInProgress) {
         setTimeout(() => {
-          pushToCentralServer(false);
+          pushToCentralServer(pendingForceOverwrite);
         }, 50);
       }
     }
@@ -1360,9 +1416,13 @@ export function notifyDataChanged() {
   if (isApplyingRemoteChange) return;
 
   hasPendingPush = true;
+  if (isBulkMutationInProgress) return;
+
   if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
   syncDebounceTimer = setTimeout(() => {
-    pushToCentralServer(false);
+    if (!isBulkMutationInProgress) {
+      pushToCentralServer(pendingForceOverwrite);
+    }
   }, 180);
 }
 

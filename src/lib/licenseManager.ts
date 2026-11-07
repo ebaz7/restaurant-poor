@@ -313,6 +313,15 @@ async function saveLicenseToSettingsDB(record: {
   try {
     const first = await db.settings.toCollection().first();
     if (first && first.id !== undefined) {
+      const existing = first.centralLicenseInfo;
+      if (
+        existing &&
+        existing.isActivated === record.isActivated &&
+        existing.licenseKey === record.licenseKey &&
+        existing.systemCode === record.systemCode
+      ) {
+        return;
+      }
       await db.settings.update(first.id, {
         centralLicenseInfo: record,
       });

@@ -10,8 +10,10 @@ import {
   resetDatabaseToRaw,
   convertDatabaseCurrencyUnit,
   getDefaultQuickBeverages,
+  normalizeQuickBeveragesForUnit,
   QuickBeverageOption,
 } from '../../lib/db';
+import { scaleMonetaryAmountForCurrencySwitch } from '../../lib/accountingEngine';
 import {
   exportDB,
   importDB,
@@ -25,6 +27,7 @@ import {
   notifyRawResetToCentralServer,
   pushToCentralServer,
   pullFromCentralServer,
+  setBulkMutationInProgress,
   getNodeRole,
   setNodeRole,
   setServerUrl,
@@ -727,21 +730,41 @@ pause
     text: string;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastLoadedSettingsSigRef = useRef<string>('');
 
   useEffect(() => {
     if (settings) {
-      const currentUnit = settings.currencyUnit || 'toman';
-      const defaultBevs = getDefaultQuickBeverages(currentUnit);
-      setFormData({
-        ...settings,
-        quickBeverages:
-          settings.quickBeverages && settings.quickBeverages.length > 0
-            ? settings.quickBeverages
-            : defaultBevs,
-      });
-      if (settings.currencyUnit) {
-        setGlobalCurrencyUnit(settings.currencyUnit);
+      const currentUnit: 'toman' | 'rial' = settings.currencyUnit === 'rial' ? 'rial' : 'toman';
+      const { beverages: normalizedBevs, wasNormalized } = normalizeQuickBeveragesForUnit(
+        settings.quickBeverages,
+        currentUnit,
+        settings.selfServicePricePerPerson,
+        (settings as any)._quickBeveragesCurrencySynced
+      );
+      const bevSig = normalizedBevs
+        .map((b) => `${b.id || ''}:${b.name || ''}:${b.price ?? 0}:${b.color || ''}`)
+        .join('|');
+      const sig = `${settings.id || 1}_${currentUnit}_${settings.selfServicePricePerPerson ?? 0}_${settings.restaurantName || ''}_${bevSig}`;
+      if (sig !== lastLoadedSettingsSigRef.current) {
+        lastLoadedSettingsSigRef.current = sig;
+        setFormData({
+          ...settings,
+          currencyUnit: currentUnit,
+          quickBeverages: normalizedBevs,
+          _quickBeveragesCurrencySynced: true,
+        } as any);
       }
+      if (wasNormalized && settings.id) {
+        const nextTs = Math.max(Date.now(), (Number((settings as any)._updatedAtMs) || 0) + 5000);
+        db.settings
+          .update(settings.id, {
+            quickBeverages: normalizedBevs,
+            _quickBeveragesCurrencySynced: true,
+            _updatedAtMs: nextTs,
+          } as any)
+          .catch(() => {});
+      }
+      setGlobalCurrencyUnit(currentUnit);
     }
   }, [settings]);
 
@@ -750,18 +773,112 @@ pause
     setTimeout(() => setStatusMessage(null), 6000);
   };
 
+  const persistPartialSettings = async (partial: Record<string, any>) => {
+    if (!settings?.id) return;
+    const nextTs = Math.max(
+      Date.now(),
+      (Number((settings as any)._updatedAtMs) || 0) + 5000,
+      (Number((formData as any)._updatedAtMs) || 0) + 5000
+    );
+    await db.settings.update(settings.id, {
+      ...partial,
+      _quickBeveragesCurrencySynced: true,
+      _updatedAtMs: nextTs,
+    } as any);
+  };
+
   const handleCurrencyChange = async (unit: 'toman' | 'rial') => {
+    const fromUnit: 'toman' | 'rial' =
+      (formData.currencyUnit || settings?.currencyUnit || 'toman') === 'rial' ? 'rial' : 'toman';
+
+    const currentSelfServicePrice =
+      formData.selfServicePricePerPerson ?? settings?.selfServicePricePerPerson ?? 0;
+    const currentBevsRaw =
+      formData.quickBeverages && formData.quickBeverages.length > 0
+        ? formData.quickBeverages
+        : settings?.quickBeverages && settings.quickBeverages.length > 0
+        ? settings.quickBeverages
+        : getDefaultQuickBeverages(fromUnit);
+
+    const { beverages: normalizedBaseBevs } = normalizeQuickBeveragesForUnit(
+      currentBevsRaw,
+      fromUnit,
+      currentSelfServicePrice,
+      Boolean((formData as any)._quickBeveragesCurrencySynced || (settings as any)?._quickBeveragesCurrencySynced)
+    );
+
+    const scaledSelfServicePrice =
+      fromUnit === unit
+        ? currentSelfServicePrice
+        : scaleMonetaryAmountForCurrencySwitch(currentSelfServicePrice, fromUnit, unit);
+
+    const scaledBeverages =
+      fromUnit === unit
+        ? normalizedBaseBevs
+        : normalizedBaseBevs.map((bev) => ({
+            ...bev,
+            price: scaleMonetaryAmountForCurrencySwitch(bev.price, fromUnit, unit),
+          }));
+
     setGlobalCurrencyUnit(unit);
-    const res = await convertDatabaseCurrencyUnit(unit);
+
+    // Immediately reflect scaled unit, selfServicePricePerPerson, and quickBeverages in UI state
+    const optimisticFormData = {
+      ...formData,
+      currencyUnit: unit,
+      selfServicePricePerPerson: scaledSelfServicePrice,
+      quickBeverages: scaledBeverages,
+      _quickBeveragesCurrencySynced: true,
+    } as any;
+    const optimisticBevSig = scaledBeverages
+      .map((b) => `${b.id || ''}:${b.name || ''}:${b.price ?? 0}:${b.color || ''}`)
+      .join('|');
+    lastLoadedSettingsSigRef.current = `${settings?.id || 1}_${unit}_${scaledSelfServicePrice}_${optimisticFormData.restaurantName || ''}_${optimisticBevSig}`;
+    setFormData(optimisticFormData);
+
+    let res = { converted: fromUnit !== unit, fromUnit, toUnit: unit };
+    setBulkMutationInProgress(true);
+    try {
+      if (settings?.id) {
+        const nextTs = Math.max(Date.now(), (Number((settings as any)._updatedAtMs) || 0) + 5000);
+        await db.settings.update(settings.id, {
+          ...formData,
+          currencyUnit: fromUnit,
+          selfServicePricePerPerson: currentSelfServicePrice,
+          quickBeverages: normalizedBaseBevs,
+          _quickBeveragesCurrencySynced: true,
+          _updatedAtMs: nextTs,
+        } as any);
+      }
+      res = await convertDatabaseCurrencyUnit(unit);
+    } finally {
+      setBulkMutationInProgress(false);
+    }
+
     const updatedSettings = await db.settings.toCollection().first();
     if (updatedSettings) {
-      setFormData(updatedSettings);
-      await syncBackupToServer(updatedSettings);
-    } else {
-      setFormData({ ...formData, currencyUnit: unit });
+      const currentUnit = updatedSettings.currencyUnit || unit;
+      const finalBevs =
+        updatedSettings.quickBeverages && updatedSettings.quickBeverages.length > 0
+          ? updatedSettings.quickBeverages
+          : scaledBeverages;
+      const finalBevSig = finalBevs
+        .map((b) => `${b.id || ''}:${b.name || ''}:${b.price ?? 0}:${b.color || ''}`)
+        .join('|');
+      lastLoadedSettingsSigRef.current = `${updatedSettings.id || 1}_${currentUnit}_${updatedSettings.selfServicePricePerPerson ?? scaledSelfServicePrice}_${updatedSettings.restaurantName || ''}_${finalBevSig}`;
+      setFormData({
+        ...updatedSettings,
+        currencyUnit: currentUnit,
+        quickBeverages: finalBevs,
+        _quickBeveragesCurrencySynced: true,
+      } as any);
     }
+
     try {
-      await pushToCentralServer(false);
+      await pushToCentralServer(true);
+      if (updatedSettings) {
+        await syncBackupToServer(updatedSettings, false);
+      }
     } catch {
       // ignore if offline
     }
@@ -769,8 +886,8 @@ pause
       showNotice(
         'success',
         unit === 'toman'
-          ? 'واحد پول کل سامانه به «تومان» تغییر یافت و به‌صورت اتوماتیک یک صفر از تمامی مبالغ، قیمت‌ها، فرمول‌های تولید، انبار و ثبت‌های قبلی کم شد (تبدیل ریال به تومان).'
-          : 'واحد پول کل سامانه به «ریال» تغییر یافت و به‌صورت اتوماتیک یک صفر به تمامی مبالغ، قیمت‌ها، فرمول‌های تولید، انبار و ثبت‌های قبلی اضافه شد (تبدیل تومان به ریال).'
+          ? 'واحد پول کل سامانه به «تومان» تغییر یافت و به‌صورت اتوماتیک یک صفر از تمامی مبالغ، قیمت سلف، دکمه‌های نوشیدنی، منو، انبار و ثبت‌های قبلی کم شد (تبدیل ریال به تومان).'
+          : 'واحد پول کل سامانه به «ریال» تغییر یافت و به‌صورت اتوماتیک یک صفر به تمامی مبالغ، قیمت سلف، دکمه‌های نوشیدنی، منو، انبار و ثبت‌های قبلی اضافه شد (تبدیل تومان به ریال).'
       );
     } else {
       showNotice(
@@ -783,37 +900,69 @@ pause
   const handleSave = async () => {
     if (!settings?.id) return;
     setIsSaving(true);
-    if (formData.currencyUnit) {
-      setGlobalCurrencyUnit(formData.currencyUnit);
-    }
+    setBulkMutationInProgress(true);
+    try {
+      if (formData.currencyUnit) {
+        setGlobalCurrencyUnit(formData.currencyUnit);
+      }
 
-    // Auto-sync raw materials stock items for all quick beverages so warehouse deduction is 100% ready
-    if (formData.quickBeverages && formData.quickBeverages.length > 0) {
-      const currentMaterials = await db.rawMaterials.toArray();
-      for (const bev of formData.quickBeverages) {
-        if (!bev.name?.trim()) continue;
-        const matName = bev.name.replace(/ اضافه$/, '').trim();
-        const exists = currentMaterials.some(
-          (m) => m.name.trim() === matName || m.name.trim() === bev.name.trim()
-        );
-        if (!exists) {
-          const autoCost = Math.round((bev.price || 0) * 0.45);
-          await db.rawMaterials.add({
-            name: matName,
-            unit: 'عدد',
-            currentQty: 200,
-            minQty: 15,
-            avgCost: autoCost,
-            lastPurchasePrice: autoCost,
-            updatedAt: new Date(),
-          });
+      // Auto-sync raw materials stock items and matching menu items for all quick beverages
+      if (formData.quickBeverages && formData.quickBeverages.length > 0) {
+        const currentMaterials = await db.rawMaterials.toArray();
+        const currentMenuItems = await db.menuItems.toArray();
+        for (const bev of formData.quickBeverages) {
+          if (!bev.name?.trim()) continue;
+          const matName = bev.name.replace(/ اضافه$/, '').trim();
+          const exists = currentMaterials.some(
+            (m) => m.name.trim() === matName || m.name.trim() === bev.name.trim()
+          );
+          if (!exists) {
+            const autoCost = Math.round((bev.price || 0) * 0.45);
+            await db.rawMaterials.add({
+              name: matName,
+              unit: 'عدد',
+              currentQty: 200,
+              minQty: 15,
+              avgCost: autoCost,
+              lastPurchasePrice: autoCost,
+              updatedAt: new Date(),
+            });
+          }
+          // Sync price with any matching menu item so Menu Manager and Quick Beverages match
+          const matchingMenu = currentMenuItems.find(
+            (m) =>
+              (bev.menuItemId && m.id === bev.menuItemId) ||
+              m.name.trim() === matName ||
+              m.name.trim() === bev.name.trim()
+          );
+          if (matchingMenu?.id && matchingMenu.price !== bev.price) {
+            await db.menuItems.update(matchingMenu.id, { price: bev.price });
+          }
         }
       }
+
+      const nextTs = Math.max(
+        Date.now(),
+        (Number((settings as any)._updatedAtMs) || 0) + 5000,
+        (Number((formData as any)._updatedAtMs) || 0) + 5000
+      );
+      const payloadToSave = {
+        ...formData,
+        _quickBeveragesCurrencySynced: true,
+        _updatedAtMs: nextTs,
+      } as any;
+
+      const bevSig = (payloadToSave.quickBeverages || [])
+        .map((b: any) => `${b.id || ''}:${b.name || ''}:${b.price ?? 0}:${b.color || ''}`)
+        .join('|');
+      lastLoadedSettingsSigRef.current = `${settings.id}_${payloadToSave.currencyUnit || 'toman'}_${payloadToSave.selfServicePricePerPerson ?? 0}_${payloadToSave.restaurantName || ''}_${bevSig}`;
+      await db.settings.update(settings.id, payloadToSave);
+    } finally {
+      setBulkMutationInProgress(false);
     }
 
-    await db.settings.update(settings.id, formData);
-    await pushToCentralServer(false);
-    await syncBackupToServer(formData);
+    await pushToCentralServer(true);
+    await syncBackupToServer(formData, false);
     setIsSaving(false);
     showNotice(
       'success',
@@ -823,8 +972,9 @@ pause
 
   const handleTestAndSendBotBackup = async (customLabel?: string) => {
     if (!settings?.id) return;
-    await db.settings.update(settings.id, formData);
-    await pushToCentralServer(false);
+    const nextTs = Math.max(Date.now(), (Number((settings as any)._updatedAtMs) || 0) + 5000);
+    await db.settings.update(settings.id, { ...formData, _updatedAtMs: nextTs } as any);
+    await pushToCentralServer(true);
     setIsSendingBot(true);
     const res = await sendBackupToMessengers(
       formData,
@@ -2058,10 +2208,12 @@ pause
                         قیمت پیش‌فرض سلف سرویس + نوشابه به ازای هر نفر ({currencyLabel})
                       </label>
                       <FormattedNumberInput
+                        key={`ss-price-${formData.currencyUnit || 'toman'}`}
                         value={formData.selfServicePricePerPerson ?? 0}
-                        onValueChange={(val) =>
-                          setFormData({ ...formData, selfServicePricePerPerson: val })
-                        }
+                        onValueChange={(val) => {
+                          setFormData({ ...formData, selfServicePricePerPerson: val });
+                          persistPartialSettings({ selfServicePricePerPerson: val });
+                        }}
                         className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-left"
                       />
                     </div>
@@ -2106,7 +2258,9 @@ pause
                             color: 'amber',
                             isActive: true,
                           };
-                          setFormData({ ...formData, quickBeverages: [...currentList, newBev] });
+                          const updatedList = [...currentList, newBev];
+                          setFormData({ ...formData, quickBeverages: updatedList });
+                          persistPartialSettings({ quickBeverages: updatedList });
                         }}
                         className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-xs transition cursor-pointer shrink-0"
                       >
@@ -2137,6 +2291,7 @@ pause
                                 ];
                                 currentList[idx] = { ...currentList[idx], name: val };
                                 setFormData({ ...formData, quickBeverages: currentList });
+                                persistPartialSettings({ quickBeverages: currentList });
                               }}
                               className="px-2.5 py-1 bg-white border border-slate-300 rounded-xl text-xs font-extrabold text-slate-900 w-full focus:outline-hidden focus:border-blue-500"
                               placeholder="نام نوشیدنی (مثلاً نوشابه)"
@@ -2152,6 +2307,7 @@ pause
                                 ];
                                 currentList.splice(idx, 1);
                                 setFormData({ ...formData, quickBeverages: currentList });
+                                persistPartialSettings({ quickBeverages: currentList });
                               }}
                               className="p-1.5 rounded-xl text-rose-500 hover:bg-rose-100 hover:text-rose-700 transition cursor-pointer shrink-0"
                               title="حذف این نوشیدنی"
@@ -2166,6 +2322,7 @@ pause
                                 قیمت ({currencyLabel}):
                               </label>
                               <FormattedNumberInput
+                                key={`bev-price-${bev.id || idx}-${formData.currencyUnit || 'toman'}`}
                                 value={bev.price}
                                 onValueChange={(val) => {
                                   const currentList = [
@@ -2175,6 +2332,7 @@ pause
                                   ];
                                   currentList[idx] = { ...currentList[idx], price: val };
                                   setFormData({ ...formData, quickBeverages: currentList });
+                                  persistPartialSettings({ quickBeverages: currentList });
                                 }}
                                 className="w-full px-2 py-1 rounded-xl border border-slate-300 font-mono text-xs font-bold text-left bg-white"
                               />
@@ -2195,6 +2353,7 @@ pause
                                   ];
                                   currentList[idx] = { ...currentList[idx], color: val };
                                   setFormData({ ...formData, quickBeverages: currentList });
+                                  persistPartialSettings({ quickBeverages: currentList });
                                 }}
                                 className="w-full px-2 py-1 rounded-xl border border-slate-300 text-xs font-bold bg-white"
                               >

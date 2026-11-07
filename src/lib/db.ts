@@ -44,6 +44,62 @@ export function getDefaultQuickBeverages(currencyUnit: 'toman' | 'rial' = 'toman
   ];
 }
 
+/**
+ * Ensures quickBeverages prices are aligned with the current currencyUnit ('toman' vs 'rial'),
+ * repairing any legacy state where selfServicePricePerPerson was converted to Toman while quickBeverages remained in Rial (or vice versa).
+ */
+export function normalizeQuickBeveragesForUnit(
+  beverages: QuickBeverageOption[] | undefined,
+  unit: 'toman' | 'rial',
+  selfServicePricePerPerson?: number,
+  isAlreadySynced?: boolean
+): { beverages: QuickBeverageOption[]; wasNormalized: boolean } {
+  if (!Array.isArray(beverages) || beverages.length === 0) {
+    return { beverages: getDefaultQuickBeverages(unit), wasNormalized: false };
+  }
+  if (isAlreadySynced) {
+    return { beverages, wasNormalized: false };
+  }
+  const positiveBevs = beverages.filter((b) => (Number(b?.price) || 0) > 0);
+  if (positiveBevs.length === 0) {
+    return { beverages, wasNormalized: false };
+  }
+  const ssPrice = Number(selfServicePricePerPerson) || 0;
+  const maxBevPrice = Math.max(...positiveBevs.map((b) => Number(b.price) || 0));
+
+  // Case 1: Unit is 'toman' (e.g. selfServicePricePerPerson = 833,000), but quickBeverages were left in Rial (e.g. 250,000 .. 1,250,000)
+  if (
+    unit === 'toman' &&
+    positiveBevs.every((b) => Number(b.price) >= 150000 && Number(b.price) % 10 === 0) &&
+    ((ssPrice > 0 && ssPrice <= 2500000 && maxBevPrice >= ssPrice * 0.75) || maxBevPrice >= 500000)
+  ) {
+    return {
+      beverages: beverages.map((b) => ({
+        ...b,
+        price: scaleMonetaryAmountForCurrencySwitch(b.price, 'rial', 'toman'),
+      })),
+      wasNormalized: true,
+    };
+  }
+
+  // Case 2: Unit is 'rial' (e.g. selfServicePricePerPerson = 8,330,000), but quickBeverages were left in Toman (e.g. 15,000 .. 125,000)
+  if (
+    unit === 'rial' &&
+    positiveBevs.every((b) => Number(b.price) > 0 && Number(b.price) <= 150000) &&
+    (ssPrice >= 3000000 || maxBevPrice <= 150000)
+  ) {
+    return {
+      beverages: beverages.map((b) => ({
+        ...b,
+        price: scaleMonetaryAmountForCurrencySwitch(b.price, 'toman', 'rial'),
+      })),
+      wasNormalized: true,
+    };
+  }
+
+  return { beverages, wasNormalized: false };
+}
+
 export interface OrderItem {
   menuItemId: number;
   name: string;
@@ -1759,7 +1815,19 @@ export async function convertDatabaseCurrencyUnit(
 
   if (fromUnit === targetUnit) {
     if (firstSetting?.id) {
-      await db.settings.update(firstSetting.id, { currencyUnit: targetUnit });
+      const { beverages: normalizedBevs } = normalizeQuickBeveragesForUnit(
+        firstSetting.quickBeverages,
+        targetUnit,
+        firstSetting.selfServicePricePerPerson,
+        (firstSetting as any)._quickBeveragesCurrencySynced
+      );
+      const nextTs = Math.max(Date.now(), (Number((firstSetting as any)._updatedAtMs) || 0) + 5000);
+      await db.settings.update(firstSetting.id, {
+        currencyUnit: targetUnit,
+        quickBeverages: normalizedBevs,
+        _quickBeveragesCurrencySynced: true,
+        _updatedAtMs: nextTs,
+      } as any);
     }
     return { converted: false, fromUnit, toUnit: targetUnit };
   }
@@ -1793,6 +1861,20 @@ export async function convertDatabaseCurrencyUnit(
         const defaultDoughBefore = s.defaultDoughPrice ?? (fromUnit === 'rial' ? 150000 : 15000);
         const defaultWaterBefore = s.defaultWaterPrice ?? (fromUnit === 'rial' ? 100000 : 10000);
         const defaultDelsterBefore = s.defaultDelsterPrice ?? (fromUnit === 'rial' ? 200000 : 20000);
+        const { beverages: baseBevs } = normalizeQuickBeveragesForUnit(
+          s.quickBeverages,
+          fromUnit,
+          s.selfServicePricePerPerson,
+          (s as any)._quickBeveragesCurrencySynced
+        );
+        const scaledBeverages =
+          Array.isArray(baseBevs) && baseBevs.length > 0
+            ? baseBevs.map((bev) => ({
+                ...bev,
+                price: scale(bev.price),
+              }))
+            : getDefaultQuickBeverages(targetUnit);
+        const nextTs = Math.max(Date.now(), (Number((s as any)._updatedAtMs) || 0) + 5000);
 
         await db.settings.update(s.id, {
           currencyUnit: targetUnit,
@@ -1801,7 +1883,10 @@ export async function convertDatabaseCurrencyUnit(
           defaultDoughPrice: scale(defaultDoughBefore),
           defaultWaterPrice: scale(defaultWaterBefore),
           defaultDelsterPrice: scale(defaultDelsterBefore),
-        });
+          quickBeverages: scaledBeverages,
+          _quickBeveragesCurrencySynced: true,
+          _updatedAtMs: nextTs,
+        } as any);
       }
 
       // 2. Menu Items

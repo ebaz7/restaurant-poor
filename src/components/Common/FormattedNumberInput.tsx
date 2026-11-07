@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { formatNumberThreeDigits, parseThreeDigitNumber } from '../../lib/accountingEngine';
 
 interface FormattedNumberInputProps {
+  key?: React.Key;
   value: number | string;
   onValueChange: (numericValue: number, rawFormatted: string) => void;
   allowDecimal?: boolean;
