@@ -15,6 +15,8 @@ import {
   filterAccountsForAutocomplete,
   calculateKitchenBatchProduction,
   scaleMonetaryAmountForCurrencySwitch,
+  deinflateMonetaryValue,
+  repairExcessZeroInflationOnDataObject,
 } from './accountingEngine.ts';
 
 test('Self-service guest count supports 1 to 4 and any higher number of guests', () => {
@@ -342,5 +344,168 @@ test('Currency switch scaling removes one zero for Rial to Toman and adds one ze
   assert.equal(scaleMonetaryAmountForCurrencySwitch(2450000, 'rial', 'rial'), 2450000);
   assert.equal(scaleMonetaryAmountForCurrencySwitch(0, 'rial', 'toman'), 0);
 });
+
+test('repairExcessZeroInflationOnDataObject strips 6 and 15 excess zeros from orders, vouchers, and bank balances in Rial and Toman', () => {
+  const sampleData = {
+    settings: [
+      {
+        id: 1,
+        currencyUnit: 'rial',
+        selfServicePricePerPerson: 8330000,
+        quickBeverages: [
+          { id: 'soda', name: 'نوشابه', price: 550000 },
+          { id: 'family_soda', name: 'نوشابه خانواده', price: 1250000 },
+        ],
+      },
+    ],
+    orders: [
+      // #2229: 1 person self-service (8,330,000) + 1 soda (550,000) = 8,880,000 Rial, inflated by 10^6 -> 8,880,000,000,000
+      {
+        id: 101,
+        invoiceNumber: 2229,
+        invoiceMode: 'self_service',
+        selfServiceGuests: 1,
+        selfServiceUnitPrice: 8330000000000,
+        items: [
+          { menuItemId: -1, name: 'ورودی بار سلف سرویس + نوشابه (1 نفر تمام‌بها)', price: 8330000000000, quantity: 1 },
+          { menuItemId: 10, name: 'نوشابه اضافه', price: 550000000000, quantity: 1 },
+        ],
+        subtotal: 8880000000000,
+        discountType: 'none',
+        discountValue: 0,
+        taxEnabled: false,
+        taxPercentage: 9,
+        taxAmount: 0,
+        total: 8880000000000,
+        paymentMethod: 'card',
+        bankId: 1,
+        bankName: 'بانک مسکن',
+        cashAmount: 0,
+        cardAmount: 8880000000000,
+        status: 'paid',
+      },
+      // #2227: 2 person self-service (16,660,000) + 2 sodas (1,100,000) = 17,760,000 Rial, inflated by 10^6 -> 17,760,000,000,000
+      {
+        id: 102,
+        invoiceNumber: 2227,
+        invoiceMode: 'self_service',
+        selfServiceGuests: 2,
+        selfServiceUnitPrice: 8330000000000,
+        items: [
+          { menuItemId: -1, name: 'ورودی بار سلف سرویس + نوشابه (2 نفر تمام‌بها)', price: 8330000000000, quantity: 2 },
+          { menuItemId: 10, name: 'نوشابه اضافه', price: 550000000000, quantity: 2 },
+        ],
+        subtotal: 17760000000000,
+        discountType: 'none',
+        discountValue: 0,
+        taxEnabled: false,
+        taxPercentage: 9,
+        taxAmount: 0,
+        total: 17760000000000,
+        paymentMethod: 'card',
+        bankId: 1,
+        bankName: 'بانک مسکن',
+        cashAmount: 0,
+        cardAmount: 17760000000000,
+        status: 'paid',
+      },
+      // #2225: 2 person self-service (16,660,000) + 1 family soda (1,250,000) = 17,910,000 Rial, inflated by 10^6 -> 17,910,000,000,000
+      {
+        id: 103,
+        invoiceNumber: 2225,
+        invoiceMode: 'self_service',
+        selfServiceGuests: 2,
+        selfServiceUnitPrice: 8330000000000,
+        items: [
+          { menuItemId: -1, name: 'ورودی بار سلف سرویس + نوشابه (2 نفر تمام‌بها)', price: 8330000000000, quantity: 2 },
+          { menuItemId: 11, name: 'نوشابه خانواده', price: 1250000000000, quantity: 1 },
+        ],
+        subtotal: 17910000000000,
+        discountType: 'none',
+        discountValue: 0,
+        taxEnabled: false,
+        taxPercentage: 9,
+        taxAmount: 0,
+        total: 17910000000000,
+        paymentMethod: 'card',
+        bankId: 1,
+        bankName: 'بانک مسکن',
+        cashAmount: 0,
+        cardAmount: 17910000000000,
+        status: 'paid',
+      },
+      // #2224: 3 person self-service + 3 sodas = 26,640,000 Rial, inflated by 10^15 -> 2.664e22
+      {
+        id: 104,
+        invoiceNumber: 2224,
+        invoiceMode: 'self_service',
+        selfServiceGuests: 3,
+        selfServiceUnitPrice: 8330000 * 1e15,
+        items: [
+          { menuItemId: -1, name: 'ورودی بار سلف سرویس + نوشابه (3 نفر تمام‌بها)', price: 8330000 * 1e15, quantity: 3 },
+          { menuItemId: 10, name: 'نوشابه اضافه', price: 550000 * 1e15, quantity: 3 },
+        ],
+        subtotal: 26640000 * 1e15,
+        discountType: 'none',
+        discountValue: 0,
+        taxEnabled: false,
+        taxPercentage: 9,
+        taxAmount: 0,
+        total: 26640000 * 1e15,
+        paymentMethod: 'card',
+        bankId: 1,
+        bankName: 'بانک مسکن',
+        cashAmount: 0,
+        cardAmount: 26640000 * 1e15,
+        status: 'paid',
+      },
+    ],
+    journalVouchers: [
+      {
+        id: 501,
+        voucherNumber: 501,
+        type: 'auto_sale',
+        referenceId: 2229,
+        bankId: 1,
+        bankName: 'بانک مسکن',
+        description: 'سند اتوماتیک فیش سلف سرویس #2229 (1 نفر)',
+        totalAmount: 8880000000000,
+        lines: [
+          { accountCode: '102', accountName: 'موجودی بانک‌ها', debit: 8880000000000, credit: 0 },
+          { accountCode: '402', accountName: 'درآمد سلف سرویس', debit: 0, credit: 8330000000000 },
+          { accountCode: '401', accountName: 'درآمد فروش منو', debit: 0, credit: 550000000000 },
+        ],
+      },
+    ],
+    bankAccounts: [
+      {
+        id: 1,
+        bankName: 'بانک مسکن',
+        initialBalance: 0,
+        currentBalance: 8880000000000,
+      },
+    ],
+  };
+
+  const res = repairExcessZeroInflationOnDataObject(sampleData);
+  assert.equal(res.modified, true);
+  assert.equal(sampleData.orders[0].total, 8880000);
+  assert.equal(sampleData.orders[0].selfServiceUnitPrice, 8330000);
+  assert.equal(sampleData.orders[0].items[1].price, 550000);
+
+  assert.equal(sampleData.orders[1].total, 17760000);
+  assert.equal(sampleData.orders[2].total, 17910000);
+  assert.equal(sampleData.orders[3].total, 26640000);
+
+  assert.equal(sampleData.journalVouchers[0].totalAmount, 8880000);
+  assert.equal(sampleData.journalVouchers[0].lines[0].debit, 8880000);
+  assert.equal(sampleData.bankAccounts[0].currentBalance, 8880000);
+
+  // Calling repair a second time is a no-op (idempotent)
+  const secondRun = repairExcessZeroInflationOnDataObject(sampleData);
+  assert.equal(secondRun.modified, false);
+  assert.equal(sampleData.orders[0].total, 8880000);
+});
+
 
 

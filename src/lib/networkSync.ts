@@ -10,7 +10,8 @@
  * 4. Platform-Aware Detection (Linux Environment Port/IP vs Windows Tauri In-App Port/Role Management)
  */
 
-import { db } from './db';
+import { db, repairExcessZeroInflationInDatabase } from './db';
+import { repairExcessZeroInflationOnDataObject } from './accountingEngine';
 import { exportDB } from './utils';
 
 export interface SyncState {
@@ -819,6 +820,16 @@ export async function mergeServerDataIntoDexie(
 
   let hasUnsyncedLocalRecords = false;
 
+  // Automatically strip any excess zero inflation (10^k) from incoming server data before merging
+  try {
+    const serverRepair = repairExcessZeroInflationOnDataObject(serverData, undefined, getNetworkNow() + 2000);
+    if (serverRepair.modified) {
+      hasUnsyncedLocalRecords = true;
+    }
+  } catch (e) {
+    console.warn('Server data de-inflation check warning:', e);
+  }
+
   // 0. Merge v3 tombstones from server (ignore poisoned legacy deletedRecords)
   if (serverData.deletedRecordsV3 && typeof serverData.deletedRecordsV3 === 'object') {
     mergeDeletedRecordsMap(serverData.deletedRecordsV3);
@@ -1068,6 +1079,16 @@ export async function mergeServerDataIntoDexie(
     }
   }
 
+  // Also ensure any remaining local records in Dexie are de-inflated
+  try {
+    const localRepair = await repairExcessZeroInflationInDatabase();
+    if (localRepair.modified) {
+      hasUnsyncedLocalRecords = true;
+    }
+  } catch (e) {
+    console.warn('Local Dexie de-inflation check warning:', e);
+  }
+
   savePersistedKnownSyncedKeys();
   return { hasUnsyncedLocalRecords };
 }
@@ -1236,6 +1257,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
       const baseUrl = resolveEffectiveServerUrl();
       const jsonString = await exportDB();
       const fullData = JSON.parse(jsonString);
+      repairExcessZeroInflationOnDataObject(fullData, undefined, getNetworkNow() + 2000);
       fullData.deletedRecordsV3 = localDeletedRecords;
 
       const allTableNames = [

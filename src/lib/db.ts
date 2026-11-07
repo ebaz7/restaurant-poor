@@ -6,6 +6,8 @@ import {
   calculateRecipeCost,
   calculateWeightedAveragePurchase,
   convertRecipeQtyToStockUnit,
+  deinflateMonetaryValue,
+  repairExcessZeroInflationOnDataObject,
   scaleMonetaryAmountForCurrencySwitch,
 } from './accountingEngine';
 import { setGlobalCurrencyUnit } from './utils';
@@ -1693,6 +1695,79 @@ async function runInitializeDefaultDatabase(): Promise<void> {
   } catch (e) {
     console.warn('Demo bank cleanup error:', e);
   }
+
+  // 4. Automatically repair any excess zero inflation caused by previous Rial <-> Toman toggles
+  try {
+    await repairExcessZeroInflationInDatabase();
+  } catch (e) {
+    console.warn('Excess zero repair check warning:', e);
+  }
+}
+
+/**
+ * Inspects all local Dexie tables for excess zero inflation (10^k) and repairs any affected
+ * orders, vouchers, bank accounts, settings, menu items, raw materials, Kardex rows, recipes, and closures in place.
+ */
+export async function repairExcessZeroInflationInDatabase(
+  overrideUnit?: 'toman' | 'rial'
+): Promise<{ repairedCount: number; modified: boolean }> {
+  const snapshot: Record<string, any[]> = {
+    settings: await db.settings.toArray(),
+    menuItems: await db.menuItems.toArray(),
+    orders: await db.orders.toArray(),
+    bankAccounts: await db.bankAccounts.toArray(),
+    persons: await db.persons.toArray(),
+    journalVouchers: await db.journalVouchers.toArray(),
+    cheques: await db.cheques.toArray(),
+    rawMaterials: await db.rawMaterials.toArray(),
+    inventoryTransactions: await db.inventoryTransactions.toArray(),
+    productionRecipes: await db.productionRecipes.toArray(),
+    kitchenProductions: await db.kitchenProductions.toArray(),
+    cashClosures: await db.cashClosures.toArray(),
+  };
+
+  const beforeJsonByTable: Record<string, string[]> = {};
+  for (const [tName, rows] of Object.entries(snapshot)) {
+    beforeJsonByTable[tName] = rows.map((r) => JSON.stringify(r));
+  }
+
+  const nowTs = Date.now() + 2000;
+  const result = repairExcessZeroInflationOnDataObject(snapshot, overrideUnit, nowTs);
+  if (!result.modified) {
+    return result;
+  }
+
+  await db.transaction(
+    'rw',
+    [
+      db.settings,
+      db.menuItems,
+      db.orders,
+      db.bankAccounts,
+      db.persons,
+      db.journalVouchers,
+      db.cheques,
+      db.rawMaterials,
+      db.inventoryTransactions,
+      db.productionRecipes,
+      db.kitchenProductions,
+      db.cashClosures,
+    ],
+    async () => {
+      for (const [tName, rows] of Object.entries(snapshot)) {
+        const table = (db as any)[tName];
+        const beforeList = beforeJsonByTable[tName] || [];
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          if (row && row.id !== undefined && JSON.stringify(row) !== beforeList[i]) {
+            await table.put(row);
+          }
+        }
+      }
+    }
+  );
+
+  return result;
 }
 
 /**
@@ -1802,8 +1877,10 @@ export async function resetDatabaseToRaw(): Promise<void> {
 
 /**
  * Converts the entire database between 'toman' and 'rial':
+ * - First repairs any excess zero inflation in the database.
  * - Switching from 'rial' to 'toman' automatically removes one zero (divides by 10) across ALL existing records and settings.
- * - Switching from 'toman' to 'rial' automatically adds one zero (multiplies by 10) across ALL existing records and settings.
+ * - Switching from 'toman' to 'rial' automatically adds one zero (multiplies by 10) across ALL existing records and settings,
+ *   while guarding against double-scaling records that are already in the target currency scale.
  */
 export async function convertDatabaseCurrencyUnit(
   targetUnit: 'toman' | 'rial'
@@ -1829,11 +1906,25 @@ export async function convertDatabaseCurrencyUnit(
         _updatedAtMs: nextTs,
       } as any);
     }
+    await repairExcessZeroInflationInDatabase(targetUnit);
     return { converted: false, fromUnit, toUnit: targetUnit };
   }
 
-  const scale = (val: number | undefined | null): number =>
-    scaleMonetaryAmountForCurrencySwitch(val, fromUnit, targetUnit);
+  // First clean any pre-existing inflated numbers under the current unit before scaling
+  await repairExcessZeroInflationInDatabase(fromUnit);
+
+  const scale = (val: number | undefined | null, maxInTargetUnit?: number): number => {
+    const scaled = scaleMonetaryAmountForCurrencySwitch(val, fromUnit, targetUnit);
+    if (maxInTargetUnit && maxInTargetUnit > 0 && Math.abs(scaled) > maxInTargetUnit) {
+      return deinflateMonetaryValue(scaled, maxInTargetUnit).value;
+    }
+    return scaled;
+  };
+
+  const targetMult = targetUnit === 'rial' ? 10 : 1;
+  const MAX_SS = 3_500_000 * targetMult;
+  const MAX_BEV = 450_000 * targetMult;
+  const MAX_FOOD = 3_000_000 * targetMult;
 
   await db.transaction(
     'rw',
@@ -1871,18 +1962,18 @@ export async function convertDatabaseCurrencyUnit(
           Array.isArray(baseBevs) && baseBevs.length > 0
             ? baseBevs.map((bev) => ({
                 ...bev,
-                price: scale(bev.price),
+                price: scale(bev.price, MAX_BEV),
               }))
             : getDefaultQuickBeverages(targetUnit);
         const nextTs = Math.max(Date.now(), (Number((s as any)._updatedAtMs) || 0) + 5000);
 
         await db.settings.update(s.id, {
           currencyUnit: targetUnit,
-          selfServicePricePerPerson: scale(s.selfServicePricePerPerson),
-          defaultSodaPrice: scale(defaultSodaBefore),
-          defaultDoughPrice: scale(defaultDoughBefore),
-          defaultWaterPrice: scale(defaultWaterBefore),
-          defaultDelsterPrice: scale(defaultDelsterBefore),
+          selfServicePricePerPerson: scale(s.selfServicePricePerPerson, MAX_SS),
+          defaultSodaPrice: scale(defaultSodaBefore, MAX_BEV),
+          defaultDoughPrice: scale(defaultDoughBefore, MAX_BEV),
+          defaultWaterPrice: scale(defaultWaterBefore, MAX_BEV),
+          defaultDelsterPrice: scale(defaultDelsterBefore, MAX_BEV),
           quickBeverages: scaledBeverages,
           _quickBeveragesCurrencySynced: true,
           _updatedAtMs: nextTs,
@@ -1894,7 +1985,7 @@ export async function convertDatabaseCurrencyUnit(
       for (const m of allMenuItems) {
         if (!m.id) continue;
         await db.menuItems.update(m.id, {
-          price: scale(m.price),
+          price: scale(m.price, m.isQuickBeverage ? MAX_BEV : MAX_FOOD),
         });
       }
 
@@ -1912,7 +2003,7 @@ export async function convertDatabaseCurrencyUnit(
           taxAmount: scale(o.taxAmount),
           total: scale(o.total),
           selfServiceUnitPrice:
-            o.selfServiceUnitPrice !== undefined ? scale(o.selfServiceUnitPrice) : undefined,
+            o.selfServiceUnitPrice !== undefined ? scale(o.selfServiceUnitPrice, MAX_SS) : undefined,
           cashAmount: o.cashAmount !== undefined ? scale(o.cashAmount) : undefined,
           cardAmount: o.cardAmount !== undefined ? scale(o.cardAmount) : undefined,
           cogsAmount: o.cogsAmount !== undefined ? scale(o.cogsAmount) : undefined,
@@ -2039,6 +2130,9 @@ export async function convertDatabaseCurrencyUnit(
       }
     }
   );
+
+  // Final post-conversion pass to ensure all totals and linked vouchers are 100% consistent in targetUnit
+  await repairExcessZeroInflationInDatabase(targetUnit);
 
   return { converted: true, fromUnit, toUnit: targetUnit };
 }

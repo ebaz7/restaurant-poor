@@ -44,6 +44,7 @@ import { getLicenseStatus } from './lib/licenseManager';
 import {
   db,
   initializeDefaultDatabase,
+  repairExcessZeroInflationInDatabase,
   AppUser,
   PermissionKey,
   ALL_PERMISSIONS,
@@ -185,7 +186,7 @@ export default function App() {
   // Auto-purge stale Service Worker and webview caches when upgrading versions
   useEffect(() => {
     try {
-      const CURRENT_VERSION = '1.3.0';
+      const CURRENT_VERSION = '1.4.0';
       const storedVersion = window.localStorage.getItem('arka_build_version');
       if (storedVersion !== CURRENT_VERSION) {
         window.localStorage.setItem('arka_build_version', CURRENT_VERSION);
@@ -214,6 +215,10 @@ export default function App() {
       try {
         await initNetworkSync();
         await initializeDefaultDatabase();
+        const repairRes = await repairExcessZeroInflationInDatabase();
+        if (repairRes.modified) {
+          await pushToCentralServer(true);
+        }
       } catch (e) {
         console.warn('Startup sync error:', e);
       } finally {

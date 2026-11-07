@@ -281,6 +281,796 @@ export function scaleMonetaryAmountForCurrencySwitch(
 }
 
 /**
+ * Strips excess powers of 10 from a monetary value that was accidentally multiplied
+ * during repeated Rial <-> Toman switches, bringing it back within `maxAllowed`.
+ */
+export function deinflateMonetaryValue(
+  rawVal: number | undefined | null,
+  maxAllowed: number
+): { value: number; factor: number } {
+  const num = Number(rawVal);
+  if (rawVal === undefined || rawVal === null || !Number.isFinite(num) || num === 0) {
+    return { value: 0, factor: 1 };
+  }
+  const sign = num < 0 ? -1 : 1;
+  let absVal = Math.abs(num);
+  if (maxAllowed <= 0 || absVal <= maxAllowed) {
+    return { value: Math.round(num), factor: 1 };
+  }
+
+  let factor = 1;
+  while (absVal > maxAllowed && factor < 1e27) {
+    absVal = absVal / 10;
+    factor *= 10;
+  }
+
+  // If the value was inflated by >= 10^9 (where IEEE-754 double precision can introduce low-digit noise),
+  // snap unit prices >= 10,000 to the nearest 500 to recover the exact clean price (e.g. 8,330,000 or 4,165,000).
+  let cleaned = Math.round(absVal);
+  if (factor >= 1e9 && cleaned >= 10000) {
+    cleaned = Math.round(absVal / 500) * 500;
+  } else if (factor >= 10 && cleaned >= 1000 && cleaned % 100 !== 0) {
+    cleaned = Math.round(absVal / 100) * 100;
+  }
+
+  return { value: sign * cleaned, factor };
+}
+
+/**
+ * Repairs excess zero inflation (10^k) across an entire database snapshot (orders, journalVouchers,
+ * bankAccounts, settings, menuItems, rawMaterials, inventoryTransactions, productionRecipes,
+ * kitchenProductions, cashClosures, cheques, persons).
+ * Never deletes any records — only strips accidental extra zeros and recomputes order/voucher totals.
+ */
+export function repairExcessZeroInflationOnDataObject(
+  data: any,
+  overrideUnit?: 'toman' | 'rial',
+  nowTimestampMs?: number
+): { repairedCount: number; modified: boolean } {
+  if (!data || typeof data !== 'object') {
+    return { repairedCount: 0, modified: false };
+  }
+
+  const firstSetting = Array.isArray(data.settings) && data.settings.length > 0 ? data.settings[0] : null;
+  const unit: 'toman' | 'rial' =
+    overrideUnit || (firstSetting?.currencyUnit === 'rial' ? 'rial' : 'toman');
+  const mult = unit === 'rial' ? 10 : 1;
+  const nowTs = nowTimestampMs || Date.now();
+
+  // Realistic upper bounds per single item in Toman (multiplied by 10 when unit === 'rial'):
+  // - Self-service per person: e.g. 833,000 Toman / 8,330,000 Rial -> ceiling 3,500,000 Toman / 35,000,000 Rial
+  // - Half-price child ticket: e.g. 416,500 Toman / 4,165,000 Rial -> ceiling 2,000,000 Toman / 20,000,000 Rial
+  // - Quick beverage / drink: e.g. 25,000..125,000 Toman / 250,000..1,250,000 Rial -> ceiling 450,000 Toman / 4,500,000 Rial
+  // - Menu food item: ceiling 3,000,000 Toman / 30,000,000 Rial
+  const MAX_SELF_SERVICE_UNIT = 3_500_000 * mult;
+  const MAX_HALF_SERVICE_UNIT = 2_000_000 * mult;
+  const MAX_BEVERAGE_UNIT = 450_000 * mult;
+  const MAX_MENU_FOOD_UNIT = 3_000_000 * mult;
+  const MAX_RAW_MATERIAL_UNIT = 50_000_000 * mult;
+
+  const isBeverageLabel = (name: string | undefined): boolean => {
+    if (!name) return false;
+    return /(نوشابه|دوغ|آب|دلستر|ماءالشعیر|شربت|آبمیوه|کوکا|فانتا|اسپرایت|پپسی|سودا)/.test(name);
+  };
+
+  let repairedCount = 0;
+
+  // 1. Settings
+  if (Array.isArray(data.settings)) {
+    for (const s of data.settings) {
+      if (!s || typeof s !== 'object') continue;
+      let sChanged = false;
+
+      if (typeof s.selfServicePricePerPerson === 'number' && s.selfServicePricePerPerson > MAX_SELF_SERVICE_UNIT) {
+        const res = deinflateMonetaryValue(s.selfServicePricePerPerson, MAX_SELF_SERVICE_UNIT);
+        if (res.factor > 1) {
+          s.selfServicePricePerPerson = res.value;
+          sChanged = true;
+        }
+      }
+
+      for (const field of ['defaultSodaPrice', 'defaultDoughPrice', 'defaultWaterPrice', 'defaultDelsterPrice']) {
+        if (typeof s[field] === 'number' && s[field] > MAX_BEVERAGE_UNIT) {
+          const res = deinflateMonetaryValue(s[field], MAX_BEVERAGE_UNIT);
+          if (res.factor > 1) {
+            s[field] = res.value;
+            sChanged = true;
+          }
+        }
+      }
+
+      if (Array.isArray(s.quickBeverages)) {
+        for (const bev of s.quickBeverages) {
+          if (bev && typeof bev.price === 'number' && bev.price > MAX_BEVERAGE_UNIT) {
+            const res = deinflateMonetaryValue(bev.price, MAX_BEVERAGE_UNIT);
+            if (res.factor > 1) {
+              bev.price = res.value;
+              sChanged = true;
+            }
+          }
+        }
+      }
+
+      if (sChanged) {
+        s._updatedAtMs = Math.max(nowTs, (Number(s._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 2. Menu Items
+  if (Array.isArray(data.menuItems)) {
+    for (const m of data.menuItems) {
+      if (!m || typeof m !== 'object') continue;
+      const ceiling = m.isQuickBeverage || isBeverageLabel(m.name) ? MAX_BEVERAGE_UNIT : MAX_MENU_FOOD_UNIT;
+      if (typeof m.price === 'number' && m.price > ceiling) {
+        const res = deinflateMonetaryValue(m.price, ceiling);
+        if (res.factor > 1) {
+          m.price = res.value;
+          m._updatedAtMs = Math.max(nowTs, (Number(m._updatedAtMs) || 0) + 1000);
+          repairedCount++;
+        }
+      }
+    }
+  }
+
+  // 3. Orders (POS & Self-Service Invoices)
+  const orderFactorByInvoiceNum = new Map<number, { factor: number; order: any }>();
+  const orderFactorById = new Map<number, { factor: number; order: any }>();
+
+  if (Array.isArray(data.orders)) {
+    for (const o of data.orders) {
+      if (!o || typeof o !== 'object') continue;
+
+      let orderFactor = 1;
+      if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > MAX_SELF_SERVICE_UNIT) {
+        const ssRes = deinflateMonetaryValue(o.selfServiceUnitPrice, MAX_SELF_SERVICE_UNIT);
+        orderFactor = Math.max(orderFactor, ssRes.factor);
+      }
+
+      if (Array.isArray(o.items)) {
+        for (const it of o.items) {
+          if (!it || typeof it.price !== 'number' || it.price <= 0) continue;
+          const itemCeiling =
+            it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
+              ? MAX_SELF_SERVICE_UNIT
+              : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
+              ? MAX_HALF_SERVICE_UNIT
+              : isBeverageLabel(it.name)
+              ? MAX_BEVERAGE_UNIT
+              : MAX_MENU_FOOD_UNIT;
+          if (it.price > itemCeiling) {
+            const itRes = deinflateMonetaryValue(it.price, itemCeiling);
+            orderFactor = Math.max(orderFactor, itRes.factor);
+          }
+        }
+      }
+
+      // Fallback check if order has no items or unit prices but total is astronomically inflated
+      const totalGuests = Math.max(
+        1,
+        (Number(o.selfServiceGuests) || 0) + (Number(o.selfServiceHalfPriceGuests) || 0)
+      );
+      const maxReasonableOrderTotal = Math.max(250_000_000 * mult, totalGuests * MAX_SELF_SERVICE_UNIT * 3);
+      if (orderFactor === 1 && typeof o.total === 'number' && o.total > maxReasonableOrderTotal) {
+        const totRes = deinflateMonetaryValue(o.total, maxReasonableOrderTotal);
+        orderFactor = Math.max(orderFactor, totRes.factor);
+      }
+
+      // Also check if order total suffers from float precision noise or doesn't match its items
+      if (orderFactor > 1) {
+        if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > 0) {
+          const scaledSS = o.selfServiceUnitPrice / orderFactor;
+          o.selfServiceUnitPrice = deinflateMonetaryValue(
+            orderFactor >= 1e9 && scaledSS >= 10000 ? Math.round(scaledSS / 500) * 500 : Math.round(scaledSS),
+            MAX_SELF_SERVICE_UNIT
+          ).value;
+        }
+
+        if (typeof o.selfServiceHalfPriceUnitPrice === 'number' && o.selfServiceHalfPriceUnitPrice > 0) {
+          o.selfServiceHalfPriceUnitPrice = o.selfServiceUnitPrice
+            ? Math.round(o.selfServiceUnitPrice / 2)
+            : deinflateMonetaryValue(Math.round(o.selfServiceHalfPriceUnitPrice / orderFactor), MAX_HALF_SERVICE_UNIT).value;
+        }
+
+        let itemsSubtotal = 0;
+        let hasSelfServiceTicketInItems = false;
+
+        if (Array.isArray(o.items)) {
+          o.items = o.items.map((it: any) => {
+            if (!it || typeof it !== 'object') return it;
+            const rawPrice = Number(it.price) || 0;
+            const qty = Math.max(0, Number(it.quantity) || 0);
+            const itemCeiling =
+              it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
+                ? MAX_SELF_SERVICE_UNIT
+                : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
+                ? MAX_HALF_SERVICE_UNIT
+                : isBeverageLabel(it.name)
+                ? MAX_BEVERAGE_UNIT
+                : MAX_MENU_FOOD_UNIT;
+
+            let cleanPrice = rawPrice / orderFactor;
+            if (orderFactor >= 1e9 && cleanPrice >= 10000) {
+              cleanPrice = Math.round(cleanPrice / 500) * 500;
+            } else {
+              cleanPrice = Math.round(cleanPrice);
+            }
+            if (cleanPrice > itemCeiling) {
+              cleanPrice = deinflateMonetaryValue(cleanPrice, itemCeiling).value;
+            }
+            if (it.menuItemId === -1 && o.selfServiceUnitPrice) {
+              cleanPrice = o.selfServiceUnitPrice;
+              hasSelfServiceTicketInItems = true;
+            } else if (it.menuItemId === -2 && o.selfServiceUnitPrice) {
+              cleanPrice = Math.round(o.selfServiceUnitPrice / 2);
+              hasSelfServiceTicketInItems = true;
+            } else if (String(it.name || '').includes('ورودی بار سلف سرویس')) {
+              hasSelfServiceTicketInItems = true;
+            }
+
+            itemsSubtotal += Math.round(cleanPrice * qty);
+            return {
+              ...it,
+              price: cleanPrice,
+            };
+          });
+        }
+
+        if (
+          o.invoiceMode === 'self_service' &&
+          !hasSelfServiceTicketInItems &&
+          (Number(o.selfServiceGuests) || 0) > 0 &&
+          (Number(o.selfServiceUnitPrice) || 0) > 0
+        ) {
+          const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
+          const halfG = Math.max(0, Number(o.selfServiceHalfPriceGuests) || 0);
+          const uPrice = Number(o.selfServiceUnitPrice) || 0;
+          itemsSubtotal += Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2));
+        }
+
+        const repairedSubtotal = itemsSubtotal > 0 ? itemsSubtotal : Math.round((Number(o.subtotal) || 0) / orderFactor);
+        o.subtotal = repairedSubtotal;
+
+        let discountAmt = 0;
+        if (o.discountType === 'percent' && (Number(o.discountValue) || 0) > 0) {
+          const pct = Math.min(100, Math.max(0, Number(o.discountValue) || 0));
+          discountAmt = Math.round((repairedSubtotal * pct) / 100);
+        } else if (o.discountType === 'amount' && (Number(o.discountValue) || 0) > 0) {
+          o.discountValue = Math.min(repairedSubtotal, Math.round((Number(o.discountValue) || 0) / orderFactor));
+          discountAmt = o.discountValue;
+        }
+
+        const taxable = Math.max(0, repairedSubtotal - discountAmt);
+        const repairedTax =
+          o.taxEnabled && (Number(o.taxPercentage) || 0) > 0
+            ? Math.round((taxable * Number(o.taxPercentage)) / 100)
+            : 0;
+        o.taxAmount = repairedTax;
+
+        const repairedTotal = Math.max(0, taxable + repairedTax);
+        o.total = repairedTotal;
+
+        if (o.paymentMethod === 'cash') {
+          o.cashAmount = repairedTotal;
+          o.cardAmount = 0;
+        } else if (o.paymentMethod === 'card') {
+          o.cashAmount = 0;
+          o.cardAmount = repairedTotal;
+        } else if (o.paymentMethod === 'credit') {
+          o.cashAmount = 0;
+          o.cardAmount = 0;
+        } else if (o.paymentMethod === 'split') {
+          const scaledCash = Math.min(repairedTotal, Math.max(0, Math.round((Number(o.cashAmount) || 0) / orderFactor)));
+          o.cashAmount = scaledCash;
+          o.cardAmount = Math.max(0, repairedTotal - scaledCash);
+        }
+
+        if (typeof o.cogsAmount === 'number' && o.cogsAmount > 0) {
+          let scaledCogs = Math.round(o.cogsAmount / orderFactor);
+          if (scaledCogs > repairedTotal * 2 && repairedTotal > 0) {
+            scaledCogs = deinflateMonetaryValue(scaledCogs, repairedTotal).value;
+          }
+          o.cogsAmount = scaledCogs;
+        }
+
+        o._updatedAtMs = Math.max(nowTs, (Number(o._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+
+        if (o.invoiceNumber !== undefined && o.invoiceNumber !== null) {
+          orderFactorByInvoiceNum.set(Number(o.invoiceNumber), { factor: orderFactor, order: o });
+        }
+        if (o.id !== undefined && o.id !== null) {
+          orderFactorById.set(Number(o.id), { factor: orderFactor, order: o });
+        }
+      } else {
+        if (o.invoiceNumber !== undefined && o.invoiceNumber !== null) {
+          orderFactorByInvoiceNum.set(Number(o.invoiceNumber), { factor: 1, order: o });
+        }
+        if (o.id !== undefined && o.id !== null) {
+          orderFactorById.set(Number(o.id), { factor: 1, order: o });
+        }
+      }
+    }
+  }
+
+  // 4. Raw Materials
+  const materialCostMap = new Map<number, number>();
+  if (Array.isArray(data.rawMaterials)) {
+    for (const rm of data.rawMaterials) {
+      if (!rm || typeof rm !== 'object') continue;
+      let rmChanged = false;
+      const ceiling =
+        rm.unit === 'عدد' && isBeverageLabel(rm.name) ? MAX_BEVERAGE_UNIT : MAX_RAW_MATERIAL_UNIT;
+      if (typeof rm.avgCost === 'number' && rm.avgCost > ceiling) {
+        const res = deinflateMonetaryValue(rm.avgCost, ceiling);
+        if (res.factor > 1) {
+          rm.avgCost = res.value;
+          rmChanged = true;
+        }
+      }
+      if (typeof rm.lastPurchasePrice === 'number' && rm.lastPurchasePrice > ceiling) {
+        const res = deinflateMonetaryValue(rm.lastPurchasePrice, ceiling);
+        if (res.factor > 1) {
+          rm.lastPurchasePrice = res.value;
+          rmChanged = true;
+        }
+      }
+      if (rm.id !== undefined && typeof rm.avgCost === 'number') {
+        materialCostMap.set(Number(rm.id), rm.avgCost);
+      }
+      if (rmChanged) {
+        rm._updatedAtMs = Math.max(nowTs, (Number(rm._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 5. Inventory Transactions (Kardex)
+  if (Array.isArray(data.inventoryTransactions)) {
+    for (const tx of data.inventoryTransactions) {
+      if (!tx || typeof tx !== 'object') continue;
+      const ceiling =
+        tx.unit === 'عدد' && isBeverageLabel(tx.materialName) ? MAX_BEVERAGE_UNIT : MAX_RAW_MATERIAL_UNIT;
+      const uRes = deinflateMonetaryValue(tx.unitPrice, ceiling);
+      const qty = Math.max(0, Number(tx.quantity) || 0);
+      const balQty = Math.max(0, Number(tx.balanceQtyAfter) || 0);
+      const expectedTotal = Math.round(qty * uRes.value);
+      const expectedBalVal = Math.round(balQty * uRes.value);
+
+      if (
+        uRes.factor > 1 ||
+        (typeof tx.totalPrice === 'number' && tx.totalPrice > Math.max(expectedTotal * 5, ceiling)) ||
+        (typeof tx.balanceValueAfter === 'number' && tx.balanceValueAfter > Math.max(expectedBalVal * 5, ceiling * 10))
+      ) {
+        tx.unitPrice = uRes.value;
+        tx.totalPrice = expectedTotal;
+        tx.balanceValueAfter = expectedBalVal;
+        tx._updatedAtMs = Math.max(nowTs, (Number(tx._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 6. Production Recipes (BOM)
+  if (Array.isArray(data.productionRecipes)) {
+    for (const r of data.productionRecipes) {
+      if (!r || typeof r !== 'object') continue;
+      let rChanged = false;
+      for (const f of ['laborCost', 'overheadCost', 'packagingCost']) {
+        if (typeof r[f] === 'number' && r[f] > MAX_MENU_FOOD_UNIT) {
+          const res = deinflateMonetaryValue(r[f], MAX_MENU_FOOD_UNIT);
+          if (res.factor > 1) {
+            r[f] = res.value;
+            rChanged = true;
+          }
+        }
+      }
+      if (Array.isArray(r.ingredients)) {
+        for (const ing of r.ingredients) {
+          if (ing && typeof ing.customUnitPrice === 'number' && ing.customUnitPrice > MAX_RAW_MATERIAL_UNIT) {
+            const res = deinflateMonetaryValue(ing.customUnitPrice, MAX_RAW_MATERIAL_UNIT);
+            if (res.factor > 1) {
+              ing.customUnitPrice = res.value;
+              rChanged = true;
+            }
+          }
+        }
+      }
+      if (rChanged) {
+        r._updatedAtMs = Math.max(nowTs, (Number(r._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 7. Kitchen Productions
+  if (Array.isArray(data.kitchenProductions)) {
+    for (const kp of data.kitchenProductions) {
+      if (!kp || typeof kp !== 'object') continue;
+      let kpFactor = 1;
+      if (Array.isArray(kp.items)) {
+        for (const it of kp.items) {
+          if (it && typeof it.unitCost === 'number' && it.unitCost > MAX_MENU_FOOD_UNIT) {
+            kpFactor = Math.max(kpFactor, deinflateMonetaryValue(it.unitCost, MAX_MENU_FOOD_UNIT).factor);
+          }
+        }
+      }
+      if (kpFactor > 1) {
+        let sumMat = 0;
+        if (Array.isArray(kp.materialConsumptions)) {
+          kp.materialConsumptions = kp.materialConsumptions.map((mc: any) => {
+            const uCost = Math.round((Number(mc.unitCost) || 0) / kpFactor);
+            const tCost = Math.round((Number(mc.grossQuantityConsumed) || 0) * uCost);
+            sumMat += tCost;
+            return { ...mc, unitCost: uCost, totalMaterialCost: tCost };
+          });
+        }
+        if (Array.isArray(kp.items)) {
+          kp.items = kp.items.map((it: any) => {
+            const uCost = Math.round((Number(it.unitCost) || 0) / kpFactor);
+            const tCost = Math.round((Number(it.quantityProduced) || 0) * uCost);
+            return { ...it, unitCost: uCost, totalCost: tCost };
+          });
+        }
+        kp.totalMaterialsCost = sumMat > 0 ? sumMat : Math.round((Number(kp.totalMaterialsCost) || 0) / kpFactor);
+        kp.totalLaborAndOverheadCost = Math.round((Number(kp.totalLaborAndOverheadCost) || 0) / kpFactor);
+        kp.totalBatchCost = kp.totalMaterialsCost + kp.totalLaborAndOverheadCost;
+        kp._updatedAtMs = Math.max(nowTs, (Number(kp._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 8. Journal Vouchers
+  const repairedBankIds = new Set<number>();
+  if (Array.isArray(data.journalVouchers)) {
+    for (const v of data.journalVouchers) {
+      if (!v || typeof v !== 'object' || !Array.isArray(v.lines)) continue;
+
+      let matchedOrder: any = null;
+      let orderFactor = 1;
+
+      if (v.type === 'auto_sale' && !String(v.description || '').includes('تولید آشپزخانه')) {
+        if (v.referenceId !== undefined && orderFactorByInvoiceNum.has(Number(v.referenceId))) {
+          const entry = orderFactorByInvoiceNum.get(Number(v.referenceId))!;
+          matchedOrder = entry.order;
+          orderFactor = entry.factor;
+        } else if (v.referenceId !== undefined && orderFactorById.has(Number(v.referenceId))) {
+          const entry = orderFactorById.get(Number(v.referenceId))!;
+          matchedOrder = entry.order;
+          orderFactor = entry.factor;
+        } else if (v.description) {
+          const match = String(v.description).match(/#(\d+)/);
+          if (match && orderFactorByInvoiceNum.has(Number(match[1]))) {
+            const entry = orderFactorByInvoiceNum.get(Number(match[1]))!;
+            matchedOrder = entry.order;
+            orderFactor = entry.factor;
+          }
+        }
+      }
+
+      if (matchedOrder && matchedOrder.total > 0) {
+        // Check if this sale voucher's settlement lines are inflated relative to matchedOrder.total
+        const settlementDebit = v.lines
+          .filter((l: any) => ['101', '102', '103'].includes(String(l?.accountCode)))
+          .reduce((s: number, l: any) => s + (Number(l.debit) || 0), 0);
+
+        if (orderFactor > 1 || settlementDebit > matchedOrder.total * 5) {
+          // Rebuild clean balanced lines from matchedOrder
+          const rebuiltLines: JournalLine[] = [];
+          const invNum = matchedOrder.invoiceNumber || v.referenceId || '';
+          const payMethod = matchedOrder.paymentMethod || 'card';
+
+          if (payMethod === 'cash') {
+            rebuiltLines.push({
+              accountCode: '101',
+              accountName: 'صندوق نقدی رستوران',
+              debit: matchedOrder.total,
+              credit: 0,
+              description: `دریافت نقدی فاکتور #${invNum}`,
+            });
+          } else if (payMethod === 'credit') {
+            rebuiltLines.push({
+              accountCode: '103',
+              accountName: 'حساب‌های دریافتنی (مشتریان و نسیه)',
+              personName: matchedOrder.customerName || matchedOrder.customerPhone || 'مشتری نسیه',
+              debit: matchedOrder.total,
+              credit: 0,
+              description: `فروش نسیه فاکتور #${invNum}`,
+            });
+          } else if (payMethod === 'split') {
+            const csh = Number(matchedOrder.cashAmount) || 0;
+            const crd = Number(matchedOrder.cardAmount) || Math.max(0, matchedOrder.total - csh);
+            if (csh > 0) {
+              rebuiltLines.push({
+                accountCode: '101',
+                accountName: 'صندوق نقدی رستوران',
+                debit: csh,
+                credit: 0,
+                description: `بخش نقدی فاکتور #${invNum}`,
+              });
+            }
+            if (crd > 0) {
+              rebuiltLines.push({
+                accountCode: '102',
+                accountName: 'موجودی بانک‌ها و کارتخوان‌ها',
+                debit: crd,
+                credit: 0,
+                description: `بخش کارتخوان (${matchedOrder.bankName || v.bankName || ''}) فاکتور #${invNum}`,
+              });
+            }
+          } else {
+            rebuiltLines.push({
+              accountCode: '102',
+              accountName: 'موجودی بانک‌ها و کارتخوان‌ها',
+              debit: matchedOrder.total,
+              credit: 0,
+              description: `دریافت کارتخوان (${matchedOrder.bankName || v.bankName || ''}) فاکتور #${invNum}`,
+            });
+          }
+
+          const subtotal = Number(matchedOrder.subtotal) || matchedOrder.total;
+          const taxAmt = Number(matchedOrder.taxAmount) || 0;
+          const discountAmt = Math.max(0, subtotal + taxAmt - matchedOrder.total);
+
+          if (discountAmt > 0) {
+            rebuiltLines.push({
+              accountCode: '403',
+              accountName: 'تخفیفات نقدی فروش',
+              debit: discountAmt,
+              credit: 0,
+              description: `تخفیف فاکتور #${invNum}`,
+            });
+          }
+
+          if (matchedOrder.invoiceMode === 'self_service') {
+            const fullG = Math.max(0, Number(matchedOrder.selfServiceGuests) || 0);
+            const halfG = Math.max(0, Number(matchedOrder.selfServiceHalfPriceGuests) || 0);
+            const uPrice = Number(matchedOrder.selfServiceUnitPrice) || 0;
+            const ssPortion = Math.min(
+              subtotal,
+              Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2))
+            );
+            const extraPortion = Math.max(0, subtotal - ssPortion);
+            if (ssPortion > 0) {
+              rebuiltLines.push({
+                accountCode: '402',
+                accountName: 'درآمد فیش سلف سرویس و نوشابه',
+                debit: 0,
+                credit: ssPortion,
+                description: `فیش سلف سرویس (${fullG + halfG} نفر) #${invNum}`,
+              });
+            }
+            if (extraPortion > 0) {
+              rebuiltLines.push({
+                accountCode: '401',
+                accountName: 'درآمد فروش غذا و منو',
+                debit: 0,
+                credit: extraPortion,
+                description: `آیتم‌های اضافی فاکتور #${invNum}`,
+              });
+            }
+            if (ssPortion === 0 && extraPortion === 0) {
+              rebuiltLines.push({
+                accountCode: '402',
+                accountName: 'درآمد فیش سلف سرویس و نوشابه',
+                debit: 0,
+                credit: subtotal,
+                description: `فیش سلف سرویس #${invNum}`,
+              });
+            }
+          } else {
+            rebuiltLines.push({
+              accountCode: '401',
+              accountName: 'درآمد فروش غذا و منو',
+              debit: 0,
+              credit: subtotal,
+              description: `فروش منو فاکتور #${invNum}`,
+            });
+          }
+
+          if (taxAmt > 0) {
+            rebuiltLines.push({
+              accountCode: '203',
+              accountName: 'مالیات بر ارزش افزوده پرداختنی',
+              debit: 0,
+              credit: taxAmt,
+              description: `مالیات فاکتور #${invNum}`,
+            });
+          }
+
+          const cogs = Number(matchedOrder.cogsAmount) || 0;
+          if (cogs > 0) {
+            rebuiltLines.push({
+              accountCode: '501',
+              accountName: 'بهای تمام شده غذای فروش رفته (مصرف مواد و تولید)',
+              debit: cogs,
+              credit: 0,
+              description: `بهای تمام شده اتوماتیک فاکتور #${invNum}`,
+            });
+            rebuiltLines.push({
+              accountCode: '105',
+              accountName: 'موجودی مواد اولیه انبار',
+              debit: 0,
+              credit: cogs,
+              description: `خروج مواد اولیه مصرفی فاکتور #${invNum}`,
+            });
+          }
+
+          v.lines = rebuiltLines;
+          v.totalAmount = rebuiltLines.reduce((sum, l) => sum + (Number(l.debit) || 0), 0);
+          v._updatedAtMs = Math.max(nowTs, (Number(v._updatedAtMs) || 0) + 1000);
+          if (v.bankId) repairedBankIds.add(Number(v.bankId));
+          repairedCount++;
+          continue;
+        }
+      }
+
+      // Non-matched voucher: check if any line exceeds reasonable voucher ceiling (500M Toman / 5B Rial)
+      const MAX_VOUCHER_LINE = 500_000_000 * mult;
+      let vFactor = 1;
+      for (const l of v.lines) {
+        const m = Math.max(Number(l?.debit) || 0, Number(l?.credit) || 0);
+        if (m > MAX_VOUCHER_LINE) {
+          vFactor = Math.max(vFactor, deinflateMonetaryValue(m, MAX_VOUCHER_LINE).factor);
+        }
+      }
+      if (vFactor > 1) {
+        v.lines = v.lines.map((l: any) => ({
+          ...l,
+          debit: Math.round((Number(l.debit) || 0) / vFactor),
+          credit: Math.round((Number(l.credit) || 0) / vFactor),
+        }));
+        v.totalAmount = v.lines.reduce((sum: number, l: any) => sum + (Number(l.debit) || 0), 0);
+        v._updatedAtMs = Math.max(nowTs, (Number(v._updatedAtMs) || 0) + 1000);
+        if (v.bankId) repairedBankIds.add(Number(v.bankId));
+        repairedCount++;
+      }
+    }
+  }
+
+  // 9. Bank Accounts
+  if (Array.isArray(data.bankAccounts)) {
+    const MAX_BANK_BALANCE = 20_000_000_000 * mult;
+    for (const b of data.bankAccounts) {
+      if (!b || typeof b !== 'object') continue;
+      let bChanged = false;
+
+      if (typeof b.initialBalance === 'number' && Math.abs(b.initialBalance) > MAX_BANK_BALANCE) {
+        const res = deinflateMonetaryValue(b.initialBalance, MAX_BANK_BALANCE);
+        if (res.factor > 1) {
+          b.initialBalance = res.value;
+          bChanged = true;
+        }
+      }
+
+      const bId = b.id !== undefined ? Number(b.id) : undefined;
+      const isBankAffectedByRepairedVouchers = bId !== undefined && repairedBankIds.has(bId);
+      const isCurrentBalanceInflated =
+        typeof b.currentBalance === 'number' && Math.abs(b.currentBalance) > MAX_BANK_BALANCE;
+
+      if (isBankAffectedByRepairedVouchers || isCurrentBalanceInflated) {
+        if (bId !== undefined && Array.isArray(data.journalVouchers)) {
+          const matchingVouchers = data.journalVouchers.filter(
+            (v: any) => v && Number(v.bankId) === bId && Array.isArray(v.lines)
+          );
+          if (matchingVouchers.length > 0) {
+            let delta = 0;
+            for (const v of matchingVouchers) {
+              for (const line of v.lines) {
+                if (String(line?.accountCode) === '102') {
+                  delta += (Number(line.debit) || 0) - (Number(line.credit) || 0);
+                }
+              }
+            }
+            const recomputedBalance = (Number(b.initialBalance) || 0) + delta;
+            if (b.currentBalance !== recomputedBalance) {
+              b.currentBalance = recomputedBalance;
+              bChanged = true;
+            }
+          } else if (isCurrentBalanceInflated) {
+            const res = deinflateMonetaryValue(b.currentBalance, MAX_BANK_BALANCE);
+            if (res.factor > 1) {
+              b.currentBalance = res.value;
+              bChanged = true;
+            }
+          }
+        } else if (isCurrentBalanceInflated) {
+          const res = deinflateMonetaryValue(b.currentBalance, MAX_BANK_BALANCE);
+          if (res.factor > 1) {
+            b.currentBalance = res.value;
+            bChanged = true;
+          }
+        }
+      }
+
+      if (bChanged) {
+        b._updatedAtMs = Math.max(nowTs, (Number(b._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 10. Persons (Staff, Suppliers, Customers)
+  if (Array.isArray(data.persons)) {
+    const MAX_SALARY = 200_000_000 * mult;
+    const MAX_PERSON_BAL = 5_000_000_000 * mult;
+    for (const p of data.persons) {
+      if (!p || typeof p !== 'object') continue;
+      let pChanged = false;
+      if (typeof p.monthlySalary === 'number' && p.monthlySalary > MAX_SALARY) {
+        const res = deinflateMonetaryValue(p.monthlySalary, MAX_SALARY);
+        if (res.factor > 1) {
+          p.monthlySalary = res.value;
+          pChanged = true;
+        }
+      }
+      if (typeof p.initialBalance === 'number' && Math.abs(p.initialBalance) > MAX_PERSON_BAL) {
+        const res = deinflateMonetaryValue(p.initialBalance, MAX_PERSON_BAL);
+        if (res.factor > 1) {
+          p.initialBalance = res.value;
+          pChanged = true;
+        }
+      }
+      if (pChanged) {
+        p._updatedAtMs = Math.max(nowTs, (Number(p._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
+  // 11. Cheques
+  if (Array.isArray(data.cheques)) {
+    const MAX_CHEQUE = 5_000_000_000 * mult;
+    for (const ch of data.cheques) {
+      if (!ch || typeof ch !== 'object') continue;
+      if (typeof ch.amount === 'number' && ch.amount > MAX_CHEQUE) {
+        const res = deinflateMonetaryValue(ch.amount, MAX_CHEQUE);
+        if (res.factor > 1) {
+          ch.amount = res.value;
+          ch._updatedAtMs = Math.max(nowTs, (Number(ch._updatedAtMs) || 0) + 1000);
+          repairedCount++;
+        }
+      }
+    }
+  }
+
+  // 12. Cash Closures (Z-Reports)
+  if (Array.isArray(data.cashClosures)) {
+    const MAX_CLOSURE_SALES = 2_000_000_000 * mult;
+    for (const cc of data.cashClosures) {
+      if (!cc || typeof cc !== 'object') continue;
+      const avgOrderCeiling = 35_000_000 * mult;
+      const oCount = Math.max(1, Number(cc.orderCount) || 1);
+      const maxAllowedTotal = Math.min(MAX_CLOSURE_SALES, oCount * avgOrderCeiling);
+      if (typeof cc.totalSales === 'number' && cc.totalSales > maxAllowedTotal) {
+        const res = deinflateMonetaryValue(cc.totalSales, maxAllowedTotal);
+        if (res.factor > 1) {
+          const f = res.factor;
+          cc.totalSales = Math.round((Number(cc.totalSales) || 0) / f);
+          cc.expectedCash = Math.round((Number(cc.expectedCash) || 0) / f);
+          cc.actualCash = Math.round((Number(cc.actualCash) || 0) / f);
+          cc.cashDiscrepancy = cc.actualCash - cc.expectedCash;
+          cc.totalCard = Math.round((Number(cc.totalCard) || 0) / f);
+          cc.totalCredit = Math.round((Number(cc.totalCredit) || 0) / f);
+          if (Array.isArray(cc.bankBreakdown)) {
+            cc.bankBreakdown = cc.bankBreakdown.map((bb: any) => ({
+              ...bb,
+              amount: Math.round((Number(bb.amount) || 0) / f),
+            }));
+          }
+          cc._updatedAtMs = Math.max(nowTs, (Number(cc._updatedAtMs) || 0) + 1000);
+          repairedCount++;
+        }
+      }
+    }
+  }
+
+  return { repairedCount, modified: repairedCount > 0 };
+}
+
+/**
  * Computes Self-Service ticket pricing (for 1 or more guests) + optional extra items, discounts, and tax.
  */
 export function calculateSelfServiceInvoice(input: SelfServiceCalcInput): SelfServiceCalcResult {
