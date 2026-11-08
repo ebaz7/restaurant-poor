@@ -316,11 +316,260 @@ export function deinflateMonetaryValue(
   return { value: sign * cleaned, factor };
 }
 
+const isBeverageLabel = (name: string | undefined): boolean => {
+  if (!name) return false;
+  return /(نوشابه|دوغ|آب|دلستر|ماءالشعیر|شربت|آبمیوه|کوکا|فانتا|اسپرایت|پپسی|سودا)/.test(name);
+};
+
+/**
+ * Pure helper that sanitizes a single order's items, unit prices, subtotal, total, card/cash split, and COGS
+ * against realistic currency ceilings so each item is de-inflated independently without corrupting sibling items.
+ */
+export function sanitizeOrderMonetaryValues(
+  o: any,
+  unit: 'toman' | 'rial' = 'rial'
+): { order: any; modified: boolean; maxFactor: number } {
+  if (!o || typeof o !== 'object') {
+    return { order: o, modified: false, maxFactor: 1 };
+  }
+
+  const mult = unit === 'rial' ? 10 : 1;
+  const MAX_SELF_SERVICE_UNIT = 3_500_000 * mult;
+  const MAX_HALF_SERVICE_UNIT = 2_000_000 * mult;
+  const MAX_BEVERAGE_UNIT = 450_000 * mult;
+  const MAX_MENU_FOOD_UNIT = 3_000_000 * mult;
+
+  let modified = false;
+  let maxFactor = 1;
+
+  let cleanSSUnitPrice = o.selfServiceUnitPrice !== undefined ? Number(o.selfServiceUnitPrice) || 0 : undefined;
+  if (cleanSSUnitPrice !== undefined && cleanSSUnitPrice > MAX_SELF_SERVICE_UNIT) {
+    const ssRes = deinflateMonetaryValue(cleanSSUnitPrice, MAX_SELF_SERVICE_UNIT);
+    if (ssRes.factor > 1) {
+      cleanSSUnitPrice = ssRes.value;
+      maxFactor = Math.max(maxFactor, ssRes.factor);
+      modified = true;
+    }
+  }
+
+  let cleanHalfUnitPrice =
+    o.selfServiceHalfPriceUnitPrice !== undefined ? Number(o.selfServiceHalfPriceUnitPrice) || 0 : undefined;
+  if (cleanHalfUnitPrice !== undefined && cleanHalfUnitPrice > MAX_HALF_SERVICE_UNIT) {
+    const hRes = deinflateMonetaryValue(cleanHalfUnitPrice, MAX_HALF_SERVICE_UNIT);
+    if (hRes.factor > 1) {
+      cleanHalfUnitPrice = cleanSSUnitPrice ? Math.round(cleanSSUnitPrice / 2) : hRes.value;
+      maxFactor = Math.max(maxFactor, hRes.factor);
+      modified = true;
+    }
+  }
+
+  let itemsSubtotal = 0;
+  let hasSelfServiceTicketInItems = false;
+  let cleanItems = o.items;
+
+  if (Array.isArray(o.items)) {
+    cleanItems = o.items.map((it: any) => {
+      if (!it || typeof it !== 'object') return it;
+      const rawPrice = Number(it.price) || 0;
+      const qty = Math.max(0, Number(it.quantity) || 0);
+      const isFullSS =
+        it.menuItemId === -1 ||
+        String(it.name || '').includes('تمام‌بها') ||
+        (String(it.name || '').includes('ورودی') && !String(it.name || '').includes('نیم‌بها'));
+      const isHalfSS = it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها');
+
+      const itemCeiling = isFullSS
+        ? MAX_SELF_SERVICE_UNIT
+        : isHalfSS
+        ? MAX_HALF_SERVICE_UNIT
+        : isBeverageLabel(it.name)
+        ? MAX_BEVERAGE_UNIT
+        : MAX_MENU_FOOD_UNIT;
+
+      let cleanPrice = Math.round(rawPrice);
+      if (cleanPrice > itemCeiling) {
+        const itRes = deinflateMonetaryValue(cleanPrice, itemCeiling);
+        if (itRes.factor > 1) {
+          cleanPrice = itRes.value;
+          maxFactor = Math.max(maxFactor, itRes.factor);
+          modified = true;
+        }
+      }
+
+      if (isFullSS) {
+        hasSelfServiceTicketInItems = true;
+        if (cleanSSUnitPrice && cleanSSUnitPrice > 0 && cleanPrice > MAX_SELF_SERVICE_UNIT) {
+          cleanPrice = cleanSSUnitPrice;
+        }
+      } else if (isHalfSS) {
+        hasSelfServiceTicketInItems = true;
+        if (cleanSSUnitPrice && cleanSSUnitPrice > 0 && cleanPrice > MAX_HALF_SERVICE_UNIT) {
+          cleanPrice = Math.round(cleanSSUnitPrice / 2);
+        }
+      }
+
+      if (cleanPrice !== it.price || qty !== it.quantity) {
+        modified = true;
+      }
+
+      itemsSubtotal += Math.round(cleanPrice * qty);
+      return {
+        ...it,
+        price: cleanPrice,
+        quantity: qty,
+      };
+    });
+  }
+
+  if (
+    o.invoiceMode === 'self_service' &&
+    !hasSelfServiceTicketInItems &&
+    (Number(o.selfServiceGuests) || 0) > 0 &&
+    (cleanSSUnitPrice || 0) > 0
+  ) {
+    const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
+    const halfG = Math.max(0, Number(o.selfServiceHalfPriceGuests) || 0);
+    const uPrice = cleanSSUnitPrice || 0;
+    itemsSubtotal += Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2));
+  }
+
+  const totalGuests = Math.max(
+    1,
+    (Number(o.selfServiceGuests) || 0) + (Number(o.selfServiceHalfPriceGuests) || 0)
+  );
+  const maxReasonableOrderTotal = Math.max(250_000_000 * mult, totalGuests * MAX_SELF_SERVICE_UNIT * 3);
+
+  const rawTotal = Number(o.total) || 0;
+  const rawSubtotal = Number(o.subtotal) || 0;
+  const rawCash = Number(o.cashAmount) || 0;
+  const rawCard = Number(o.cardAmount) || 0;
+
+  const isTotalInflated =
+    rawTotal > maxReasonableOrderTotal ||
+    rawSubtotal > maxReasonableOrderTotal ||
+    rawCash > maxReasonableOrderTotal ||
+    rawCard > maxReasonableOrderTotal ||
+    (itemsSubtotal > 0 && (rawTotal > itemsSubtotal * 1.5 || rawSubtotal > itemsSubtotal * 1.5)) ||
+    (rawTotal > 0 && rawCash + rawCard > rawTotal * 1.5);
+
+  if (isTotalInflated && maxFactor === 1) {
+    const refCeiling = itemsSubtotal > 0 ? itemsSubtotal : maxReasonableOrderTotal;
+    const totRes = deinflateMonetaryValue(Math.max(rawTotal, rawCard, rawCash), refCeiling);
+    maxFactor = Math.max(2, totRes.factor);
+  }
+
+  let cleanSubtotal = Math.round(rawSubtotal);
+  let cleanTaxAmount = Math.round(Number(o.taxAmount) || 0);
+  let cleanDiscountValue = Number(o.discountValue) || 0;
+  let cleanTotal = Math.round(rawTotal);
+  let cleanCash = o.cashAmount !== undefined ? Math.round(rawCash) : undefined;
+  let cleanCard = o.cardAmount !== undefined ? Math.round(rawCard) : undefined;
+
+  if (modified || isTotalInflated || typeof o.total !== 'number') {
+    cleanSubtotal =
+      itemsSubtotal > 0
+        ? itemsSubtotal
+        : deinflateMonetaryValue(rawSubtotal || rawTotal, maxReasonableOrderTotal).value;
+
+    let discountAmt = 0;
+    if (o.discountType === 'percent' && cleanDiscountValue > 0) {
+      const pct = Math.min(100, Math.max(0, cleanDiscountValue));
+      discountAmt = Math.round((cleanSubtotal * pct) / 100);
+    } else if (o.discountType === 'amount' && cleanDiscountValue > 0) {
+      if (cleanDiscountValue > cleanSubtotal) {
+        cleanDiscountValue = Math.min(
+          cleanSubtotal,
+          deinflateMonetaryValue(cleanDiscountValue, cleanSubtotal).value
+        );
+      }
+      discountAmt = cleanDiscountValue;
+    }
+
+    const taxable = Math.max(0, cleanSubtotal - discountAmt);
+    cleanTaxAmount =
+      o.taxEnabled && (Number(o.taxPercentage) || 0) > 0
+        ? Math.round((taxable * Number(o.taxPercentage)) / 100)
+        : 0;
+    cleanTotal = Math.max(0, taxable + cleanTaxAmount);
+
+    if (o.paymentMethod === 'cash') {
+      cleanCash = cleanTotal;
+      cleanCard = 0;
+    } else if (o.paymentMethod === 'card') {
+      cleanCash = 0;
+      cleanCard = cleanTotal;
+    } else if (o.paymentMethod === 'credit') {
+      cleanCash = 0;
+      cleanCard = 0;
+    } else if (o.paymentMethod === 'split') {
+      const deinflatedCash =
+        rawCash > cleanTotal ? deinflateMonetaryValue(rawCash, cleanTotal).value : Math.max(0, Math.round(rawCash));
+      cleanCash = Math.min(cleanTotal, deinflatedCash);
+      cleanCard = Math.max(0, cleanTotal - cleanCash);
+    }
+
+    modified = true;
+  }
+
+  // Independent COGS sanity check (even when order items & total were already clean!)
+  let cleanCogs = o.cogsAmount !== undefined ? Math.round(Number(o.cogsAmount) || 0) : undefined;
+  if (cleanCogs !== undefined && cleanCogs > 0 && cleanTotal > 0 && cleanCogs > cleanTotal * 1.5) {
+    // Recompute realistic COGS from order items and self-service guests if possible, or de-inflate
+    let estimatedCogs = 0;
+    const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
+    const uPrice = cleanSSUnitPrice || 0;
+    if (o.invoiceMode === 'self_service' && fullG > 0 && uPrice > 0) {
+      estimatedCogs += Math.round(uPrice * fullG * 0.42);
+    }
+    if (Array.isArray(cleanItems)) {
+      for (const it of cleanItems) {
+        if (!it || (Number(it.menuItemId) || 0) < 0 || String(it.name || '').includes('ورودی')) {
+          if ((Number(it?.menuItemId) || 0) === -1) {
+            // 1 included drink per full guest (~45% of standard soda price)
+            estimatedCogs += Math.round((Number(it.quantity) || 0) * (250_000 * (unit === 'rial' ? 1 : 0.1)));
+          }
+          continue;
+        }
+        estimatedCogs += Math.round((Number(it.price) || 0) * (Number(it.quantity) || 0) * 0.45);
+      }
+    }
+    const deinflatedCogs = deinflateMonetaryValue(cleanCogs, Math.round(cleanTotal * 0.9)).value;
+    cleanCogs =
+      deinflatedCogs > 0 && deinflatedCogs <= cleanTotal
+        ? deinflatedCogs
+        : estimatedCogs > 0
+        ? estimatedCogs
+        : Math.round(cleanTotal * 0.45);
+    modified = true;
+  }
+
+  if (!modified) {
+    return { order: o, modified: false, maxFactor: 1 };
+  }
+
+  const nextOrder = {
+    ...o,
+    items: cleanItems,
+    subtotal: cleanSubtotal,
+    discountValue: cleanDiscountValue,
+    taxAmount: cleanTaxAmount,
+    total: cleanTotal,
+  };
+  if (cleanSSUnitPrice !== undefined) nextOrder.selfServiceUnitPrice = cleanSSUnitPrice;
+  if (cleanHalfUnitPrice !== undefined) nextOrder.selfServiceHalfPriceUnitPrice = cleanHalfUnitPrice;
+  if (cleanCash !== undefined) nextOrder.cashAmount = cleanCash;
+  if (cleanCard !== undefined) nextOrder.cardAmount = cleanCard;
+  if (cleanCogs !== undefined) nextOrder.cogsAmount = cleanCogs;
+
+  return { order: nextOrder, modified: true, maxFactor };
+}
+
 /**
  * Repairs excess zero inflation (10^k) across an entire database snapshot (orders, journalVouchers,
  * bankAccounts, settings, menuItems, rawMaterials, inventoryTransactions, productionRecipes,
  * kitchenProductions, cashClosures, cheques, persons).
- * Never deletes any records — only strips accidental extra zeros and recomputes order/voucher totals.
+ * Never deletes any business records — only strips accidental extra zeros, deduplicates singleton settings,
+ * and recomputes order/voucher totals.
  */
 export function repairExcessZeroInflationOnDataObject(
   data: any,
@@ -331,29 +580,83 @@ export function repairExcessZeroInflationOnDataObject(
     return { repairedCount: 0, modified: false };
   }
 
-  const firstSetting = Array.isArray(data.settings) && data.settings.length > 0 ? data.settings[0] : null;
-  const unit: 'toman' | 'rial' =
-    overrideUnit || (firstSetting?.currencyUnit === 'rial' ? 'rial' : 'toman');
-  const mult = unit === 'rial' ? 10 : 1;
   const nowTs = nowTimestampMs || Date.now();
+  let repairedCount = 0;
 
-  // Realistic upper bounds per single item in Toman (multiplied by 10 when unit === 'rial'):
-  // - Self-service per person: e.g. 833,000 Toman / 8,330,000 Rial -> ceiling 3,500,000 Toman / 35,000,000 Rial
-  // - Half-price child ticket: e.g. 416,500 Toman / 4,165,000 Rial -> ceiling 2,000,000 Toman / 20,000,000 Rial
-  // - Quick beverage / drink: e.g. 25,000..125,000 Toman / 250,000..1,250,000 Rial -> ceiling 450,000 Toman / 4,500,000 Rial
-  // - Menu food item: ceiling 3,000,000 Toman / 30,000,000 Rial
+  // 0. Deduplicate singleton settings table if multiple rows exist (e.g. id: 1 and id: 6)
+  if (Array.isArray(data.settings) && data.settings.length > 1) {
+    const validSettings = data.settings.filter((s: any) => s && typeof s === 'object');
+    if (validSettings.length > 1) {
+      // Sort by _updatedAtMs ascending so newer fields win, while preserving non-empty bot tokens and license info
+      const sorted = [...validSettings].sort(
+        (a, b) => (Number(a._updatedAtMs) || 0) - (Number(b._updatedAtMs) || 0)
+      );
+      const merged: any = { ...sorted[0], id: sorted[0].id || 1 };
+      for (let i = 1; i < sorted.length; i++) {
+        const s = sorted[i];
+        if (s._isDefaultSeed) continue;
+        for (const [k, v] of Object.entries(s)) {
+          if (k === 'id') continue;
+          if (
+            ['baleBotToken', 'baleChatId', 'telegramBotToken', 'telegramChatId', 'logoUrl'].includes(k) &&
+            (!v || String(v).trim() === '') &&
+            merged[k]
+          ) {
+            continue;
+          }
+          if (k === 'centralLicenseInfo' && !v && merged.centralLicenseInfo) {
+            continue;
+          }
+          if (k === 'quickBeverages' && (!Array.isArray(v) || v.length === 0) && Array.isArray(merged.quickBeverages)) {
+            continue;
+          }
+          if (v !== undefined) {
+            merged[k] = v;
+          }
+        }
+      }
+      merged.id = 1;
+      merged._updatedAtMs = Math.max(nowTs, (Number(merged._updatedAtMs) || 0) + 1000);
+      data.settings = [merged];
+      repairedCount++;
+    }
+  }
+
+  const firstSetting = Array.isArray(data.settings) && data.settings.length > 0 ? data.settings[0] : null;
+
+  // Auto-detect if orders are unmistakably in Rial while settings.currencyUnit was accidentally reset to 'toman'
+  let detectedUnit: 'toman' | 'rial' = firstSetting?.currencyUnit === 'rial' ? 'rial' : 'toman';
+  if (!overrideUnit && firstSetting) {
+    const ssPrice = Number(firstSetting.selfServicePricePerPerson) || 0;
+    if (ssPrice >= 3_600_000 && ssPrice <= 35_000_000 && firstSetting.currencyUnit !== 'rial') {
+      firstSetting.currencyUnit = 'rial';
+      firstSetting._updatedAtMs = Math.max(nowTs, (Number(firstSetting._updatedAtMs) || 0) + 1000);
+      detectedUnit = 'rial';
+      repairedCount++;
+    } else if (Array.isArray(data.orders) && data.orders.length > 0) {
+      const sampleOrders = data.orders.slice(-25);
+      let rialOrderVotes = 0;
+      for (const o of sampleOrders) {
+        const uPrice = Number(o?.selfServiceUnitPrice) || 0;
+        if (uPrice >= 3_600_000 && uPrice <= 35_000_000) {
+          rialOrderVotes++;
+        }
+      }
+      if (rialOrderVotes > sampleOrders.length / 2 && firstSetting._isDefaultSeed && firstSetting.currencyUnit !== 'rial') {
+        firstSetting.currencyUnit = 'rial';
+        detectedUnit = 'rial';
+        repairedCount++;
+      }
+    }
+  }
+
+  const unit: 'toman' | 'rial' = overrideUnit || detectedUnit;
+  const mult = unit === 'rial' ? 10 : 1;
+
   const MAX_SELF_SERVICE_UNIT = 3_500_000 * mult;
-  const MAX_HALF_SERVICE_UNIT = 2_000_000 * mult;
   const MAX_BEVERAGE_UNIT = 450_000 * mult;
   const MAX_MENU_FOOD_UNIT = 3_000_000 * mult;
   const MAX_RAW_MATERIAL_UNIT = 50_000_000 * mult;
-
-  const isBeverageLabel = (name: string | undefined): boolean => {
-    if (!name) return false;
-    return /(نوشابه|دوغ|آب|دلستر|ماءالشعیر|شربت|آبمیوه|کوکا|فانتا|اسپرایت|پپسی|سودا)/.test(name);
-  };
-
-  let repairedCount = 0;
 
   // 1. Settings
   if (Array.isArray(data.settings)) {
@@ -414,187 +717,7 @@ export function repairExcessZeroInflationOnDataObject(
     }
   }
 
-  // 3. Orders (POS & Self-Service Invoices)
-  const orderFactorByInvoiceNum = new Map<number, { factor: number; order: any }>();
-  const orderFactorById = new Map<number, { factor: number; order: any }>();
-
-  if (Array.isArray(data.orders)) {
-    for (const o of data.orders) {
-      if (!o || typeof o !== 'object') continue;
-
-      let orderFactor = 1;
-      if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > MAX_SELF_SERVICE_UNIT) {
-        const ssRes = deinflateMonetaryValue(o.selfServiceUnitPrice, MAX_SELF_SERVICE_UNIT);
-        orderFactor = Math.max(orderFactor, ssRes.factor);
-      }
-
-      if (Array.isArray(o.items)) {
-        for (const it of o.items) {
-          if (!it || typeof it.price !== 'number' || it.price <= 0) continue;
-          const itemCeiling =
-            it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
-              ? MAX_SELF_SERVICE_UNIT
-              : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
-              ? MAX_HALF_SERVICE_UNIT
-              : isBeverageLabel(it.name)
-              ? MAX_BEVERAGE_UNIT
-              : MAX_MENU_FOOD_UNIT;
-          if (it.price > itemCeiling) {
-            const itRes = deinflateMonetaryValue(it.price, itemCeiling);
-            orderFactor = Math.max(orderFactor, itRes.factor);
-          }
-        }
-      }
-
-      // Fallback check if order has no items or unit prices but total is astronomically inflated
-      const totalGuests = Math.max(
-        1,
-        (Number(o.selfServiceGuests) || 0) + (Number(o.selfServiceHalfPriceGuests) || 0)
-      );
-      const maxReasonableOrderTotal = Math.max(250_000_000 * mult, totalGuests * MAX_SELF_SERVICE_UNIT * 3);
-      if (orderFactor === 1 && typeof o.total === 'number' && o.total > maxReasonableOrderTotal) {
-        const totRes = deinflateMonetaryValue(o.total, maxReasonableOrderTotal);
-        orderFactor = Math.max(orderFactor, totRes.factor);
-      }
-
-      // Also check if order total suffers from float precision noise or doesn't match its items
-      if (orderFactor > 1) {
-        if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > 0) {
-          const scaledSS = o.selfServiceUnitPrice / orderFactor;
-          o.selfServiceUnitPrice = deinflateMonetaryValue(
-            orderFactor >= 1e9 && scaledSS >= 10000 ? Math.round(scaledSS / 500) * 500 : Math.round(scaledSS),
-            MAX_SELF_SERVICE_UNIT
-          ).value;
-        }
-
-        if (typeof o.selfServiceHalfPriceUnitPrice === 'number' && o.selfServiceHalfPriceUnitPrice > 0) {
-          o.selfServiceHalfPriceUnitPrice = o.selfServiceUnitPrice
-            ? Math.round(o.selfServiceUnitPrice / 2)
-            : deinflateMonetaryValue(Math.round(o.selfServiceHalfPriceUnitPrice / orderFactor), MAX_HALF_SERVICE_UNIT).value;
-        }
-
-        let itemsSubtotal = 0;
-        let hasSelfServiceTicketInItems = false;
-
-        if (Array.isArray(o.items)) {
-          o.items = o.items.map((it: any) => {
-            if (!it || typeof it !== 'object') return it;
-            const rawPrice = Number(it.price) || 0;
-            const qty = Math.max(0, Number(it.quantity) || 0);
-            const itemCeiling =
-              it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
-                ? MAX_SELF_SERVICE_UNIT
-                : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
-                ? MAX_HALF_SERVICE_UNIT
-                : isBeverageLabel(it.name)
-                ? MAX_BEVERAGE_UNIT
-                : MAX_MENU_FOOD_UNIT;
-
-            let cleanPrice = rawPrice / orderFactor;
-            if (orderFactor >= 1e9 && cleanPrice >= 10000) {
-              cleanPrice = Math.round(cleanPrice / 500) * 500;
-            } else {
-              cleanPrice = Math.round(cleanPrice);
-            }
-            if (cleanPrice > itemCeiling) {
-              cleanPrice = deinflateMonetaryValue(cleanPrice, itemCeiling).value;
-            }
-            if (it.menuItemId === -1 && o.selfServiceUnitPrice) {
-              cleanPrice = o.selfServiceUnitPrice;
-              hasSelfServiceTicketInItems = true;
-            } else if (it.menuItemId === -2 && o.selfServiceUnitPrice) {
-              cleanPrice = Math.round(o.selfServiceUnitPrice / 2);
-              hasSelfServiceTicketInItems = true;
-            } else if (String(it.name || '').includes('ورودی بار سلف سرویس')) {
-              hasSelfServiceTicketInItems = true;
-            }
-
-            itemsSubtotal += Math.round(cleanPrice * qty);
-            return {
-              ...it,
-              price: cleanPrice,
-            };
-          });
-        }
-
-        if (
-          o.invoiceMode === 'self_service' &&
-          !hasSelfServiceTicketInItems &&
-          (Number(o.selfServiceGuests) || 0) > 0 &&
-          (Number(o.selfServiceUnitPrice) || 0) > 0
-        ) {
-          const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
-          const halfG = Math.max(0, Number(o.selfServiceHalfPriceGuests) || 0);
-          const uPrice = Number(o.selfServiceUnitPrice) || 0;
-          itemsSubtotal += Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2));
-        }
-
-        const repairedSubtotal = itemsSubtotal > 0 ? itemsSubtotal : Math.round((Number(o.subtotal) || 0) / orderFactor);
-        o.subtotal = repairedSubtotal;
-
-        let discountAmt = 0;
-        if (o.discountType === 'percent' && (Number(o.discountValue) || 0) > 0) {
-          const pct = Math.min(100, Math.max(0, Number(o.discountValue) || 0));
-          discountAmt = Math.round((repairedSubtotal * pct) / 100);
-        } else if (o.discountType === 'amount' && (Number(o.discountValue) || 0) > 0) {
-          o.discountValue = Math.min(repairedSubtotal, Math.round((Number(o.discountValue) || 0) / orderFactor));
-          discountAmt = o.discountValue;
-        }
-
-        const taxable = Math.max(0, repairedSubtotal - discountAmt);
-        const repairedTax =
-          o.taxEnabled && (Number(o.taxPercentage) || 0) > 0
-            ? Math.round((taxable * Number(o.taxPercentage)) / 100)
-            : 0;
-        o.taxAmount = repairedTax;
-
-        const repairedTotal = Math.max(0, taxable + repairedTax);
-        o.total = repairedTotal;
-
-        if (o.paymentMethod === 'cash') {
-          o.cashAmount = repairedTotal;
-          o.cardAmount = 0;
-        } else if (o.paymentMethod === 'card') {
-          o.cashAmount = 0;
-          o.cardAmount = repairedTotal;
-        } else if (o.paymentMethod === 'credit') {
-          o.cashAmount = 0;
-          o.cardAmount = 0;
-        } else if (o.paymentMethod === 'split') {
-          const scaledCash = Math.min(repairedTotal, Math.max(0, Math.round((Number(o.cashAmount) || 0) / orderFactor)));
-          o.cashAmount = scaledCash;
-          o.cardAmount = Math.max(0, repairedTotal - scaledCash);
-        }
-
-        if (typeof o.cogsAmount === 'number' && o.cogsAmount > 0) {
-          let scaledCogs = Math.round(o.cogsAmount / orderFactor);
-          if (scaledCogs > repairedTotal * 2 && repairedTotal > 0) {
-            scaledCogs = deinflateMonetaryValue(scaledCogs, repairedTotal).value;
-          }
-          o.cogsAmount = scaledCogs;
-        }
-
-        o._updatedAtMs = Math.max(nowTs, (Number(o._updatedAtMs) || 0) + 1000);
-        repairedCount++;
-
-        if (o.invoiceNumber !== undefined && o.invoiceNumber !== null) {
-          orderFactorByInvoiceNum.set(Number(o.invoiceNumber), { factor: orderFactor, order: o });
-        }
-        if (o.id !== undefined && o.id !== null) {
-          orderFactorById.set(Number(o.id), { factor: orderFactor, order: o });
-        }
-      } else {
-        if (o.invoiceNumber !== undefined && o.invoiceNumber !== null) {
-          orderFactorByInvoiceNum.set(Number(o.invoiceNumber), { factor: 1, order: o });
-        }
-        if (o.id !== undefined && o.id !== null) {
-          orderFactorById.set(Number(o.id), { factor: 1, order: o });
-        }
-      }
-    }
-  }
-
-  // 4. Raw Materials
+  // 3. Raw Materials (run before Orders so clean material costs are available)
   const materialCostMap = new Map<number, number>();
   if (Array.isArray(data.rawMaterials)) {
     for (const rm of data.rawMaterials) {
@@ -622,6 +745,32 @@ export function repairExcessZeroInflationOnDataObject(
       if (rmChanged) {
         rm._updatedAtMs = Math.max(nowTs, (Number(rm._updatedAtMs) || 0) + 1000);
         repairedCount++;
+      }
+    }
+  }
+
+  // 4. Orders (POS & Self-Service Invoices - per-item independent sanitization + COGS repair)
+  const orderFactorByInvoiceNum = new Map<number, { factor: number; order: any }>();
+  const orderFactorById = new Map<number, { factor: number; order: any }>();
+
+  if (Array.isArray(data.orders)) {
+    for (let idx = 0; idx < data.orders.length; idx++) {
+      const o = data.orders[idx];
+      if (!o || typeof o !== 'object') continue;
+
+      const { order: cleanedOrder, modified, maxFactor } = sanitizeOrderMonetaryValues(o, unit);
+      if (modified) {
+        Object.assign(o, cleanedOrder);
+        o._updatedAtMs = Math.max(nowTs, (Number(o._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+
+      const effectiveFactor = modified ? Math.max(2, maxFactor) : 1;
+      if (o.invoiceNumber !== undefined && o.invoiceNumber !== null) {
+        orderFactorByInvoiceNum.set(Number(o.invoiceNumber), { factor: effectiveFactor, order: o });
+      }
+      if (o.id !== undefined && o.id !== null) {
+        orderFactorById.set(Number(o.id), { factor: effectiveFactor, order: o });
       }
     }
   }
@@ -751,12 +900,21 @@ export function repairExcessZeroInflationOnDataObject(
       }
 
       if (matchedOrder && matchedOrder.total > 0) {
-        // Check if this sale voucher's settlement lines are inflated relative to matchedOrder.total
+        // Check if this sale voucher's settlement or COGS lines are inflated relative to matchedOrder
         const settlementDebit = v.lines
           .filter((l: any) => ['101', '102', '103'].includes(String(l?.accountCode)))
           .reduce((s: number, l: any) => s + (Number(l.debit) || 0), 0);
+        const cogsDebit = v.lines
+          .filter((l: any) => String(l?.accountCode) === '501')
+          .reduce((s: number, l: any) => s + (Number(l.debit) || 0), 0);
+        const expectedCogs = Number(matchedOrder.cogsAmount) || 0;
 
-        if (orderFactor > 1 || settlementDebit > matchedOrder.total * 5) {
+        if (
+          orderFactor > 1 ||
+          settlementDebit > matchedOrder.total * 1.5 ||
+          cogsDebit > matchedOrder.total * 1.5 ||
+          (expectedCogs > 0 && Math.abs(cogsDebit - expectedCogs) > 1000)
+        ) {
           // Rebuild clean balanced lines from matchedOrder
           const rebuiltLines: JournalLine[] = [];
           const invNum = matchedOrder.invoiceNumber || v.referenceId || '';
@@ -1449,8 +1607,12 @@ export function summarizeCashierSettlements(
 
   const bankMap = new Map<number, { bankId: number; bankName: string; amount: number; txCount: number }>();
 
-  for (const order of orders) {
-    if (order.status !== 'paid') continue;
+  const unit: 'toman' | 'rial' =
+    orders.some((o: any) => (Number(o?.selfServiceUnitPrice) || 0) >= 3_600_000) ? 'rial' : 'rial';
+
+  for (const rawOrder of orders) {
+    if (!rawOrder || rawOrder.status !== 'paid') continue;
+    const { order } = sanitizeOrderMonetaryValues(rawOrder, unit);
     const total = Math.max(0, Math.round(Number(order.total) || 0));
     totalSales += total;
     orderCount += 1;
@@ -1467,7 +1629,7 @@ export function summarizeCashierSettlements(
     } else if (method === 'credit') {
       totalCredit += total;
     } else if (method === 'split') {
-      const cashPart = Math.max(0, Math.round(Number(order.cashAmount) || 0));
+      const cashPart = Math.min(total, Math.max(0, Math.round(Number(order.cashAmount) || 0)));
       const cardPart = Math.max(0, Math.round(Number(order.cardAmount) || total - cashPart));
       totalCash += cashPart;
       totalCard += cardPart;

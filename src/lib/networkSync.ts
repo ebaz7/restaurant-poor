@@ -12,7 +12,7 @@
 
 import { db, repairExcessZeroInflationInDatabase } from './db';
 import { repairExcessZeroInflationOnDataObject } from './accountingEngine';
-import { exportDB } from './utils';
+import { expandBackupDataObject, exportDB } from './utils';
 
 export interface SyncState {
   isOnline: boolean;
@@ -634,6 +634,13 @@ export async function initNetworkSync(customServerUrl?: string) {
       const tableName = table.name;
       table.hook('creating', function (primKey, obj) {
         if (!isApplyingRemoteChange && obj && typeof obj === 'object') {
+          if (obj._isDefaultSeed) {
+            obj._updatedAtMs = 1;
+            if (!obj.updatedAt) {
+              obj.updatedAt = new Date(1);
+            }
+            return;
+          }
           const nowMs = getNetworkNow();
           obj._updatedAtMs = nowMs;
           if (!obj.updatedAt) {
@@ -666,8 +673,15 @@ export async function initNetworkSync(customServerUrl?: string) {
           if (modifications && typeof modifications === 'object') {
             modifications._updatedAtMs = nextTs;
             modifications.updatedAt = new Date(nextTs);
+            modifications._isDefaultSeed = false;
           }
-          const mergedObj = { ...obj, ...modifications, id: obj.id ?? primKey, _updatedAtMs: nextTs };
+          const mergedObj = {
+            ...obj,
+            ...modifications,
+            id: obj.id ?? primKey,
+            _updatedAtMs: nextTs,
+            _isDefaultSeed: false,
+          };
           clearTombstoneForCreatedOrUpdatedItem(tableName, mergedObj, primKey);
           markRecordDirty(tableName, mergedObj, primKey);
           const self: any = this;
@@ -684,6 +698,7 @@ export async function initNetworkSync(customServerUrl?: string) {
           return {
             _updatedAtMs: nextTs,
             updatedAt: new Date(nextTs),
+            _isDefaultSeed: false,
           };
         }
       });
@@ -820,8 +835,9 @@ export async function mergeServerDataIntoDexie(
 
   let hasUnsyncedLocalRecords = false;
 
-  // Automatically strip any excess zero inflation (10^k) from incoming server data before merging
+  // Expand any compacted backup fields and strip excess zero inflation (10^k) from incoming server data
   try {
+    expandBackupDataObject(serverData);
     const serverRepair = repairExcessZeroInflationOnDataObject(serverData, undefined, getNetworkNow() + 2000);
     if (serverRepair.modified) {
       hasUnsyncedLocalRecords = true;
@@ -1059,23 +1075,54 @@ export async function mergeServerDataIntoDexie(
     localAll.find((lu) => (sUser.username && lu.username === sUser.username) || (sUser.id && lu.id === sUser.id))
   );
 
-  // 10. Settings: compare timestamps so newest settings win and avoid redundant Dexie updates
+  // 10. Settings: compare timestamps so newest settings win, deduplicate singleton row, and protect bot credentials
   if (Array.isArray(serverData.settings) && serverData.settings.length > 0) {
     const s = parseDatesInItem(serverData.settings[0]);
-    const localSetting = await db.settings.toCollection().first();
+    const allLocalSettings = await db.settings.toArray();
+    if (allLocalSettings.length > 1) {
+      const keepId = allLocalSettings[0].id || 1;
+      for (const ls of allLocalSettings) {
+        if (ls.id !== undefined && ls.id !== keepId) {
+          await db.settings.delete(ls.id);
+        }
+      }
+    }
+    const localSetting: any = await db.settings.toCollection().first();
     if (localSetting?.id) {
       const sTime = getRecordTimestampMs(s);
       const lTime = getRecordTimestampMs(localSetting);
-      if (dirtyTables.has('settings') && lTime >= sTime) {
+      const isLocalDefaultSeed = Boolean(localSetting._isDefaultSeed) || lTime <= 1000;
+
+      // Preserve non-empty bot credentials from either side unless explicitly cleared
+      const preserveBotFields = (target: any, fallback: any) => {
+        if (!target || !fallback) return target;
+        const copy = { ...target };
+        for (const bf of ['baleBotToken', 'baleChatId', 'telegramBotToken', 'telegramChatId', 'logoUrl']) {
+          if ((!copy[bf] || String(copy[bf]).trim() === '') && fallback[bf] && String(fallback[bf]).trim() !== '') {
+            copy[bf] = fallback[bf];
+          }
+        }
+        if (!copy.centralLicenseInfo && fallback.centralLicenseInfo) {
+          copy.centralLicenseInfo = fallback.centralLicenseInfo;
+        }
+        return copy;
+      };
+
+      if (!isLocalDefaultSeed && dirtyTables.has('settings') && lTime >= sTime) {
+        const mergedLocal = preserveBotFields(localSetting, s);
+        if (JSON.stringify(mergedLocal) !== JSON.stringify(localSetting)) {
+          await db.settings.update(localSetting.id, mergedLocal);
+        }
         hasUnsyncedLocalRecords = true;
       } else {
-        const candidate = { ...localSetting, ...s, id: localSetting.id };
+        const safeS = preserveBotFields(s, localSetting);
+        const candidate = { ...localSetting, ...safeS, id: localSetting.id, _isDefaultSeed: false };
         if (JSON.stringify(localSetting) !== JSON.stringify(candidate)) {
-          await db.settings.update(localSetting.id, s);
+          await db.settings.update(localSetting.id, candidate);
         }
       }
     } else {
-      await db.settings.add(s);
+      await db.settings.put({ ...s, id: 1, _isDefaultSeed: false });
     }
   }
 
@@ -1255,7 +1302,7 @@ export async function pushToCentralServer(isInitialSeed: boolean = false): Promi
     try {
       hasPendingPush = false;
       const baseUrl = resolveEffectiveServerUrl();
-      const jsonString = await exportDB();
+      const jsonString = await exportDB(false);
       const fullData = JSON.parse(jsonString);
       repairExcessZeroInflationOnDataObject(fullData, undefined, getNetworkNow() + 2000);
       fullData.deletedRecordsV3 = localDeletedRecords;
@@ -1460,7 +1507,7 @@ export async function notifyRawResetToCentralServer(): Promise<boolean> {
 
   try {
     const baseUrl = resolveEffectiveServerUrl();
-    const jsonString = await exportDB();
+    const jsonString = await exportDB(false);
     const data = JSON.parse(jsonString);
     data.deletedRecords = {};
     data.deletedRecordsV3 = {};
@@ -1933,3 +1980,32 @@ export function saveServerLanIpPreference(ip: string) {
     }
   } catch {}
 }
+
+/**
+ * Triggers an immediate automatic server-side backup into the default backup folder
+ * (Windows: Documents\Arka_POS_Backups and data\backups; Linux: data/backups) when the window/app closes.
+ */
+export function triggerCloseAutoBackup(): void {
+  try {
+    const baseUrl = resolveEffectiveServerUrl();
+    const endpoint = `${baseUrl}/api/db/backup-on-close`;
+    const body = JSON.stringify({
+      reason: 'app_close',
+      timestamp: new Date().toISOString(),
+    });
+    if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      const blob = new Blob([body], { type: 'application/json' });
+      const queued = navigator.sendBeacon(endpoint, blob);
+      if (queued) return;
+    }
+    fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // ignore close errors
+  }
+}
+

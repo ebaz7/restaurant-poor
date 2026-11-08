@@ -1,7 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, Order } from '../../lib/db';
-import { summarizeCashierSettlements } from '../../lib/accountingEngine';
+import { db, Order, repairExcessZeroInflationInDatabase } from '../../lib/db';
+import { sanitizeOrderMonetaryValues, summarizeCashierSettlements } from '../../lib/accountingEngine';
 import { formatCurrency } from '../../lib/utils';
 import InvoiceEditDeleteModal from '../Common/InvoiceEditDeleteModal';
 import {
@@ -27,6 +27,7 @@ export default function ReportsScreen() {
   const [preset, setPreset] = useState<DatePreset>('today');
   const [selectedOrderForEdit, setSelectedOrderForEdit] = useState<Order | null>(null);
 
+  const settings = useLiveQuery(() => db.settings.toCollection().first());
   const appUsers = useLiveQuery(() => db.appUsers.toArray()) || [];
   const activeUserIdStr =
     typeof window !== 'undefined' ? window.sessionStorage.getItem('arka_active_user_id') : null;
@@ -54,6 +55,10 @@ export default function ReportsScreen() {
   ]);
 
   const orders = useLiveQuery(() => db.orders.toArray());
+
+  useEffect(() => {
+    repairExcessZeroInflationInDatabase().catch(() => {});
+  }, []);
 
   const filteredOrders = useMemo(() => {
     if (!orders) return [];
@@ -95,11 +100,19 @@ export default function ReportsScreen() {
         endDate = endOfDay(now);
     }
 
-    return orders.filter((order) => {
-      if (order.status !== 'paid') return false;
-      return isWithinInterval(new Date(order.createdAt), { start: startDate, end: endDate });
-    });
-  }, [orders, preset, customRange]);
+    const effectiveUnit: 'toman' | 'rial' =
+      settings?.currencyUnit === 'rial' ||
+      orders.some((o) => (Number(o?.selfServiceUnitPrice) || 0) >= 3_600_000)
+        ? 'rial'
+        : 'toman';
+
+    return orders
+      .filter((order) => {
+        if (order.status !== 'paid') return false;
+        return isWithinInterval(new Date(order.createdAt), { start: startDate, end: endDate });
+      })
+      .map((order) => sanitizeOrderMonetaryValues(order, effectiveUnit).order as Order);
+  }, [orders, preset, customRange, settings?.currencyUnit]);
 
   const settlementSummary = useMemo(
     () => summarizeCashierSettlements(filteredOrders),
@@ -110,12 +123,15 @@ export default function ReportsScreen() {
   const itemSales = useMemo(() => {
     const counts: Record<string, { qty: number; revenue: number }> = {};
     filteredOrders.forEach((order) => {
-      order.items.forEach((item) => {
+      (order.items || []).forEach((item) => {
+        if (!item || !item.name) return;
+        const qty = Math.max(0, Number(item.quantity) || 0);
+        const price = Math.max(0, Number(item.price) || 0);
         if (!counts[item.name]) {
           counts[item.name] = { qty: 0, revenue: 0 };
         }
-        counts[item.name].qty += item.quantity;
-        counts[item.name].revenue += item.price * item.quantity;
+        counts[item.name].qty += qty;
+        counts[item.name].revenue += Math.round(price * qty);
       });
     });
     return Object.entries(counts)

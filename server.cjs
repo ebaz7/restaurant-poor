@@ -21,6 +21,103 @@ if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
 
+/**
+ * Resolves the primary default Windows backup directory:
+ * e.g. %USERPROFILE%\Documents\Arka_POS_Backups (or Desktop\Arka_POS_Backups)
+ */
+function getDefaultUserBackupDir() {
+  const homeDir = os.homedir ? os.homedir() : process.env.USERPROFILE || process.env.HOME || '';
+  if (!homeDir) return BACKUP_DIR;
+  const docsDir = path.join(homeDir, 'Documents');
+  if (fs.existsSync(docsDir)) {
+    const arkaDocs = path.join(docsDir, 'Arka_POS_Backups');
+    try {
+      if (!fs.existsSync(arkaDocs)) fs.mkdirSync(arkaDocs, { recursive: true });
+      return arkaDocs;
+    } catch {
+      return BACKUP_DIR;
+    }
+  }
+  return BACKUP_DIR;
+}
+
+let hasTriggeredExitBackup = false;
+
+/**
+ * Automatically creates timestamped backups in both default Windows Documents folder
+ * and local data/backups directory, rotating older backups so disk never fills up.
+ */
+function triggerServerSideAutoBackup(reason = 'exit') {
+  if (!fs.existsSync(DB_FILE)) return [];
+  try {
+    const raw = fs.readFileSync(DB_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    repairExcessZeroInflationOnDataObject(parsed, Date.now());
+
+    // Clean whitespace to save ~60% file size on disk
+    const compactJson = JSON.stringify(parsed);
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `backup_arka_pos_${dateStr}.json`;
+
+    const savedPaths = [];
+    const targets = [BACKUP_DIR, getDefaultUserBackupDir()];
+    const uniqueTargets = Array.from(new Set(targets)).filter(Boolean);
+
+    for (const targetDir of uniqueTargets) {
+      try {
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+        const filePath = path.join(targetDir, fileName);
+        fs.writeFileSync(filePath, compactJson, 'utf8');
+        savedPaths.push(filePath);
+
+        // Also save latest_close_backup.json
+        fs.writeFileSync(path.join(targetDir, 'latest_close_backup.json'), compactJson, 'utf8');
+
+        // Rotate: keep the last 30 backups in this folder
+        const existingFiles = fs.readdirSync(targetDir)
+          .filter((f) => f.startsWith('backup_arka_pos_') && f.endsWith('.json'))
+          .map((f) => ({ name: f, path: path.join(targetDir, f), time: fs.statSync(path.join(targetDir, f)).mtimeMs }))
+          .sort((a, b) => b.time - a.time);
+
+        if (existingFiles.length > 30) {
+          for (let i = 30; i < existingFiles.length; i++) {
+            try {
+              fs.unlinkSync(existingFiles[i].path);
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn('[-] Backup write to directory error:', targetDir, e.message);
+      }
+    }
+    console.log(`[✔] Auto-backup on ${reason} completed: ${savedPaths.join(' , ')}`);
+    return savedPaths;
+  } catch (err) {
+    console.warn('[-] Auto-backup error:', err.message);
+    return [];
+  }
+}
+
+// Hook process exit events so server shutdown automatically saves backup to default folder
+['SIGINT', 'SIGTERM', 'SIGHUP'].forEach((sig) => {
+  process.on(sig, () => {
+    if (!hasTriggeredExitBackup) {
+      hasTriggeredExitBackup = true;
+      triggerServerSideAutoBackup(sig);
+    }
+    process.exit(0);
+  });
+});
+
+process.on('exit', () => {
+  if (!hasTriggeredExitBackup) {
+    hasTriggeredExitBackup = true;
+    triggerServerSideAutoBackup('process_exit');
+  }
+});
+
 function detectPort() {
   if (process.env.PORT && !isNaN(Number(process.env.PORT)) && Number(process.env.PORT) > 0) {
     return Number(process.env.PORT);
@@ -402,96 +499,105 @@ function repairExcessZeroInflationOnDataObject(data, nowTimestampMs) {
     for (const o of data.orders) {
       if (!o || typeof o !== 'object') continue;
       let orderFactor = 1;
-      if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > MAX_SELF_SERVICE_UNIT) {
-        orderFactor = Math.max(orderFactor, deinflateMonetaryValue(o.selfServiceUnitPrice, MAX_SELF_SERVICE_UNIT).factor);
-      }
-      if (Array.isArray(o.items)) {
-        for (const it of o.items) {
-          if (!it || typeof it.price !== 'number' || it.price <= 0) continue;
-          const itemCeiling =
-            it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
-              ? MAX_SELF_SERVICE_UNIT
-              : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
-              ? MAX_HALF_SERVICE_UNIT
-              : isBeverageLabel(it.name)
-              ? MAX_BEVERAGE_UNIT
-              : MAX_MENU_FOOD_UNIT;
-          if (it.price > itemCeiling) {
-            orderFactor = Math.max(orderFactor, deinflateMonetaryValue(it.price, itemCeiling).factor);
-          }
+      let orderItemChanged = false;
+
+      let cleanSSUnitPrice = o.selfServiceUnitPrice !== undefined ? Number(o.selfServiceUnitPrice) || 0 : undefined;
+      if (cleanSSUnitPrice !== undefined && cleanSSUnitPrice > MAX_SELF_SERVICE_UNIT) {
+        const ssRes = deinflateMonetaryValue(cleanSSUnitPrice, MAX_SELF_SERVICE_UNIT);
+        if (ssRes.factor > 1) {
+          cleanSSUnitPrice = ssRes.value;
+          orderFactor = Math.max(orderFactor, ssRes.factor);
+          orderItemChanged = true;
         }
       }
+
+      let itemsSubtotal = 0;
+      let hasSelfServiceTicketInItems = false;
+
+      if (Array.isArray(o.items)) {
+        o.items = o.items.map((it) => {
+          if (!it || typeof it !== 'object') return it;
+          const rawPrice = Number(it.price) || 0;
+          const qty = Math.max(0, Number(it.quantity) || 0);
+          const isFullSS =
+            it.menuItemId === -1 ||
+            String(it.name || '').includes('تمام‌بها') ||
+            (String(it.name || '').includes('ورودی') && !String(it.name || '').includes('نیم‌بها'));
+          const isHalfSS = it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها');
+
+          const itemCeiling = isFullSS
+            ? MAX_SELF_SERVICE_UNIT
+            : isHalfSS
+            ? MAX_HALF_SERVICE_UNIT
+            : isBeverageLabel(it.name)
+            ? MAX_BEVERAGE_UNIT
+            : MAX_MENU_FOOD_UNIT;
+
+          let cleanPrice = Math.round(rawPrice);
+          if (cleanPrice > itemCeiling) {
+            const itRes = deinflateMonetaryValue(cleanPrice, itemCeiling);
+            if (itRes.factor > 1) {
+              cleanPrice = itRes.value;
+              orderFactor = Math.max(orderFactor, itRes.factor);
+              orderItemChanged = true;
+            }
+          }
+
+          if (isFullSS) {
+            hasSelfServiceTicketInItems = true;
+            if (cleanSSUnitPrice && cleanSSUnitPrice > 0 && cleanPrice > MAX_SELF_SERVICE_UNIT) {
+              cleanPrice = cleanSSUnitPrice;
+              orderItemChanged = true;
+            }
+          } else if (isHalfSS) {
+            hasSelfServiceTicketInItems = true;
+            if (cleanSSUnitPrice && cleanSSUnitPrice > 0 && cleanPrice > MAX_HALF_SERVICE_UNIT) {
+              cleanPrice = Math.round(cleanSSUnitPrice / 2);
+              orderItemChanged = true;
+            }
+          }
+
+          itemsSubtotal += Math.round(cleanPrice * qty);
+          return {
+            ...it,
+            price: cleanPrice,
+            quantity: qty,
+          };
+        });
+      }
+
+      if (
+        o.invoiceMode === 'self_service' &&
+        !hasSelfServiceTicketInItems &&
+        (Number(o.selfServiceGuests) || 0) > 0 &&
+        (cleanSSUnitPrice || 0) > 0
+      ) {
+        const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
+        const halfG = Math.max(0, Number(o.selfServiceHalfPriceGuests) || 0);
+        const uPrice = cleanSSUnitPrice || 0;
+        itemsSubtotal += Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2));
+      }
+
       const totalGuests = Math.max(1, (Number(o.selfServiceGuests) || 0) + (Number(o.selfServiceHalfPriceGuests) || 0));
       const maxReasonableOrderTotal = Math.max(250000000 * mult, totalGuests * MAX_SELF_SERVICE_UNIT * 3);
-      if (orderFactor === 1 && typeof o.total === 'number' && o.total > maxReasonableOrderTotal) {
-        orderFactor = Math.max(orderFactor, deinflateMonetaryValue(o.total, maxReasonableOrderTotal).factor);
-      }
+      const rawTotal = Number(o.total) || 0;
+      const rawCard = Number(o.cardAmount) || 0;
+      const rawCash = Number(o.cashAmount) || 0;
 
-      if (orderFactor > 1) {
-        if (typeof o.selfServiceUnitPrice === 'number' && o.selfServiceUnitPrice > 0) {
-          const scaledSS = o.selfServiceUnitPrice / orderFactor;
-          o.selfServiceUnitPrice = deinflateMonetaryValue(
-            orderFactor >= 1e9 && scaledSS >= 10000 ? Math.round(scaledSS / 500) * 500 : Math.round(scaledSS),
-            MAX_SELF_SERVICE_UNIT
-          ).value;
-        }
-        if (typeof o.selfServiceHalfPriceUnitPrice === 'number' && o.selfServiceHalfPriceUnitPrice > 0) {
-          o.selfServiceHalfPriceUnitPrice = o.selfServiceUnitPrice
-            ? Math.round(o.selfServiceUnitPrice / 2)
-            : deinflateMonetaryValue(Math.round(o.selfServiceHalfPriceUnitPrice / orderFactor), MAX_HALF_SERVICE_UNIT).value;
-        }
+      const isTotalInflated =
+        rawTotal > maxReasonableOrderTotal ||
+        rawCard > maxReasonableOrderTotal ||
+        rawCash > maxReasonableOrderTotal ||
+        (itemsSubtotal > 0 && rawTotal > itemsSubtotal * 1.5) ||
+        (rawTotal > 0 && rawCash + rawCard > rawTotal * 1.5);
 
-        let itemsSubtotal = 0;
-        let hasSelfServiceTicketInItems = false;
-        if (Array.isArray(o.items)) {
-          o.items = o.items.map((it) => {
-            if (!it || typeof it !== 'object') return it;
-            const rawPrice = Number(it.price) || 0;
-            const qty = Math.max(0, Number(it.quantity) || 0);
-            const itemCeiling =
-              it.menuItemId === -1 || String(it.name || '').includes('تمام‌بها')
-                ? MAX_SELF_SERVICE_UNIT
-                : it.menuItemId === -2 || String(it.name || '').includes('نیم‌بها')
-                ? MAX_HALF_SERVICE_UNIT
-                : isBeverageLabel(it.name)
-                ? MAX_BEVERAGE_UNIT
-                : MAX_MENU_FOOD_UNIT;
-            let cleanPrice = rawPrice / orderFactor;
-            if (orderFactor >= 1e9 && cleanPrice >= 10000) {
-              cleanPrice = Math.round(cleanPrice / 500) * 500;
-            } else {
-              cleanPrice = Math.round(cleanPrice);
-            }
-            if (cleanPrice > itemCeiling) {
-              cleanPrice = deinflateMonetaryValue(cleanPrice, itemCeiling).value;
-            }
-            if (it.menuItemId === -1 && o.selfServiceUnitPrice) {
-              cleanPrice = o.selfServiceUnitPrice;
-              hasSelfServiceTicketInItems = true;
-            } else if (it.menuItemId === -2 && o.selfServiceUnitPrice) {
-              cleanPrice = Math.round(o.selfServiceUnitPrice / 2);
-              hasSelfServiceTicketInItems = true;
-            } else if (String(it.name || '').includes('ورودی بار سلف سرویس')) {
-              hasSelfServiceTicketInItems = true;
-            }
-            itemsSubtotal += Math.round(cleanPrice * qty);
-            return { ...it, price: cleanPrice };
-          });
+      if (isTotalInflated || orderItemChanged || orderFactor > 1) {
+        if (orderFactor === 1) {
+          const totRes = deinflateMonetaryValue(Math.max(rawTotal, rawCard, rawCash), maxReasonableOrderTotal);
+          orderFactor = Math.max(2, totRes.factor);
         }
-
-        if (
-          o.invoiceMode === 'self_service' &&
-          !hasSelfServiceTicketInItems &&
-          (Number(o.selfServiceGuests) || 0) > 0 &&
-          (Number(o.selfServiceUnitPrice) || 0) > 0
-        ) {
-          const fullG = Math.max(0, Number(o.selfServiceGuests) || 0);
-          const halfG = Math.max(0, Number(o.selfServiceHalfPriceGuests) || 0);
-          const uPrice = Number(o.selfServiceUnitPrice) || 0;
-          itemsSubtotal += Math.round(fullG * uPrice) + Math.round(halfG * Math.round(uPrice / 2));
-        }
-
-        const repairedSubtotal = itemsSubtotal > 0 ? itemsSubtotal : Math.round((Number(o.subtotal) || 0) / orderFactor);
+        if (cleanSSUnitPrice !== undefined) o.selfServiceUnitPrice = cleanSSUnitPrice;
+        const repairedSubtotal = itemsSubtotal > 0 ? itemsSubtotal : Math.round((Number(o.subtotal) || rawTotal) / orderFactor);
         o.subtotal = repairedSubtotal;
 
         let discountAmt = 0;
@@ -509,7 +615,6 @@ function repairExcessZeroInflationOnDataObject(data, nowTimestampMs) {
             ? Math.round((taxable * Number(o.taxPercentage)) / 100)
             : 0;
         o.taxAmount = repairedTax;
-
         const repairedTotal = Math.max(0, taxable + repairedTax);
         o.total = repairedTotal;
 
@@ -528,12 +633,11 @@ function repairExcessZeroInflationOnDataObject(data, nowTimestampMs) {
           o.cardAmount = Math.max(0, repairedTotal - scaledCash);
         }
 
-        if (typeof o.cogsAmount === 'number' && o.cogsAmount > 0) {
-          let scaledCogs = Math.round(o.cogsAmount / orderFactor);
-          if (scaledCogs > repairedTotal * 2 && repairedTotal > 0) {
-            scaledCogs = deinflateMonetaryValue(scaledCogs, repairedTotal).value;
-          }
-          o.cogsAmount = scaledCogs;
+        // COGS repair
+        let cleanCogs = Number(o.cogsAmount) || 0;
+        if (cleanCogs > repairedTotal * 1.5 && repairedTotal > 0) {
+          cleanCogs = deinflateMonetaryValue(cleanCogs, Math.round(repairedTotal * 0.9)).value;
+          o.cogsAmount = cleanCogs > 0 && cleanCogs <= repairedTotal ? cleanCogs : Math.round(repairedTotal * 0.45);
         }
 
         o._updatedAtMs = Math.max(nowTs, (Number(o._updatedAtMs) || 0) + 1000);
@@ -1121,26 +1225,38 @@ function mergeDatabaseObjects(existing, incoming, preferIncoming) {
   mergeTableChronologically('accounts');
   mergeTableChronologically('appUsers');
 
-  // Settings: always apply incoming settings edits from active client sync and preserve centralLicenseInfo
+  // Settings: compare timestamps, deduplicate, and NEVER overwrite real bot tokens with empty strings
   if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
     if (Array.isArray(existing.settings) && existing.settings.length > 0) {
       const prevS = existing.settings[0];
       const incS = incoming.settings[0];
       const prevTs = getItemTimestampMs(prevS);
       const incTs = getItemTimestampMs(incS);
-      result.settings = [
-        {
-          ...prevS,
-          ...incS,
-          centralLicenseInfo: incS.centralLicenseInfo || prevS.centralLicenseInfo,
-          _updatedAtMs: Math.max(incTs, prevTs, nowTs),
-        },
-      ];
+      const isIncDefault = Boolean(incS._isDefaultSeed) || incTs <= 1000;
+
+      const mergedS = { ...prevS, ...incS };
+      // Protect bot tokens & central license info
+      for (const bf of ['baleBotToken', 'baleChatId', 'telegramBotToken', 'telegramChatId', 'logoUrl']) {
+        if ((!incS[bf] || String(incS[bf]).trim() === '') && prevS[bf] && String(prevS[bf]).trim() !== '') {
+          mergedS[bf] = prevS[bf];
+        }
+      }
+      if (!incS.centralLicenseInfo && prevS.centralLicenseInfo) {
+        mergedS.centralLicenseInfo = prevS.centralLicenseInfo;
+      }
+      if (isIncDefault && prevS.currencyUnit) {
+        mergedS.currencyUnit = prevS.currencyUnit;
+        mergedS.selfServicePricePerPerson = prevS.selfServicePricePerPerson;
+      }
+      mergedS.id = 1;
+      mergedS._updatedAtMs = Math.max(incTs, prevTs, nowTs);
+      mergedS._isDefaultSeed = false;
+      result.settings = [mergedS];
     } else {
-      result.settings = incoming.settings;
+      result.settings = [{ ...incoming.settings[0], id: 1 }];
     }
-  } else if (Array.isArray(existing.settings)) {
-    result.settings = existing.settings;
+  } else if (Array.isArray(existing.settings) && existing.settings.length > 0) {
+    result.settings = [{ ...existing.settings[0], id: 1 }];
   }
 
   repairExcessZeroInflationOnDataObject(result, nowTs);
@@ -1600,6 +1716,19 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ ok: false }));
         }
       });
+      return;
+    }
+
+    // Windows & Linux Automatic Backup on Close endpoint
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/db/backup-on-close') {
+      try {
+        const savedPaths = triggerServerSideAutoBackup('app_close_api');
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, savedPaths }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
       return;
     }
 

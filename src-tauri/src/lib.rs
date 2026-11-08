@@ -283,6 +283,32 @@ fn merge_database_objects(existing_db: &Value, incoming_db: &Value) -> Value {
                         }
                     }
                 }
+
+                // Protect bot credentials: never let empty strings wipe existing configured tokens
+                let protect_keys = ["baleBotToken", "baleChatId", "telegramBotToken", "telegramChatId"];
+                for &pk in &protect_keys {
+                    let ef_val = ex_first.and_then(|ef| ef.get(pk));
+                    let is_ef_non_empty = ef_val.and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+                    let is_inf_empty = inc_first.and_then(|inf| inf.get(pk)).and_then(|v| v.as_str()).map(|s| s.trim().is_empty()).unwrap_or(true);
+                    if is_ef_non_empty && is_inf_empty {
+                        if let Some(val) = ef_val {
+                            s_map.insert(pk.to_string(), val.clone());
+                        }
+                    }
+                }
+
+                // Prevent default seed clients from wiping custom restaurantName or currencyUnit
+                let inc_is_seed = inc_first.and_then(|inf| inf.get("_isDefaultSeed")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let ex_is_seed = ex_first.and_then(|ef| ef.get("_isDefaultSeed")).and_then(|v| v.as_bool()).unwrap_or(false);
+                if inc_is_seed && !ex_is_seed {
+                    if let Some(rn) = ex_first.and_then(|ef| ef.get("restaurantName")) {
+                        s_map.insert("restaurantName".to_string(), rn.clone());
+                    }
+                    if let Some(cu) = ex_first.and_then(|ef| ef.get("currencyUnit")) {
+                        s_map.insert("currencyUnit".to_string(), cu.clone());
+                    }
+                }
+
                 s_map.insert("id".to_string(), json!(1));
                 s_map.insert(
                     "_updatedAtMs".to_string(),
@@ -448,6 +474,76 @@ fn list_windows_printers() -> Vec<String> {
         "EPSON TM-T20".to_string(),
         "BIXOLON SRP-330".to_string(),
     ]
+}
+
+fn save_auto_backup_file(data: &Value, reason: &str, app_data_dir: Option<&PathBuf>) {
+    if !data.is_object() {
+        return;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("arka_autobackup_{}_{}.json", now, reason);
+
+    // 1. Documents folder on Windows / Linux
+    let docs_dir = std::env::var_os("USERPROFILE")
+        .map(|p| PathBuf::from(p).join("Documents").join("Arka_POS_Backups"))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|p| PathBuf::from(p).join("Arka_POS_Backups"))
+        });
+
+    if let Some(ref d_dir) = docs_dir {
+        let _ = fs::create_dir_all(d_dir);
+        if let Ok(bytes) = serde_json::to_vec(data) {
+            let _ = fs::write(d_dir.join(&filename), &bytes);
+        }
+        if let Ok(entries) = fs::read_dir(d_dir) {
+            let mut files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.starts_with("arka_autobackup_") && s.ends_with(".json"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            files.sort();
+            if files.len() > 30 {
+                for f in &files[..files.len() - 30] {
+                    let _ = fs::remove_file(f);
+                }
+            }
+        }
+    }
+
+    // 2. Local app data backups folder
+    if let Some(a_dir) = app_data_dir {
+        let backups_dir = a_dir.join("backups");
+        let _ = fs::create_dir_all(&backups_dir);
+        if let Ok(bytes) = serde_json::to_vec(data) {
+            let _ = fs::write(backups_dir.join(&filename), &bytes);
+        }
+        if let Ok(entries) = fs::read_dir(&backups_dir) {
+            let mut files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.starts_with("arka_autobackup_") && s.ends_with(".json"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            files.sort();
+            if files.len() > 30 {
+                for f in &files[..files.len() - 30] {
+                    let _ = fs::remove_file(f);
+                }
+            }
+        }
+    }
 }
 
 fn send_json_response(stream: &mut TcpStream, status_code: u16, body: &Value) {
@@ -786,6 +882,41 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
                 }),
             );
         }
+        ("POST", "/api/db/backup-on-close") => {
+            let parsed: Value = serde_json::from_slice(body_bytes).unwrap_or_else(|_| json!({}));
+            let reason = parsed
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("client_close");
+
+            let guard = match shared_state.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let backup_data = if let Some(d) = parsed.get("data") {
+                if d.is_object() {
+                    d.clone()
+                } else {
+                    guard.db_state.get("data").cloned().unwrap_or_else(|| json!({}))
+                }
+            } else {
+                guard.db_state.get("data").cloned().unwrap_or_else(|| json!({}))
+            };
+            let d_dir = guard.data_dir.clone();
+            drop(guard);
+
+            save_auto_backup_file(&backup_data, reason, Some(&d_dir));
+
+            send_json_response(
+                &mut stream,
+                200,
+                &json!({
+                    "ok": true,
+                    "saved": true,
+                    "serverTimeMs": now_ms()
+                }),
+            );
+        }
         ("GET", "/api/network/info") => {
             let guard = match shared_state.lock() {
                 Ok(g) => g,
@@ -934,7 +1065,7 @@ fn handle_http_client(mut stream: TcpStream, shared_state: Arc<Mutex<AppServerSt
     }
 }
 
-fn start_embedded_central_server(app_dir: PathBuf) {
+fn start_embedded_central_server(app_dir: PathBuf) -> Arc<Mutex<AppServerState>> {
     let data_dir = app_dir.join("data");
     let _ = fs::create_dir_all(&data_dir);
     let db_file = data_dir.join("central_db.json");
@@ -981,6 +1112,8 @@ fn start_embedded_central_server(app_dir: PathBuf) {
     if active_port != 4040 {
         spawn_listener_on_port(4040, Arc::clone(&shared_state));
     }
+
+    shared_state
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1021,9 +1154,22 @@ pub fn run() {
     }
 
     // 3. Start Embedded Central HTTP & Sync Server on Windows Tauri
-    start_embedded_central_server(app_dir);
+    let shared_state = start_embedded_central_server(app_dir);
+    let state_for_close = Arc::clone(&shared_state);
 
     tauri::Builder::default()
+        .on_window_event(move |_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let guard = match state_for_close.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
+                let db_data = guard.db_state.get("data").cloned().unwrap_or_else(|| json!({}));
+                let data_dir = guard.data_dir.clone();
+                drop(guard);
+                save_auto_backup_file(&db_data, "windows_app_close", Some(&data_dir));
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

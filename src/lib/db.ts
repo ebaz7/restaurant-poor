@@ -1037,20 +1037,26 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
     if (m.id !== undefined) matMap.set(m.id, m);
   });
 
-  // 1. For self-service mode, deduct 1 canned drink per guest if 'نوشابه قوطی' exists in raw materials
+  // 1. For self-service mode, deduct 1 canned drink per guest if 'نوشابه' or 'نوشابه قوطی' exists in raw materials
   if (order.invoiceMode === 'self_service' && order.selfServiceGuests && order.selfServiceGuests > 0) {
-    const drinkMat = materials.find((m) => m.name.includes('نوشابه'));
+    const drinkMat =
+      materials.find((m) => m.name.trim() === 'نوشابه' || m.name.trim() === 'نوشابه قوطی') ||
+      materials.find((m) => m.name.includes('نوشابه') && !m.name.includes('خانواده')) ||
+      materials.find((m) => m.name.includes('نوشابه'));
     if (drinkMat && drinkMat.id) {
       const qtyUsed = order.selfServiceGuests;
-      const costUsed = Math.round(qtyUsed * drinkMat.avgCost);
-      // Plus average self-service buffet food cost per person (approx 45% of unit price if no specific item)
-      const buffetFoodCost = Math.round((order.selfServiceUnitPrice || 0) * order.selfServiceGuests * 0.42);
+      const safeAvgCost = deinflateMonetaryValue(drinkMat.avgCost, 4_500_000).value;
+      const costUsed = Math.round(qtyUsed * safeAvgCost);
+      // Plus average self-service buffet food cost per person (approx 42% of unit price if no specific item)
+      const safeSSUnit = deinflateMonetaryValue(order.selfServiceUnitPrice || 0, 35_000_000).value;
+      const buffetFoodCost = Math.round(safeSSUnit * order.selfServiceGuests * 0.42);
       totalOrderCOGS += costUsed + buffetFoodCost;
 
       const newQty = Math.max(0, Number((drinkMat.currentQty - qtyUsed).toFixed(4)));
-      const newVal = Math.round(newQty * drinkMat.avgCost);
+      const newVal = Math.round(newQty * safeAvgCost);
       await db.rawMaterials.update(drinkMat.id, {
         currentQty: newQty,
+        avgCost: safeAvgCost,
         updatedAt: new Date(),
       });
       await db.inventoryTransactions.add({
@@ -1060,7 +1066,7 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
         date: new Date(),
         type: 'out_sale_bom',
         quantity: qtyUsed,
-        unitPrice: drinkMat.avgCost,
+        unitPrice: safeAvgCost,
         totalPrice: costUsed,
         balanceQtyAfter: newQty,
         balanceValueAfter: newVal,
@@ -1136,22 +1142,27 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
       totalOrderCOGS += directExtra;
     } else {
       // DIRECT BEVERAGE & ITEM WAREHOUSE DEDUCTION (WHEN NO BOM RECIPE EXISTS)
+      // Prioritize exact name match before partial substring match so 'نوشابه اضافه' matches 'نوشابه' instead of 'نوشابه خانواده'
       const cleanItemName = item.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
-      let matchedMat = materials.find((m) => {
-        const cleanMatName = m.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
-        return (
-          m.name.trim() === item.name.trim() ||
-          m.name.trim() === cleanItemName ||
-          (cleanItemName.length >= 2 &&
+      let matchedMat =
+        materials.find((m) => {
+          const cleanMatName = m.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
+          return m.name.trim() === item.name.trim() || m.name.trim() === cleanItemName || cleanMatName === cleanItemName;
+        }) ||
+        materials.find((m) => {
+          const cleanMatName = m.name.replace(/(اضافه|دست‌ساز|قوطی|بطری|لیوانی)/g, '').trim();
+          return (
+            cleanItemName.length >= 2 &&
             cleanMatName.length >= 2 &&
-            (cleanItemName.includes(cleanMatName) || cleanMatName.includes(cleanItemName)))
-        );
-      });
+            (cleanItemName.includes(cleanMatName) || cleanMatName.includes(cleanItemName))
+          );
+        });
 
       // If missing in raw materials warehouse, auto-create so inventory is always tracked
       if (!matchedMat) {
         const matName = item.name.replace(/ اضافه$/, '').trim();
-        const autoCost = Math.round((item.price || 0) * 0.45);
+        const safeItemPrice = deinflateMonetaryValue(item.price || 0, 4_500_000).value;
+        const autoCost = Math.round(safeItemPrice * 0.45);
         const newMatId = (await db.rawMaterials.add({
           name: matName,
           unit: 'عدد',
@@ -1178,15 +1189,18 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
 
       if (matchedMat && matchedMat.id) {
         const qtyConsumed = item.quantity;
-        const lineCost = Math.round(qtyConsumed * (matchedMat.avgCost || 0));
+        const safeMatAvgCost = deinflateMonetaryValue(matchedMat.avgCost || 0, 4_500_000).value;
+        const lineCost = Math.round(qtyConsumed * safeMatAvgCost);
         totalOrderCOGS += lineCost;
 
         const newQty = Math.max(0, Number((matchedMat.currentQty - qtyConsumed).toFixed(4)));
-        const newVal = Math.round(newQty * (matchedMat.avgCost || 0));
+        const newVal = Math.round(newQty * safeMatAvgCost);
         matchedMat.currentQty = newQty; // update local memory map
+        matchedMat.avgCost = safeMatAvgCost;
 
         await db.rawMaterials.update(matchedMat.id, {
           currentQty: newQty,
+          avgCost: safeMatAvgCost,
           updatedAt: new Date(),
         });
 
@@ -1197,7 +1211,7 @@ export async function processOrderInventoryAndCOGS(order: Order): Promise<number
           date: new Date(),
           type: 'out_sale_bom',
           quantity: qtyConsumed,
-          unitPrice: matchedMat.avgCost || 0,
+          unitPrice: safeMatAvgCost,
           totalPrice: lineCost,
           balanceQtyAfter: newQty,
           balanceValueAfter: newVal,
@@ -1538,8 +1552,42 @@ async function runInitializeDefaultDatabase(): Promise<void> {
     // ignore storage errors
   }
 
-  // 1. Settings check
-  const settingsCount = await db.settings.count();
+  // 1. Settings check & deduplication (ensure singleton row id: 1)
+  const allSettingsRows = await db.settings.toArray();
+  const settingsCount = allSettingsRows.length;
+  if (settingsCount > 1) {
+    const sorted = [...allSettingsRows].sort(
+      (a: any, b: any) => (Number(a?._updatedAtMs) || 0) - (Number(b?._updatedAtMs) || 0)
+    );
+    const merged: any = { ...sorted[0], id: sorted[0].id || 1 };
+    for (let i = 1; i < sorted.length; i++) {
+      const s: any = sorted[i];
+      if (s?._isDefaultSeed) continue;
+      for (const [k, v] of Object.entries(s)) {
+        if (k === 'id') continue;
+        if (
+          ['baleBotToken', 'baleChatId', 'telegramBotToken', 'telegramChatId', 'logoUrl'].includes(k) &&
+          (!v || String(v).trim() === '') &&
+          merged[k]
+        ) {
+          continue;
+        }
+        if (k === 'centralLicenseInfo' && !v && merged.centralLicenseInfo) continue;
+        if (k === 'quickBeverages' && (!Array.isArray(v) || v.length === 0) && Array.isArray(merged.quickBeverages)) {
+          continue;
+        }
+        if (v !== undefined) merged[k] = v;
+      }
+    }
+    const keepId = merged.id || 1;
+    for (const row of allSettingsRows) {
+      if (row.id !== undefined && row.id !== keepId) {
+        await db.settings.delete(row.id);
+      }
+    }
+    await db.settings.put({ ...merged, id: keepId });
+  }
+
   if (settingsCount > 0) {
     const firstSetting = await db.settings.toCollection().first();
     if (firstSetting?.isRawInitialized) {
@@ -1548,7 +1596,6 @@ async function runInitializeDefaultDatabase(): Promise<void> {
   }
 
   // 0. Ensure at least one Admin User exists ONLY IF NOT IN 100% RAW MODE
-  // In 100% raw mode, the user must explicitly register the first administrator user/pass themselves!
   const usersCount = await db.appUsers.count();
   if (usersCount === 0 && !isRawMode) {
     await db.appUsers.add({
@@ -1559,13 +1606,18 @@ async function runInitializeDefaultDatabase(): Promise<void> {
       isAdmin: true,
       permissions: [...ALL_PERMISSIONS],
       isActive: true,
-      createdAt: new Date(),
-    });
+      createdAt: new Date(1),
+      _isDefaultSeed: true,
+      _updatedAtMs: 1,
+    } as any);
   }
 
   if (settingsCount === 0) {
+    // Stamp default fallback seed with _isDefaultSeed: true and _updatedAtMs: 1 so a newly opened browser tab
+    // NEVER overwrites the central server's real settings (bot tokens, Rial/Toman currency, or self-service price)
     if (isRawMode) {
       await db.settings.add({
+        id: 1,
         restaurantName: '',
         phone: '',
         address: '',
@@ -1591,9 +1643,12 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         requireLoginOnStart: false,
         autoBackupBeforeUpdate: true,
         hideCostPriceFromKitchen: false,
-      });
+        _isDefaultSeed: true,
+        _updatedAtMs: 1,
+      } as any);
     } else {
       await db.settings.add({
+        id: 1,
         restaurantName: 'رستوران و سلف سرویس آرکا',
         phone: '021-88776655',
         address: 'تهران، بلوار کشاورز، پلاک ۱۲۰',
@@ -1619,7 +1674,9 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         requireLoginOnStart: false,
         autoBackupBeforeUpdate: true,
         hideCostPriceFromKitchen: false,
-      });
+        _isDefaultSeed: true,
+        _updatedAtMs: 1,
+      } as any);
     }
   } else {
     const firstSetting = await db.settings.toCollection().first();
@@ -1661,7 +1718,9 @@ async function runInitializeDefaultDatabase(): Promise<void> {
         type: a.type,
         isSystem: true,
         description: a.description,
-      }))
+        _isDefaultSeed: true,
+        _updatedAtMs: 1,
+      })) as any
     );
   }
 
@@ -1754,7 +1813,12 @@ export async function repairExcessZeroInflationInDatabase(
       db.cashClosures,
     ],
     async () => {
+      if (beforeJsonByTable.settings && beforeJsonByTable.settings.length > 1 && snapshot.settings.length === 1) {
+        await db.settings.clear();
+        await db.settings.put({ ...snapshot.settings[0], id: 1 });
+      }
       for (const [tName, rows] of Object.entries(snapshot)) {
+        if (tName === 'settings' && beforeJsonByTable.settings && beforeJsonByTable.settings.length > 1) continue;
         const table = (db as any)[tName];
         const beforeList = beforeJsonByTable[tName] || [];
         for (let i = 0; i < rows.length; i++) {
@@ -1944,7 +2008,7 @@ export async function convertDatabaseCurrencyUnit(
       db.cashClosures,
     ],
     async () => {
-      // 1. Settings
+      // 1. Settings (ensure single canonical row id: 1)
       const allSettings = await db.settings.toArray();
       for (const s of allSettings) {
         if (!s.id) continue;
@@ -1960,22 +2024,37 @@ export async function convertDatabaseCurrencyUnit(
         );
         const scaledBeverages =
           Array.isArray(baseBevs) && baseBevs.length > 0
-            ? baseBevs.map((bev) => ({
-                ...bev,
-                price: scale(bev.price, MAX_BEV),
-              }))
+            ? baseBevs.map((bev) => {
+                const rawBevPrice = Number(bev.price) || 0;
+                // Guard against double-scaling a beverage already in targetUnit scale
+                const alreadyInTarget =
+                  (targetUnit === 'rial' && rawBevPrice >= 250_000) ||
+                  (targetUnit === 'toman' && rawBevPrice > 0 && rawBevPrice <= 150_000);
+                return {
+                  ...bev,
+                  price: alreadyInTarget ? deinflateMonetaryValue(rawBevPrice, MAX_BEV).value : scale(rawBevPrice, MAX_BEV),
+                };
+              })
             : getDefaultQuickBeverages(targetUnit);
         const nextTs = Math.max(Date.now(), (Number((s as any)._updatedAtMs) || 0) + 5000);
 
+        const rawSS = Number(s.selfServicePricePerPerson) || 0;
+        const ssAlreadyInTarget =
+          (targetUnit === 'rial' && rawSS >= 3_600_000) ||
+          (targetUnit === 'toman' && rawSS > 0 && rawSS <= 3_500_000 && fromUnit === 'rial' && rawSS < 350_000);
+
         await db.settings.update(s.id, {
           currencyUnit: targetUnit,
-          selfServicePricePerPerson: scale(s.selfServicePricePerPerson, MAX_SS),
+          selfServicePricePerPerson: ssAlreadyInTarget
+            ? deinflateMonetaryValue(rawSS, MAX_SS).value
+            : scale(s.selfServicePricePerPerson, MAX_SS),
           defaultSodaPrice: scale(defaultSodaBefore, MAX_BEV),
           defaultDoughPrice: scale(defaultDoughBefore, MAX_BEV),
           defaultWaterPrice: scale(defaultWaterBefore, MAX_BEV),
           defaultDelsterPrice: scale(defaultDelsterBefore, MAX_BEV),
           quickBeverages: scaledBeverages,
           _quickBeveragesCurrencySynced: true,
+          _isDefaultSeed: false,
           _updatedAtMs: nextTs,
         } as any);
       }
@@ -1989,10 +2068,23 @@ export async function convertDatabaseCurrencyUnit(
         });
       }
 
-      // 3. Orders / Sales Invoices
+      // 3. Orders / Sales Invoices (guard against double-scaling orders already in targetUnit)
       const allOrders = await db.orders.toArray();
+      const alreadyScaledOrderIds = new Set<number>();
+      const alreadyScaledInvoiceNums = new Set<number>();
       for (const o of allOrders) {
         if (!o.id) continue;
+        const uPrice = Number(o.selfServiceUnitPrice) || 0;
+        const isOrderAlreadyInRial = uPrice >= 3_600_000 && uPrice <= 35_000_000;
+        const isOrderAlreadyInToman = uPrice > 0 && uPrice <= 3_500_000;
+        if (
+          (targetUnit === 'rial' && isOrderAlreadyInRial) ||
+          (targetUnit === 'toman' && isOrderAlreadyInToman)
+        ) {
+          alreadyScaledOrderIds.add(o.id);
+          if (o.invoiceNumber) alreadyScaledInvoiceNums.add(o.invoiceNumber);
+          continue;
+        }
         await db.orders.update(o.id, {
           items: (o.items || []).map((it) => ({
             ...it,
@@ -2034,6 +2126,13 @@ export async function convertDatabaseCurrencyUnit(
       const allVouchers = await db.journalVouchers.toArray();
       for (const v of allVouchers) {
         if (!v.id) continue;
+        if (
+          v.type === 'auto_sale' &&
+          v.referenceId &&
+          alreadyScaledInvoiceNums.has(Number(v.referenceId))
+        ) {
+          continue;
+        }
         await db.journalVouchers.update(v.id, {
           totalAmount: scale(v.totalAmount),
           lines: (v.lines || []).map((l) => ({
@@ -2057,9 +2156,16 @@ export async function convertDatabaseCurrencyUnit(
       const allMaterials = await db.rawMaterials.toArray();
       for (const rm of allMaterials) {
         if (!rm.id) continue;
+        const isBevMat = rm.unit === 'عدد' && /(نوشابه|دوغ|آب|دلستر)/.test(rm.name || '');
+        const rawAvg = Number(rm.avgCost) || 0;
+        const matAlreadyInTarget =
+          isBevMat &&
+          ((targetUnit === 'rial' && rawAvg >= 250_000) ||
+            (targetUnit === 'toman' && rawAvg > 0 && rawAvg <= 150_000));
+        if (matAlreadyInTarget) continue;
         await db.rawMaterials.update(rm.id, {
-          avgCost: scale(rm.avgCost),
-          lastPurchasePrice: scale(rm.lastPurchasePrice),
+          avgCost: scale(rm.avgCost, isBevMat ? MAX_BEV : undefined),
+          lastPurchasePrice: scale(rm.lastPurchasePrice, isBevMat ? MAX_BEV : undefined),
         });
       }
 
@@ -2067,6 +2173,10 @@ export async function convertDatabaseCurrencyUnit(
       const allTxs = await db.inventoryTransactions.toArray();
       for (const tx of allTxs) {
         if (!tx.id) continue;
+        const invMatch = String(tx.description || '').match(/#(\d+)/);
+        if (invMatch && alreadyScaledInvoiceNums.has(Number(invMatch[1]))) {
+          continue;
+        }
         await db.inventoryTransactions.update(tx.id, {
           unitPrice: scale(tx.unitPrice),
           totalPrice: scale(tx.totalPrice),

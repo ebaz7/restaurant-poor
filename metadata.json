@@ -1,6 +1,6 @@
 {
-  "name": "Arka Smart System",
-  "description": "سامانه مدیریت فروشگاهی و رستورانی آرکا - طراحی شده توسط مهندس محمد ابراهیم حیدری",
+  "name": "Arka System | آرکا سیستم",
+  "description": "سامانه جامع صندوق فروش، سلف سرویس، آشپزخانه، انبار و حسابداری دوبل رستوران آرکا",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

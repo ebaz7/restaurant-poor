@@ -63,6 +63,7 @@ import {
   clearCacheAndHardReload,
   setServerUrl,
   getNodeRole,
+  triggerCloseAutoBackup,
   SyncState,
 } from './lib/networkSync';
 
@@ -229,9 +230,18 @@ export default function App() {
     }
     startStartupSync();
     const unsubscribe = subscribeSyncState((st) => setSyncState(st));
+
+    const handleWindowClose = () => {
+      triggerCloseAutoBackup();
+    };
+    window.addEventListener('beforeunload', handleWindowClose);
+    window.addEventListener('pagehide', handleWindowClose);
+
     return () => {
       isMounted = false;
       unsubscribe();
+      window.removeEventListener('beforeunload', handleWindowClose);
+      window.removeEventListener('pagehide', handleWindowClose);
     };
   }, []);
 

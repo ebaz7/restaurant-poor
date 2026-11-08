@@ -282,15 +282,76 @@ function centralServerDbPlugin(): Plugin {
     mergeTable('accounts');
     mergeTable('appUsers');
 
-    if (Array.isArray(incoming.settings) && incoming.settings.length > 0) {
-      result.settings = incoming.settings;
-    } else if (Array.isArray(existing.settings)) {
-      result.settings = existing.settings;
+    const exSetting = Array.isArray(existing.settings) && existing.settings.length > 0 ? existing.settings[0] : null;
+    const incSetting = Array.isArray(incoming.settings) && incoming.settings.length > 0 ? incoming.settings[0] : null;
+
+    if (exSetting || incSetting) {
+      const mergedS = { ...(exSetting || {}), ...(incSetting || {}) };
+      if (exSetting?.baleBotToken && !incSetting?.baleBotToken) mergedS.baleBotToken = exSetting.baleBotToken;
+      if (exSetting?.baleChatId && !incSetting?.baleChatId) mergedS.baleChatId = exSetting.baleChatId;
+      if (exSetting?.telegramBotToken && !incSetting?.telegramBotToken) mergedS.telegramBotToken = exSetting.telegramBotToken;
+      if (exSetting?.telegramChatId && !incSetting?.telegramChatId) mergedS.telegramChatId = exSetting.telegramChatId;
+      if (incSetting?._isDefaultSeed && exSetting && !exSetting._isDefaultSeed) {
+        if (exSetting.restaurantName) mergedS.restaurantName = exSetting.restaurantName;
+        if (exSetting.currencyUnit) mergedS.currencyUnit = exSetting.currencyUnit;
+      }
+      mergedS.id = 1;
+      result.settings = [mergedS];
+    } else {
+      result.settings = [];
     }
 
     result.version = incoming.version || existing.version || 8;
     result.exportedAt = new Date().toISOString();
     return result;
+  }
+
+  function triggerServerSideAutoBackupNode(dbData: any, reason: string = 'manual') {
+    if (!dbData || typeof dbData !== 'object') return;
+    try {
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const filename = `arka_autobackup_${stamp}_${reason}.json`;
+
+      const backupDir = path.join(dataDir, 'backups');
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+      const content = JSON.stringify(dbData);
+      fs.writeFileSync(path.join(backupDir, filename), content, 'utf8');
+
+      // Default user documents folder on Windows and Linux
+      const userHome = os.homedir();
+      const docsDir = process.platform === 'win32'
+        ? (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Documents', 'Arka_POS_Backups') : path.join(userHome, 'Documents', 'Arka_POS_Backups'))
+        : path.join(userHome, 'Arka_POS_Backups');
+
+      if (!fs.existsSync(docsDir)) {
+        try { fs.mkdirSync(docsDir, { recursive: true }); } catch {}
+      }
+      if (fs.existsSync(docsDir)) {
+        try {
+          fs.writeFileSync(path.join(docsDir, filename), content, 'utf8');
+          // Rotation: keep last 30 backups in user documents
+          const files = fs.readdirSync(docsDir).filter((f) => f.startsWith('arka_autobackup_') && f.endsWith('.json')).sort();
+          if (files.length > 30) {
+            for (let i = 0; i < files.length - 30; i++) {
+              try { fs.unlinkSync(path.join(docsDir, files[i])); } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      // Rotation in dataDir/backups
+      const localFiles = fs.readdirSync(backupDir).filter((f) => f.startsWith('arka_autobackup_') && f.endsWith('.json')).sort();
+      if (localFiles.length > 30) {
+        for (let i = 0; i < localFiles.length - 30; i++) {
+          try { fs.unlinkSync(path.join(backupDir, localFiles[i])); } catch {}
+        }
+      }
+    } catch (e: any) {
+      console.warn('[-] Auto-backup failed in vite dev plugin:', e?.message);
+    }
   }
 
   function getOrCreateServerLicense() {
@@ -671,6 +732,29 @@ function centralServerDbPlugin(): Plugin {
             } catch {
               res.statusCode = 400;
               res.end(JSON.stringify({ ok: false }));
+            }
+          });
+          return;
+        }
+
+        if (url.pathname === '/api/db/backup-on-close' && req.method === 'POST') {
+          let body = '';
+          req.on('data', (c) => (body += c.toString()));
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body || '{}');
+              let backupData = payload.data;
+              if (!backupData && fs.existsSync(dbFile)) {
+                try { backupData = JSON.parse(fs.readFileSync(dbFile, 'utf8')); } catch {}
+              }
+              if (backupData) {
+                triggerServerSideAutoBackupNode(backupData, payload.reason || 'close');
+              }
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ ok: true, saved: Boolean(backupData) }));
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ ok: false, error: err?.message }));
             }
           });
           return;
