@@ -27,6 +27,8 @@ import {
   HardDriveDownload,
   X,
   ArrowRightLeft,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import POSScreen from './components/POS/POSScreen';
@@ -54,6 +56,7 @@ import {
   syncBackupToServer,
   setGlobalCurrencyUnit,
   getGlobalCurrencyUnit,
+  normalizePinCode,
 } from './lib/utils';
 import {
   initNetworkSync,
@@ -181,6 +184,7 @@ export default function App() {
   const [selectedLoginUser, setSelectedLoginUser] = useState<AppUser | null>(null);
   const [pinInput, setPinInput] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
+  const [showPinText, setShowPinText] = useState<boolean>(false);
 
   const [isInitialSyncPending, setIsInitialSyncPending] = useState<boolean>(true);
 
@@ -315,40 +319,107 @@ export default function App() {
     settings?.telegramChatId,
   ]);
 
+  // Always resolve the active login target against the live activeUsers list (by ID or username) so background sync never leaves a stale reference
+  const activeLoginTarget: AppUser | undefined = useMemo(() => {
+    if (activeUsers.length === 0) return undefined;
+    if (selectedLoginUser) {
+      if (selectedLoginUser.id !== undefined) {
+        const byId = activeUsers.find((u) => u.id === selectedLoginUser.id);
+        if (byId) return byId;
+      }
+      if (selectedLoginUser.username) {
+        const cleanUname = selectedLoginUser.username.trim().toLowerCase();
+        const byUsername = activeUsers.find(
+          (u) => (u.username || '').trim().toLowerCase() === cleanUname
+        );
+        if (byUsername) return byUsername;
+      }
+    }
+    return currentUser || activeUsers[0];
+  }, [activeUsers, selectedLoginUser, currentUser]);
+
+  const formatUserDisplayName = (name?: string) => {
+    if (!name) return '';
+    return name
+      .replace(/امیر\s*حسی\uFFFD+/g, 'امیر حسین')
+      .replace(/\uFFFD+/g, '')
+      .trim();
+  };
+
   const handleOpenSwitchUser = () => {
     setSelectedLoginUser(currentUser || activeUsers[0] || null);
     setPinInput('');
     setLoginError('');
+    setShowPinText(false);
     setIsLocked(true);
+  };
+
+  const completeUserLogin = (targetUser: AppUser) => {
+    setCurrentUserId(targetUser.id || null);
+    try {
+      if (targetUser.id) {
+        window.sessionStorage.setItem('arka_active_user_id', String(targetUser.id));
+      }
+    } catch {
+      // ignore storage error
+    }
+    setIsLocked(false);
+    setPinInput('');
+    setLoginError('');
+    setShowPinText(false);
+
+    // Switch to first allowed tab for this user
+    const userTabs = ALL_TABS_ORDER.filter(
+      (t) => targetUser.isAdmin || (targetUser.permissions || []).includes(t)
+    );
+    if (userTabs.length > 0 && !userTabs.includes(activeTab)) {
+      setActiveTab(userTabs[0]);
+    }
+  };
+
+  const verifyUserPinMatch = (targetUser: AppUser, rawPin: string): boolean => {
+    const cleanEntered = normalizePinCode(rawPin);
+    if (!cleanEntered) return false;
+
+    const cleanExpected = normalizePinCode(targetUser.pin);
+    if (cleanExpected && cleanEntered === cleanExpected) {
+      return true;
+    }
+
+    // Check any duplicate/synced record with the same username in appUsers
+    if (targetUser.username) {
+      const targetUname = targetUser.username.trim().toLowerCase();
+      const matchingSibling = appUsers.find(
+        (u) =>
+          (u.username || '').trim().toLowerCase() === targetUname &&
+          normalizePinCode(u.pin) === cleanEntered
+      );
+      if (matchingSibling) return true;
+    }
+
+    // Fallback only if default admin has an empty PIN in DB
+    if (
+      targetUser.isAdmin &&
+      (targetUser.username || '').trim().toLowerCase() === 'admin' &&
+      !cleanExpected &&
+      cleanEntered === '1234'
+    ) {
+      return true;
+    }
+
+    return false;
   };
 
   const handleLoginSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const targetUser = selectedLoginUser || activeUsers[0];
+    const targetUser = activeLoginTarget || activeUsers[0];
     if (!targetUser) return;
 
-    if (pinInput.trim() === targetUser.pin.trim()) {
-      setCurrentUserId(targetUser.id || null);
-      try {
-        if (targetUser.id) {
-          window.sessionStorage.setItem('arka_active_user_id', String(targetUser.id));
-        }
-      } catch {
-        // ignore storage error
-      }
-      setIsLocked(false);
-      setPinInput('');
-      setLoginError('');
-
-      // Switch to first allowed tab for this user
-      const userTabs = ALL_TABS_ORDER.filter(
-        (t) => targetUser.isAdmin || (targetUser.permissions || []).includes(t)
-      );
-      if (userTabs.length > 0 && !userTabs.includes(activeTab)) {
-        setActiveTab(userTabs[0]);
-      }
+    if (verifyUserPinMatch(targetUser, pinInput)) {
+      completeUserLogin(targetUser);
     } else {
-      setLoginError('رمز عبور / کد پین وارد شده صحیح نیست.');
+      setLoginError('رمز عبور / کد پین وارد شده صحیح نیست. لطفاً دوباره وارد کنید.');
+      setPinInput('');
     }
   };
 
@@ -449,18 +520,34 @@ export default function App() {
 
   // Full-Screen Login / User Switcher Overlay
   if (isLocked && activeUsers.length > 0) {
-    const activeTarget = selectedLoginUser || activeUsers[0];
+    const activeTarget = activeLoginTarget || activeUsers[0];
+    const isDesktopFinePointer =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: fine)').matches;
+
+    const handleKeypadDigitPress = (digit: string) => {
+      setLoginError('');
+      setPinInput((prev) => {
+        const nextPin = normalizePinCode(prev + digit);
+        if (activeTarget && nextPin.length >= 4 && verifyUserPinMatch(activeTarget, nextPin)) {
+          setTimeout(() => completeUserLogin(activeTarget), 60);
+        }
+        return nextPin;
+      });
+    };
+
     return (
       <div
-        className="fixed inset-0 z-50 bg-slate-900/95 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+        className="fixed inset-0 z-50 bg-slate-900/95 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
         dir="rtl"
       >
-        <div className="bg-white rounded-3xl max-w-md w-full p-5 md:p-6 shadow-2xl border border-slate-200 space-y-5">
+        <div className="bg-white rounded-3xl max-w-md w-full p-4 sm:p-6 shadow-2xl border border-slate-200 space-y-4 my-auto">
           <div className="text-center space-y-1">
-            <div className="w-14 h-14 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-md mb-2">
-              <ShieldCheck size={30} />
+            <div className="w-13 h-13 sm:w-14 sm:h-14 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-md mb-1.5">
+              <ShieldCheck size={28} />
             </div>
-            <h1 className="text-lg font-extrabold text-slate-900">
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900">
               {settings?.restaurantName || 'سیستم رستورانی و حسابداری آرکا'}
             </h1>
             <p className="text-xs text-slate-500">
@@ -473,30 +560,37 @@ export default function App() {
             <label className="block text-xs font-extrabold text-slate-700">
               ۱. انتخاب کاربر سیستم:
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-40 overflow-y-auto p-0.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-52 overflow-y-auto p-1 rounded-2xl bg-slate-50/60 border border-slate-100">
               {activeUsers.map((u) => {
-                const isSelected = activeTarget?.id === u.id;
+                const isSelected =
+                  (activeTarget?.id !== undefined && activeTarget.id === u.id) ||
+                  (Boolean(activeTarget?.username) &&
+                    (activeTarget?.username || '').toLowerCase() === (u.username || '').toLowerCase());
                 return (
                   <button
-                    key={u.id}
+                    key={u.id || u.username}
                     type="button"
                     onClick={() => {
                       setSelectedLoginUser(u);
                       setPinInput('');
                       setLoginError('');
                     }}
-                    className={`p-2.5 rounded-xl border text-right transition flex items-center justify-between gap-2 cursor-pointer ${
+                    className={`p-2.5 rounded-xl border text-right transition flex items-center justify-between gap-2 cursor-pointer touch-manipulation select-none ${
                       isSelected
-                        ? 'bg-teal-50 border-teal-600 text-teal-950 ring-2 ring-teal-500/20'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                        ? 'bg-teal-50 border-teal-600 text-teal-950 ring-2 ring-teal-500/20 shadow-2xs'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <div className="min-w-0">
-                      <div className="text-xs font-extrabold truncate">{u.fullName}</div>
-                      <div className="text-[10px] text-slate-500 font-bold">{u.roleLabel}</div>
+                      <div className="text-xs font-extrabold truncate">
+                        {formatUserDisplayName(u.fullName)}
+                      </div>
+                      <div className="text-[10px] text-slate-500 font-bold truncate">
+                        {u.roleLabel}
+                      </div>
                     </div>
                     <span
-                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md ${
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded-md shrink-0 ${
                         isSelected ? 'bg-teal-600 text-white' : 'bg-slate-200 text-slate-700'
                       }`}
                       dir="ltr"
@@ -512,32 +606,57 @@ export default function App() {
           {/* PIN / Password Form + Touch Keypad */}
           <form onSubmit={handleLoginSubmit} className="space-y-3">
             <div>
-              <label className="block text-xs font-extrabold text-slate-700 mb-1">
-                ۲. رمز عبور / کد پین «{activeTarget?.fullName}»:
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-extrabold text-slate-700">
+                  ۲. رمز عبور / کد پین «{formatUserDisplayName(activeTarget?.fullName)}»:
+                </label>
+                {pinInput.length > 0 && (
+                  <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-md">
+                    {pinInput.length} رقم وارد شده
+                  </span>
+                )}
+              </div>
               <div className="relative">
                 <input
-                  type="password"
+                  type={showPinText ? 'text' : 'password'}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={pinInput}
                   onChange={(e) => {
-                    setPinInput(e.target.value);
+                    const cleanVal = normalizePinCode(e.target.value);
+                    setPinInput(cleanVal);
                     setLoginError('');
+                    if (activeTarget && cleanVal.length >= 4 && verifyUserPinMatch(activeTarget, cleanVal)) {
+                      setTimeout(() => completeUserLogin(activeTarget), 60);
+                    }
                   }}
                   placeholder="••••"
-                  autoFocus
-                  className="w-full px-4 py-3 rounded-xl border-2 border-slate-300 focus:border-teal-600 focus:outline-none text-center font-mono text-lg font-extrabold tracking-widest"
+                  autoFocus={isDesktopFinePointer}
+                  className="w-full px-10 py-3 rounded-xl border-2 border-slate-300 focus:border-teal-600 focus:outline-none text-center font-mono text-lg font-extrabold tracking-widest"
                   dir="ltr"
                 />
                 <KeyRound
                   size={18}
                   className="absolute left-3.5 top-3.5 text-slate-400 pointer-events-none"
                 />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPinText((prev) => !prev)}
+                  className="absolute right-3 top-3 p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer touch-manipulation"
+                  title={showPinText ? 'مخفی کردن رمز' : 'نمایش رمز وارد شده'}
+                >
+                  {showPinText ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </div>
             </div>
 
             {loginError && (
               <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-1.5">
-                <AlertCircle size={15} />
+                <AlertCircle size={15} className="shrink-0" />
                 <span>{loginError}</span>
               </div>
             )}
@@ -548,36 +667,36 @@ export default function App() {
                 <button
                   key={digit}
                   type="button"
-                  onClick={() => {
-                    setPinInput((p) => p + digit);
-                    setLoginError('');
-                  }}
-                  className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-900 font-mono text-base font-extrabold transition cursor-pointer"
+                  onClick={() => handleKeypadDigitPress(digit)}
+                  className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-teal-100 active:text-teal-900 text-slate-900 font-mono text-base font-extrabold transition cursor-pointer touch-manipulation select-none"
                 >
                   {digit}
                 </button>
               ))}
               <button
                 type="button"
-                onClick={() => setPinInput('')}
-                className="py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-extrabold transition cursor-pointer"
+                onClick={() => {
+                  setPinInput('');
+                  setLoginError('');
+                }}
+                className="py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 text-xs font-extrabold transition cursor-pointer touch-manipulation select-none"
               >
                 پاک کردن
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setPinInput((p) => p + '0');
-                  setLoginError('');
-                }}
-                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-900 font-mono text-base font-extrabold transition cursor-pointer"
+                onClick={() => handleKeypadDigitPress('0')}
+                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-teal-100 active:text-teal-900 text-slate-900 font-mono text-base font-extrabold transition cursor-pointer touch-manipulation select-none"
               >
                 0
               </button>
               <button
                 type="button"
-                onClick={() => setPinInput((p) => p.slice(0, -1))}
-                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition cursor-pointer"
+                onClick={() => {
+                  setPinInput((p) => p.slice(0, -1));
+                  setLoginError('');
+                }}
+                className="py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 flex items-center justify-center transition cursor-pointer touch-manipulation select-none"
               >
                 <Delete size={18} />
               </button>
@@ -585,7 +704,7 @@ export default function App() {
 
             <button
               type="submit"
-              className="w-full py-3 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-extrabold text-sm shadow-md transition cursor-pointer"
+              className="w-full py-3 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-xl font-extrabold text-sm shadow-md transition cursor-pointer touch-manipulation select-none"
             >
               ورود به سیستم
             </button>

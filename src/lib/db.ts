@@ -1783,6 +1783,7 @@ export async function repairExcessZeroInflationInDatabase(
     productionRecipes: await db.productionRecipes.toArray(),
     kitchenProductions: await db.kitchenProductions.toArray(),
     cashClosures: await db.cashClosures.toArray(),
+    appUsers: await db.appUsers.toArray(),
   };
 
   const beforeJsonByTable: Record<string, string[]> = {};
@@ -1811,6 +1812,7 @@ export async function repairExcessZeroInflationInDatabase(
       db.productionRecipes,
       db.kitchenProductions,
       db.cashClosures,
+      db.appUsers,
     ],
     async () => {
       if (beforeJsonByTable.settings && beforeJsonByTable.settings.length > 1 && snapshot.settings.length === 1) {

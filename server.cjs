@@ -878,6 +878,46 @@ function repairExcessZeroInflationOnDataObject(data, nowTimestampMs) {
     }
   }
 
+  // 13. Normalize appUsers PINs (Persian/Arabic digits -> ASCII) and repair corrupted UTF-8 replacement characters
+  if (Array.isArray(data.appUsers)) {
+    const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+    const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+    const normalizePin = (raw) => {
+      if (raw === undefined || raw === null) return '';
+      let str = String(raw);
+      for (let i = 0; i < 10; i++) {
+        str = str.replace(new RegExp(persianDigits[i], 'g'), String(i));
+        str = str.replace(new RegExp(arabicDigits[i], 'g'), String(i));
+      }
+      return str.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim();
+    };
+    for (const u of data.appUsers) {
+      if (!u || typeof u !== 'object') continue;
+      let userChanged = false;
+      if (typeof u.pin === 'string' || typeof u.pin === 'number') {
+        const cleanPin = normalizePin(u.pin);
+        if (cleanPin && cleanPin !== u.pin) {
+          u.pin = cleanPin;
+          userChanged = true;
+        }
+      }
+      if (typeof u.fullName === 'string' && u.fullName.includes('\uFFFD')) {
+        const cleanName = u.fullName
+          .replace(/امیر\s*حسی\uFFFD+/g, 'امیر حسین')
+          .replace(/\uFFFD+/g, '')
+          .trim();
+        if (cleanName && cleanName !== u.fullName) {
+          u.fullName = cleanName;
+          userChanged = true;
+        }
+      }
+      if (userChanged) {
+        u._updatedAtMs = Math.max(nowTs, (Number(u._updatedAtMs) || 0) + 1000);
+        modified = true;
+      }
+    }
+  }
+
   return modified;
 }
 
@@ -1080,7 +1120,7 @@ function getCanonicalKey(tableName, item) {
     case 'inventoryTransactions':
       return String(effId || `${item.materialId || ''}_${item.date || ''}_${item.type || ''}`);
     case 'appUsers':
-      return String(item.username || effId || '');
+      return String(item.username || effId || '').trim().toLowerCase();
     case 'accounts':
       return String(item.code || effId || '');
     default:
@@ -1181,12 +1221,18 @@ function mergeDatabaseObjects(existing, incoming, preferIncoming) {
         }
         const prev = map.get(k);
         if (prev) {
+          const prevIsDefaultSeed = Boolean(prev._isDefaultSeed);
+          const incIsDefaultSeed = Boolean(item._isDefaultSeed);
+          if (incIsDefaultSeed && !prevIsDefaultSeed && !preferIncoming) {
+            continue;
+          }
           const prevTs = getItemTimestampMs(prev);
           const incTs = getItemTimestampMs(item);
-          if (preferIncoming || incTs >= prevTs) {
+          if (preferIncoming || (prevIsDefaultSeed && !incIsDefaultSeed) || incTs >= prevTs) {
             map.set(k, {
               ...prev,
               ...item,
+              id: prev.id !== undefined ? prev.id : item.id,
               _updatedAtMs: preferIncoming ? Math.max(incTs, prevTs + 1000, nowTs) : Math.max(incTs, prevTs, 1),
             });
           }

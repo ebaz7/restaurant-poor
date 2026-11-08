@@ -22,6 +22,7 @@ import {
   setGlobalCurrencyUnit,
   getCurrencyLabel,
   optimizeDatabaseStorage,
+  normalizePinCode,
 } from '../../lib/utils';
 import {
   notifyRawResetToCentralServer,
@@ -1152,8 +1153,11 @@ pause
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanUsername = userForm.username.trim().toLowerCase();
-    const cleanName = userForm.fullName.trim();
-    const cleanPin = userForm.pin.trim();
+    const cleanName = userForm.fullName
+      .replace(/امیر\s*حسی\uFFFD+/g, 'امیر حسین')
+      .replace(/\uFFFD+/g, '')
+      .trim();
+    const cleanPin = normalizePinCode(userForm.pin);
 
     if (!cleanUsername || !cleanName || !cleanPin) {
       showNotice('error', 'لطفاً نام و نام خانوادگی، نام کاربری و رمز عبور (پین) را وارد کنید.');
@@ -1170,6 +1174,7 @@ pause
       : userForm.permissions;
 
     try {
+      const nowTs = Date.now();
       if (editingUserId !== null) {
         const duplicate = appUsers.find(
           (u) => u.username.toLowerCase() === cleanUsername && u.id !== editingUserId
@@ -1186,7 +1191,9 @@ pause
           isAdmin: userForm.isAdmin,
           permissions: finalPermissions,
           isActive: userForm.isActive,
-        });
+          _isDefaultSeed: false,
+          _updatedAtMs: nowTs,
+        } as any);
         showNotice('success', `اطلاعات و سطح دسترسی «${cleanName}» با موفقیت بروزرسانی شد.`);
       } else {
         const duplicate = appUsers.find((u) => u.username.toLowerCase() === cleanUsername);
@@ -1203,11 +1210,13 @@ pause
           permissions: finalPermissions,
           isActive: userForm.isActive,
           createdAt: new Date(),
-        });
+          _isDefaultSeed: false,
+          _updatedAtMs: nowTs,
+        } as any);
         showNotice('success', `کاربر جدید «${cleanName}» با سطح دسترسی انتخاب‌شده ایجاد شد.`);
       }
       resetUserForm();
-      await pushToCentralServer(false);
+      await pushToCentralServer(true);
       await syncBackupToServer(formData);
     } catch (err) {
       showNotice('error', 'خطا در ذخیره اطلاعات کاربر.');
@@ -1218,8 +1227,11 @@ pause
     setEditingUserId(u.id || null);
     setUserForm({
       username: u.username,
-      fullName: u.fullName,
-      pin: u.pin,
+      fullName: u.fullName
+        .replace(/امیر\s*حسی\uFFFD+/g, 'امیر حسین')
+        .replace(/\uFFFD+/g, '')
+        .trim(),
+      pin: normalizePinCode(u.pin),
       roleLabel: u.roleLabel,
       isAdmin: u.isAdmin,
       permissions: [...(u.permissions || [])],

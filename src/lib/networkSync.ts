@@ -950,14 +950,18 @@ export async function mergeServerDataIntoDexie(
         if (existingLocal) {
           const sTime = getRecordTimestampMs(sItem);
           const lTime = getRecordTimestampMs(existingLocal);
+          const isLocalSeed = Boolean(existingLocal._isDefaultSeed) || lTime <= 1000;
+          const isServerSeed = Boolean(sItem._isDefaultSeed) || sTime <= 1000;
           const isLocalEdited =
-            (dirtySet.has(k) || (existingLocal.id !== undefined && dirtySet.has(String(existingLocal.id)))) &&
-            lTime > sTime;
+            !isLocalSeed &&
+            (isServerSeed ||
+              ((dirtySet.has(k) || (existingLocal.id !== undefined && dirtySet.has(String(existingLocal.id)))) &&
+                lTime > sTime));
 
           if (isLocalEdited) {
             hasUnsyncedLocalRecords = true;
           } else {
-            const candidate = { ...sItem, id: existingLocal.id };
+            const candidate = { ...sItem, id: existingLocal.id, _isDefaultSeed: false };
             if (JSON.stringify(existingLocal) !== JSON.stringify(candidate)) {
               await table.put(candidate);
             }
@@ -967,13 +971,19 @@ export async function mergeServerDataIntoDexie(
           const conflict = sItem.id !== undefined ? await table.get(sItem.id) : null;
           if (conflict && getRecordCanonicalKey(tableName, conflict) !== k) {
             const { id: _, ...withoutId } = sItem;
-            await table.add(withoutId);
+            await table.add({ ...withoutId, _isDefaultSeed: false });
           } else {
-            await table.put(sItem);
+            await table.put({ ...sItem, _isDefaultSeed: false });
           }
         }
       } catch (e) {
-        console.warn(`Error syncing table ${tableName} record ${k}:`, e);
+        // Fallback if unique index constraint occurred on username/code/menuItemId
+        try {
+          const { id: _, ...withoutId } = sItem;
+          await table.add({ ...withoutId, _isDefaultSeed: false });
+        } catch (innerErr) {
+          console.warn(`Error syncing table ${tableName} record ${k}:`, innerErr || e);
+        }
       }
     }
 
@@ -987,53 +997,44 @@ export async function mergeServerDataIntoDexie(
 
   // 1. Orders
   await syncTableChronologically('orders', serverData.orders, (sOrder, localAll) =>
-    localAll.find(
-      (lo) =>
-        (sOrder.invoiceNumber !== undefined && lo.invoiceNumber === sOrder.invoiceNumber) ||
-        (sOrder.invoiceNumber === undefined && lo.id === sOrder.id)
-    )
+    localAll.find((lo) => sOrder.invoiceNumber !== undefined && lo.invoiceNumber === sOrder.invoiceNumber) ||
+    localAll.find((lo) => sOrder.invoiceNumber === undefined && lo.id === sOrder.id)
   );
 
   // 2. Journal Vouchers
   await syncTableChronologically('journalVouchers', serverData.journalVouchers, (sVoucher, localAll) =>
-    localAll.find(
-      (lv) =>
-        (sVoucher.voucherNumber !== undefined && lv.voucherNumber === sVoucher.voucherNumber) ||
-        (sVoucher.voucherNumber === undefined && lv.id === sVoucher.id)
-    )
+    localAll.find((lv) => sVoucher.voucherNumber !== undefined && lv.voucherNumber === sVoucher.voucherNumber) ||
+    localAll.find((lv) => sVoucher.voucherNumber === undefined && lv.id === sVoucher.id)
   );
 
   // 3. Customers
   await syncTableChronologically('customers', serverData.customers, (sCust, localAll) =>
-    localAll.find((lc) => (sCust.phone && lc.phone === sCust.phone) || (lc.id && lc.id === sCust.id))
+    localAll.find((lc) => sCust.phone && lc.phone === sCust.phone) ||
+    localAll.find((lc) => lc.id && lc.id === sCust.id)
   );
 
   // 4. Categories
   await syncTableChronologically('categories', serverData.categories, (sCat, localAll) =>
-    localAll.find((lc) => (sCat.id && lc.id === sCat.id) || (sCat.name && lc.name === sCat.name))
+    localAll.find((lc) => sCat.name && lc.name === sCat.name) ||
+    localAll.find((lc) => sCat.id && lc.id === sCat.id)
   );
 
   // 5. Menu Items
   await syncTableChronologically('menuItems', serverData.menuItems, (sMenu, localAll) =>
-    localAll.find((lm) => (sMenu.id && lm.id === sMenu.id) || (sMenu.name && lm.name === sMenu.name))
+    localAll.find((lm) => sMenu.name && lm.name === sMenu.name) ||
+    localAll.find((lm) => sMenu.id && lm.id === sMenu.id)
   );
 
   // 6. Cash Closures
   await syncTableChronologically('cashClosures', serverData.cashClosures, (sClosure, localAll) =>
-    localAll.find(
-      (lc) =>
-        (sClosure.dateLabel && lc.dateLabel === sClosure.dateLabel) ||
-        (sClosure.id && lc.id === sClosure.id)
-    )
+    localAll.find((lc) => sClosure.dateLabel && lc.dateLabel === sClosure.dateLabel) ||
+    localAll.find((lc) => sClosure.id && lc.id === sClosure.id)
   );
 
   // 7. Kitchen Productions
   await syncTableChronologically('kitchenProductions', serverData.kitchenProductions, (sKp, localAll) =>
-    localAll.find(
-      (lk) =>
-        (sKp.batchNumber && lk.batchNumber === sKp.batchNumber) ||
-        (sKp.id && lk.id === sKp.id)
-    )
+    localAll.find((lk) => sKp.batchNumber && lk.batchNumber === sKp.batchNumber) ||
+    localAll.find((lk) => sKp.id && lk.id === sKp.id)
   );
 
   // 8. Inventory Transactions
@@ -1043,36 +1044,39 @@ export async function mergeServerDataIntoDexie(
 
   // 9. Raw Materials, Production Recipes, Bank Accounts, Persons, Cheques, Accounts, AppUsers
   await syncTableChronologically('rawMaterials', serverData.rawMaterials, (sMat, localAll) =>
-    localAll.find((lm) => (sMat.id && lm.id === sMat.id) || (sMat.name && lm.name === sMat.name))
+    localAll.find((lm) => sMat.name && lm.name === sMat.name) ||
+    localAll.find((lm) => sMat.id && lm.id === sMat.id)
   );
   await syncTableChronologically('productionRecipes', serverData.productionRecipes, (sRec, localAll) =>
-    localAll.find(
-      (lr) =>
-        (sRec.id && lr.id === sRec.id) ||
-        (sRec.menuItemId !== undefined && lr.menuItemId === sRec.menuItemId) ||
-        (sRec.menuItemName && lr.menuItemName === sRec.menuItemName)
-    )
+    localAll.find((lr) => sRec.menuItemId !== undefined && lr.menuItemId === sRec.menuItemId) ||
+    localAll.find((lr) => sRec.menuItemName && lr.menuItemName === sRec.menuItemName) ||
+    localAll.find((lr) => sRec.id && lr.id === sRec.id)
   );
   await syncTableChronologically('bankAccounts', serverData.bankAccounts, (sBank, localAll) =>
     localAll.find(
       (lb) =>
-        (sBank.id && lb.id === sBank.id) ||
-        (sBank.bankName && lb.bankName === sBank.bankName && (!sBank.cardNumber || lb.cardNumber === sBank.cardNumber))
-    )
+        sBank.bankName && lb.bankName === sBank.bankName && (!sBank.cardNumber || lb.cardNumber === sBank.cardNumber)
+    ) || localAll.find((lb) => sBank.id && lb.id === sBank.id)
   );
   await syncTableChronologically('persons', serverData.persons, (sPerson, localAll) =>
-    localAll.find((lp) => (sPerson.id && lp.id === sPerson.id) || (sPerson.name && lp.name === sPerson.name))
+    localAll.find((lp) => sPerson.name && lp.name === sPerson.name) ||
+    localAll.find((lp) => sPerson.id && lp.id === sPerson.id)
   );
   await syncTableChronologically('cheques', serverData.cheques, (sChq, localAll) =>
-    localAll.find(
-      (lc) => (sChq.id && lc.id === sChq.id) || (sChq.chequeNumber && lc.chequeNumber === sChq.chequeNumber)
-    )
+    localAll.find((lc) => sChq.chequeNumber && lc.chequeNumber === sChq.chequeNumber) ||
+    localAll.find((lc) => sChq.id && lc.id === sChq.id)
   );
   await syncTableChronologically('accounts', serverData.accounts, (sAcc, localAll) =>
-    localAll.find((la) => (sAcc.code && la.code === sAcc.code) || (sAcc.id && la.id === sAcc.id))
+    localAll.find((la) => sAcc.code && String(la.code) === String(sAcc.code)) ||
+    localAll.find((la) => !sAcc.code && sAcc.id && la.id === sAcc.id)
   );
   await syncTableChronologically('appUsers', serverData.appUsers, (sUser, localAll) =>
-    localAll.find((lu) => (sUser.username && lu.username === sUser.username) || (sUser.id && lu.id === sUser.id))
+    localAll.find(
+      (lu) =>
+        sUser.username &&
+        lu.username &&
+        String(lu.username).trim().toLowerCase() === String(sUser.username).trim().toLowerCase()
+    ) || localAll.find((lu) => !sUser.username && sUser.id && lu.id === sUser.id)
   );
 
   // 10. Settings: compare timestamps so newest settings win, deduplicate singleton row, and protect bot credentials

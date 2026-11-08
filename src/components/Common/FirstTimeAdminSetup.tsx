@@ -10,7 +10,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { db, ALL_PERMISSIONS, AppSettings } from '../../lib/db';
-import { setGlobalCurrencyUnit } from '../../lib/utils';
+import { setGlobalCurrencyUnit, normalizePinCode } from '../../lib/utils';
 import { pushToCentralServer } from '../../lib/networkSync';
 
 interface Props {
@@ -32,6 +32,9 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
     e.preventDefault();
     setError('');
 
+    const cleanPin = normalizePinCode(pin);
+    const cleanConfirmPin = normalizePinCode(confirmPin);
+
     if (!fullName.trim()) {
       setError('لطفاً نام و نام خانوادگی مدیر را وارد فرمایید.');
       return;
@@ -40,15 +43,15 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
       setError('لطفاً یک نام کاربری وارد فرمایید.');
       return;
     }
-    if (!pin.trim()) {
+    if (!cleanPin) {
       setError('لطفاً رمز عبور یا کد پین ورود را وارد فرمایید.');
       return;
     }
-    if (pin.trim().length < 4) {
+    if (cleanPin.length < 4) {
       setError('رمز عبور / پین باید حداقل ۴ رقم یا کاراکتر باشد.');
       return;
     }
-    if (pin.trim() !== confirmPin.trim()) {
+    if (cleanPin !== cleanConfirmPin) {
       setError('تکرار رمز عبور با رمز وارد شده مطابقت ندارد.');
       return;
     }
@@ -57,15 +60,17 @@ export default function FirstTimeAdminSetup({ settings, onCompleted }: Props) {
     try {
       // 1. Create first administrator user with 100% permissions
       const newUserId = (await db.appUsers.add({
-        username: username.trim(),
+        username: username.trim().toLowerCase(),
         fullName: fullName.trim(),
-        pin: pin.trim(),
+        pin: cleanPin,
         roleLabel: 'مدیر کل سیستم',
         isAdmin: true,
         permissions: [...ALL_PERMISSIONS],
         isActive: true,
         createdAt: new Date(),
-      })) as number;
+        _isDefaultSeed: false,
+        _updatedAtMs: Date.now(),
+      } as any)) as number;
 
       // 2. Set currency unit globally
       setGlobalCurrencyUnit(currencyUnit);

@@ -22,6 +22,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { db, AppSettings } from '../../lib/db';
+import { normalizePinCode } from '../../lib/utils';
 import {
   getNodeRole,
   setNodeRole,
@@ -221,7 +222,8 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
 
   const handleVerifyAdminPin = async () => {
     setAdminPinError('');
-    if (!adminPin.trim()) {
+    const cleanEntered = normalizePinCode(adminPin);
+    if (!cleanEntered) {
       setAdminPinError('لطفاً رمز عبور یا پین مدیر سیستم را وارد فرمایید.');
       return;
     }
@@ -232,9 +234,9 @@ export const NodeRoleManagerModal: React.FC<NodeRoleManagerModalProps> = ({
         adminUsers.length === 0 ||
         adminUsers.some(
           (u) =>
-            u.pin === adminPin.trim() ||
-            adminPin.trim() === '1234' ||
-            adminPin.trim() === 'admin'
+            normalizePinCode(u.pin) === cleanEntered ||
+            cleanEntered === '1234' ||
+            cleanEntered === 'admin'
         );
 
       if (!match) {

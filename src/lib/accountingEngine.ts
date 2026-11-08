@@ -1225,6 +1225,41 @@ export function repairExcessZeroInflationOnDataObject(
     }
   }
 
+  // 13. AppUsers: normalize Persian/Arabic PIN digits & repair corrupted UTF-8 characters (e.g. امیر حسی -> امیر حسین)
+  if (Array.isArray(data.appUsers)) {
+    for (const u of data.appUsers) {
+      if (!u || typeof u !== 'object') continue;
+      let uChanged = false;
+      if (u.pin !== undefined && u.pin !== null) {
+        const cleanPin = String(u.pin)
+          .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+          .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+          .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+          .replace(/[０-９]/g, (d) => String(d.charCodeAt(0) - 0xff10))
+          .trim();
+        if (cleanPin && cleanPin !== u.pin) {
+          u.pin = cleanPin;
+          uChanged = true;
+        }
+      }
+      if (typeof u.fullName === 'string' && u.fullName.includes('\uFFFD')) {
+        let fixedName = u.fullName;
+        if (fixedName.startsWith('امیر حسی') || String(u.username || '').toLowerCase() === 'amirhossein') {
+          fixedName = fixedName.replace(/امیر\s*حسی\uFFFD+/, 'امیر حسین');
+        }
+        fixedName = fixedName.replace(/\uFFFD+/g, '').trim();
+        if (fixedName && fixedName !== u.fullName) {
+          u.fullName = fixedName;
+          uChanged = true;
+        }
+      }
+      if (uChanged) {
+        u._updatedAtMs = Math.max(nowTs, (Number(u._updatedAtMs) || 0) + 1000);
+        repairedCount++;
+      }
+    }
+  }
+
   return { repairedCount, modified: repairedCount > 0 };
 }
 

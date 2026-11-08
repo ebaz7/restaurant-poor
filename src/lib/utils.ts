@@ -50,6 +50,21 @@ export const formatNumber = (amount: number): string => {
 
 export { formatNumberThreeDigits, parseThreeDigitNumber };
 
+/**
+ * Normalizes a PIN / password string by converting Persian (۰-۹), Arabic (٠-٩),
+ * and fullwidth (０-９) numerals to standard ASCII digits (0-9), removing invisible
+ * zero-width / bidirectional control characters, and trimming whitespace.
+ */
+export function normalizePinCode(raw: string | number | undefined | null): string {
+  if (raw === undefined || raw === null) return '';
+  return String(raw)
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[０-９]/g, (d) => String(d.charCodeAt(0) - 0xff10))
+    .trim();
+}
+
 const ACCOUNT_NAME_BY_CODE = new Map<string, string>(
   DEFAULT_CHART_OF_ACCOUNTS.map((a) => [String(a.code), a.name])
 );
